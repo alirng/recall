@@ -1,0 +1,21 @@
+name: Feature or new agent
+description: Suggest an improvement, a new agent source or a new model provider.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: For a new agent, say where it stores chats if you know (see docs/research/agent-storage-and-integration.md).
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself

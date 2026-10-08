@@ -1,0 +1,3 @@
+{"query": "pen test the admin app", "agent": "cursor", "expect": "Admin app penetration testing"}
+{"query": "is the live site on main or dev", "expect": "Compare prod and dev commits"}
+{"query": "dark mode tab bar background", "agent": "cursor", "expect": "Fix dark mode background color"}

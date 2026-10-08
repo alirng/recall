@@ -1,0 +1,39 @@
+# Publishes to PyPI when a version tag (v*) is pushed.
+#
+# Uses PyPI trusted publishing, so no API token is stored in the repository. One-time setup
+# on pypi.org: add a trusted publisher for project "recall-agents", owner "alirng",
+# repository "recall", workflow "release.yml", environment "pypi".
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

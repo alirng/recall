@@ -1,0 +1,3 @@
+{"chat": "claude:00000000-example-0001", "expect": [{"name": "Prefers small, focused commits", "type": "preference", "scope": "global", "all": [["commit"], ["small", "focused"]]}], "note": "Global preference stated in passing"}
+{"chat": "claude:00000000-example-0002", "expect": [{"name": "Staging database listens on port 5433", "type": "fact", "scope": "project", "all": [["staging"], ["5433"]]}], "note": "Project fact about a local service"}
+{"chat": "claude:00000000-example-0003", "expect": [], "forbid": [["password"]], "max": 0, "note": "Small talk with no lasting facts; nothing should be saved"}

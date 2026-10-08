@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in recall doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please never paste real chat content, memory notes or keys here:
+        use made-up examples, and trim paths that identify you.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The command's output or traceback, with private details removed.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: recall version
+      placeholder: "recall --version"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS, Linux, Other]
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model provider
+      description: From `recall model --show`, e.g. local / chatgpt / claude / openai / custom.
+  - type: checkboxes
+    id: agents
+    attributes:
+      label: Agents installed
+      options:
+        - label: Claude Code
+        - label: Codex
+        - label: Cursor
