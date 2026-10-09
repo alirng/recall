@@ -1,0 +1,175 @@
+{
+  "_about": "Numbers behind docs/benchmarks/*.svg and the README's Benchmarks section. recall's own rows come from `recall eval`; every other row is the system's published figure (see source). Regenerate the charts with: python docs/benchmarks/make_charts.py",
+  "retrieval_user_turns_all5": {
+    "title": "LongMemEval_S: every answer session in the top 5",
+    "subtitle": "Session retrieval, user turns indexed (recall_all@5). recall: the benchmark's official 419 questions; engram: its 343-question test split.",
+    "rows": [
+      {
+        "name": "recall (keywords + embeddings)",
+        "value": 88.3,
+        "ours": true,
+        "note": "nomic-embed-text, local"
+      },
+      {
+        "name": "recall (keywords only)",
+        "value": 82.8,
+        "ours": true,
+        "note": "SQLite FTS5"
+      },
+      {
+        "name": "engram, dense",
+        "value": 81.3,
+        "note": "bge-small",
+        "source": "https://github.com/zaineli/engram"
+      },
+      {
+        "name": "engram, hybrid",
+        "value": 80.2,
+        "note": "BM25 + bge-small",
+        "source": "https://github.com/zaineli/engram"
+      },
+      {
+        "name": "engram, BM25",
+        "value": 67.3,
+        "note": "",
+        "source": "https://github.com/zaineli/engram"
+      },
+      {
+        "name": "LongMemEval reference BM25",
+        "value": 51.3,
+        "note": "whitespace tokens",
+        "source": "https://github.com/zaineli/engram"
+      }
+    ]
+  },
+  "qa_accuracy": {
+    "title": "LongMemEval_S: answers judged correct",
+    "subtitle": "End to end: retrieve, then answer. Vendor figures are self-reported, with their own answer models and judges.",
+    "ceiling": {
+      "value": 91.0,
+      "label": "Haiku 5.5 given only the answer sessions"
+    },
+    "rows": [
+      {
+        "name": "Mastra",
+        "value": 94.9,
+        "note": "gpt-5-mini",
+        "source": "https://mastra.ai/research/observational-memory"
+      },
+      {
+        "name": "Mem0 (platform)",
+        "value": 94.4,
+        "note": "GPT-5",
+        "source": "https://github.com/mem0ai/memory-benchmarks"
+      },
+      {
+        "name": "Hindsight",
+        "value": 91.4,
+        "note": "Gemini-3 Pro",
+        "source": "https://arxiv.org/abs/2512.12818"
+      },
+      {
+        "name": "Honcho",
+        "value": 90.4,
+        "note": "Claude Haiku 4.5",
+        "source": "https://honcho.dev/evals/"
+      },
+      {
+        "name": "recall",
+        "value": 87.0,
+        "ours": true,
+        "note": "Claude Haiku 5.5"
+      },
+      {
+        "name": "Supermemory",
+        "value": 85.2,
+        "note": "Gemini-3",
+        "source": "https://supermemory.ai/research/longmembench"
+      },
+      {
+        "name": "EverMemOS",
+        "value": 83.0,
+        "note": "GPT-4.1-mini",
+        "source": "https://arxiv.org/abs/2601.02163"
+      },
+      {
+        "name": "ICM folders",
+        "value": 74.4,
+        "note": "Sonnet 5, 39 questions",
+        "source": "https://github.com/RinDig/cost-of-remembering"
+      },
+      {
+        "name": "Zep",
+        "value": 71.2,
+        "note": "GPT-4o",
+        "source": "https://arxiv.org/abs/2501.13956"
+      },
+      {
+        "name": "Full history, no memory",
+        "value": 62.6,
+        "note": "Claude Haiku 4.5",
+        "source": "https://honcho.dev/evals/"
+      }
+    ]
+  },
+  "tokens_vs_accuracy": {
+    "title": "Accuracy against context read per question",
+    "subtitle": "LongMemEval_S. Tokens the answer model reads for one question (log scale).",
+    "points": [
+      {
+        "name": "recall, top 10 chats",
+        "tokens": 31600,
+        "value": 87.0,
+        "ours": true
+      },
+      {
+        "name": "recall, matched windows",
+        "tokens": 11800,
+        "value": 83.0,
+        "ours": true
+      },
+      {
+        "name": "Mem0",
+        "tokens": 7000,
+        "value": 94.4
+      },
+      {
+        "name": "Mastra",
+        "tokens": 30000,
+        "value": 94.9
+      },
+      {
+        "name": "EverMemOS",
+        "tokens": 6700,
+        "value": 83.0,
+        "anchor": "end",
+        "label_dx": -10
+      },
+      {
+        "name": "ICM folders",
+        "tokens": 5314,
+        "value": 74.4
+      },
+      {
+        "name": "Zep",
+        "tokens": 1600,
+        "value": 71.2
+      },
+      {
+        "name": "Full history, Sonnet 5",
+        "tokens": 184186,
+        "value": 87.2,
+        "anchor": "end",
+        "label_dx": -10,
+        "label_dy": -16
+      },
+      {
+        "name": "Full history, Haiku 4.5",
+        "tokens": 115000,
+        "value": 62.6,
+        "anchor": "end",
+        "label_dx": -10
+      }
+    ]
+  }
+}

@@ -5,6 +5,58 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Projects. `~/.agents/memory/projects.yaml` lists the projects you work on, each with the
+  git remotes and folders it spans, its kind, status and the project it grew out of.
+  `recall projects suggest` drafts it from your chat history, grouping clones, worktrees,
+  moved folders and Cursor's names for deleted folders; recall only ever appends to the file.
+  Chats with no project folder join a project when they name one of its `words`.
+- `recall projects`: every project over time as git-style lanes, and `recall projects show`
+  for one. The MCP tool `list_projects` gives agents the same view.
+- `recall rules`: which instruction files Claude Code, Codex and Cursor each read in a repo,
+  and `--write` to close the gaps by copying committed always-on Cursor rules into a marked
+  block in AGENTS.md and adding `@AGENTS.md` to CLAUDE.md. Personal (gitignored) rules are
+  never written to committed files.
+- A Codex session-start hook: `recall install` adds it to `~/.codex/hooks.json`, so Codex
+  loads memory at session start the way Claude Code does once you trust it in `/hooks`.
+- `recall eval longmemeval`: session retrieval on the public LongMemEval benchmark, scored with
+  its own metrics, so search changes are measured against published numbers. `--official`
+  scores the benchmark's own question subset, `--hybrid` adds embeddings, and `--qa MODEL`
+  runs it end to end: recall retrieves, the model answers and judges with the benchmark's
+  prompts, and the run reports accuracy, context tokens and model calls.
+- `recall eval locomo`: session retrieval on LoCoMo.
+- `recall eval search` also scores `paraphrase_cases.jsonl` when present: chats described in
+  other words than they used, where semantic search matters.
+- Optional semantic search. With the `embeddings` extra and an `[embeddings]` table in
+  config.toml (a local model through Ollama, or any OpenAI-compatible endpoint), each message
+  and note gets a vector, and search fuses meaning with keywords. `recall embed` backfills;
+  new chats are embedded as they are indexed. Search falls back to keywords when the model is
+  unreachable.
+- `search_chats` takes `until` (a date window together with `since`) and `exclude` (chat ids
+  already read), and each result lists its best matching messages as `hits`.
+- A usage log: recall records each MCP call, session-start load and search, with the agent
+  that made it, in `~/.agents/recall/usage.jsonl`. `recall usage` sums it up; set
+  `usage_log = false` in config.toml to turn it off.
+- Links between notes. Each note ends with wikilinks to its closest notes, recomputed after
+  every memory run from shared words, shared source chats and shared projects, with no model
+  call. Hand-written `[[note-id]]` links count too. `recall memory link` recomputes them now,
+  and the MCP tool `read_note` returns them with the reason for each.
+
+### Changed
+
+- Chat search ranks each chat several ways and fuses the rankings: its best message, the
+  summed score of its best three messages, the title its agent gave it, and a message that
+  holds every word. Filler words ("what", "did", "we") are dropped from questions. On
+  LongMemEval, the share of questions with every answer session in the top five rose from
+  0.717 to 0.872. See docs/research/retrieval-benchmarks.md.
+- A project name from projects.yaml in `search_chats`, `recent_chats`, `memory_search` and
+  `--project` covers every folder the project spans, not just names that match.
+- The session-start block also lists always-on rules the repo gives other agents but not
+  this one, and loads the notes of every folder in the current project.
+- `recall context` takes `--agent`, and reads Cursor's `workspace_roots` when a hook sends
+  no `cwd`.
+
 ## [0.1.0] - 2026-10-08
 
 First public release.

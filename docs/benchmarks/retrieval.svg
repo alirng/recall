@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="310" viewBox="0 0 760 310" role="img" aria-label="LongMemEval_S: every answer session in the top 5">
+
+<style>
+  .surface { fill: #fcfcfb; }
+  .ink { fill: #0b0b0b; }
+  .ink2 { fill: #52514e; }
+  .muted { fill: #898781; }
+  .grid { stroke: #e1e0d9; }
+  .axis { stroke: #c3c2b7; }
+  .ours { fill: #2a78d6; }
+  .other { fill: #86b6ef; }
+  .ceiling { stroke: #52514e; }
+  .ring { stroke: #fcfcfb; }
+  .halo { stroke: #fcfcfb; stroke-width: 4px; paint-order: stroke; stroke-linejoin: round; }
+  @media (prefers-color-scheme: dark) {
+    .surface { fill: #1a1a19; }
+    .ink { fill: #ffffff; }
+    .ink2 { fill: #c3c2b7; }
+    .grid { stroke: #2c2c2a; }
+    .axis { stroke: #383835; }
+    .ours { fill: #3987e5; }
+    .other { fill: #184f95; }
+    .ceiling { stroke: #c3c2b7; }
+    .ring { stroke: #1a1a19; }
+    .halo { stroke: #1a1a19; }
+  }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+</style>
+<rect class="surface" width="760" height="310" rx="8"/>
+<text class="ink" x="24" y="34" font-size="17" font-weight="600">LongMemEval_S: every answer session in the top 5</text>
+<text class="ink2" x="24" y="56" font-size="12.5">Session retrieval, user turns indexed (recall_all@5). recall: the benchmark&#x27;s official 419 questions; engram: its 343-question test split.</text>
+<line class="grid" x1="236.8" y1="78" x2="236.8" y2="276" stroke-width="1"/>
+<text class="muted" x="236.8" y="292" font-size="11" text-anchor="middle">0%</text>
+<line class="grid" x1="297.0" y1="78" x2="297.0" y2="276" stroke-width="1"/>
+<text class="muted" x="297.0" y="292" font-size="11" text-anchor="middle">20%</text>
+<line class="grid" x1="357.3" y1="78" x2="357.3" y2="276" stroke-width="1"/>
+<text class="muted" x="357.3" y="292" font-size="11" text-anchor="middle">40%</text>
+<line class="grid" x1="417.5" y1="78" x2="417.5" y2="276" stroke-width="1"/>
+<text class="muted" x="417.5" y="292" font-size="11" text-anchor="middle">60%</text>
+<line class="grid" x1="477.8" y1="78" x2="477.8" y2="276" stroke-width="1"/>
+<text class="muted" x="477.8" y="292" font-size="11" text-anchor="middle">80%</text>
+<line class="grid" x1="538.0" y1="78" x2="538.0" y2="276" stroke-width="1"/>
+<text class="muted" x="538.0" y="292" font-size="11" text-anchor="middle">100%</text>
+<text class="ink" x="226.8" y="97.5" font-size="13" text-anchor="end" font-weight="600">recall (keywords + embeddings)</text>
+<path class="ours" d="M236.8,84.0 H498.8 Q502.8,84.0 502.8,88.0 V98.0 Q502.8,102.0 498.8,102.0 H236.8 Z"><title>recall (keywords + embeddings): 88.3%</title></path>
+<text class="ink halo" x="510.8" y="97.5" font-size="12.5" font-weight="600">88.3%</text>
+<text class="muted" x="594.0" y="97.5" font-size="11.5">nomic-embed-text, local</text>
+<text class="ink" x="226.8" y="127.5" font-size="13" text-anchor="end" font-weight="600">recall (keywords only)</text>
+<path class="ours" d="M236.8,114.0 H482.2 Q486.2,114.0 486.2,118.0 V128.0 Q486.2,132.0 482.2,132.0 H236.8 Z"><title>recall (keywords only): 82.8%</title></path>
+<text class="ink halo" x="494.2" y="127.5" font-size="12.5" font-weight="600">82.8%</text>
+<text class="muted" x="594.0" y="127.5" font-size="11.5">SQLite FTS5</text>
+<text class="ink" x="226.8" y="157.5" font-size="13" text-anchor="end">engram, dense</text>
+<path class="other" d="M236.8,144.0 H477.7 Q481.7,144.0 481.7,148.0 V158.0 Q481.7,162.0 477.7,162.0 H236.8 Z"><title>engram, dense: 81.3%</title></path>
+<text class="ink halo" x="489.7" y="157.5" font-size="12.5">81.3%</text>
+<text class="muted" x="594.0" y="157.5" font-size="11.5">bge-small</text>
+<text class="ink" x="226.8" y="187.5" font-size="13" text-anchor="end">engram, hybrid</text>
+<path class="other" d="M236.8,174.0 H474.4 Q478.4,174.0 478.4,178.0 V188.0 Q478.4,192.0 474.4,192.0 H236.8 Z"><title>engram, hybrid: 80.2%</title></path>
+<text class="ink halo" x="486.4" y="187.5" font-size="12.5">80.2%</text>
+<text class="muted" x="594.0" y="187.5" font-size="11.5">BM25 + bge-small</text>
+<text class="ink" x="226.8" y="217.5" font-size="13" text-anchor="end">engram, BM25</text>
+<path class="other" d="M236.8,204.0 H435.5 Q439.5,204.0 439.5,208.0 V218.0 Q439.5,222.0 435.5,222.0 H236.8 Z"><title>engram, BM25: 67.3%</title></path>
+<text class="ink halo" x="447.5" y="217.5" font-size="12.5">67.3%</text>
+<text class="ink" x="226.8" y="247.5" font-size="13" text-anchor="end">LongMemEval reference BM25</text>
+<path class="other" d="M236.8,234.0 H387.3 Q391.3,234.0 391.3,238.0 V248.0 Q391.3,252.0 387.3,252.0 H236.8 Z"><title>LongMemEval reference BM25: 51.3%</title></path>
+<text class="ink halo" x="399.3" y="247.5" font-size="12.5">51.3%</text>
+<text class="muted" x="594.0" y="247.5" font-size="11.5">whitespace tokens</text>
+<line class="axis" x1="236.8" y1="78" x2="236.8" y2="276" stroke-width="1"/>
+</svg>

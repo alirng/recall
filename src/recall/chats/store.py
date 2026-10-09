@@ -14,7 +14,7 @@ from .transcript import Session, conversation_fingerprint
 MAX_MESSAGE_CHARS = 20_000
 # The chat index is derived data: bumping this drops and rebuilds it on next run.
 CHAT_SCHEMA_VERSION = "2"
-CHAT_TABLES = ("sessions", "messages", "messages_fts", "sessions_fts", "seen")
+CHAT_TABLES = ("sessions", "messages", "messages_fts", "sessions_fts", "seen", "chat_projects")
 
 SCHEMA = """
 create table if not exists sessions (
@@ -45,7 +45,10 @@ create table if not exists meta (k text primary key, v text);
 
 
 def connect(path: str = paths.DB) -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """Open the index, creating or rebuilding its tables as needed. ":memory:" gives a
+    throwaway index, as the LongMemEval eval uses."""
+    if path != ":memory:":
+        os.makedirs(os.path.dirname(path), exist_ok=True)
     con = sqlite3.connect(path, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("pragma journal_mode=wal")
@@ -54,7 +57,7 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
     if not row or row[0] != CHAT_SCHEMA_VERSION:
         for t in CHAT_TABLES:
             con.execute(f"drop table if exists {t}")
-        con.execute("delete from meta where k like 'indexed_at:%'")
+        con.execute("delete from meta where k like 'indexed_at:%' or k = 'projects_stamp'")
         con.execute("insert or replace into meta values ('chat_schema', ?)", (CHAT_SCHEMA_VERSION,))
     con.executescript(SCHEMA)
     return con
@@ -112,26 +115,65 @@ def parse_since(since: str | None) -> float | None:
     return datetime.fromisoformat(since).timestamp()
 
 
+# Words that say nothing about which chat is meant. They are dropped from a query once two
+# others remain, so "what did we decide about retries" searches for "decide retries".
+STOPWORDS = frozenset(
+    "the a an and or but to of in on for with this that it is are be can we you i me my our your so do does "
+    "did done how what why when where which who whom whose there here from at as by if not no yes please just "
+    "like want need make use using have has had will would could should about into then than them they their "
+    "also all any some more most very get got let lets one was were been being am its it's i'm i've i'd".split()
+)
+
+
 def fts_query(text: str, mode: str) -> str | None:
-    words = re.findall(r"\w+", text.lower())
+    words = list(dict.fromkeys(re.findall(r"\w+", text.lower())))
     if not words:
         return None
+    content = [w for w in words if w not in STOPWORDS]
+    words = content if len(content) >= 2 else words
     return (" OR " if mode == "or" else " ").join(f'"{w}"' for w in words)
 
 
-def _filters(agent, project, since, alias="s"):
+def _filters(con, agent, project, since, alias="s", *, until=None, exclude=None):
     sql, args = "", []
     if agent:
         sql += f" and {alias}.agent = ?"
         args.append(agent.lower())
     if project:
-        sql += f" and ({alias}.project like ? or {alias}.title like ?)"
-        args += [f"%{project}%", f"%{project}%"]
+        from .. import projects
+
+        found = projects.find(project)
+        if found:  # a project from projects.yaml: every folder it spans, and chats placed by its words
+            projects.refresh(con)
+            sql += f" and {alias}.id in (select session_id from chat_projects where project = ?)"
+            args.append(found.id)
+        else:
+            sql += f" and ({alias}.project like ? or {alias}.title like ?)"
+            args += [f"%{project}%", f"%{project}%"]
     ts = parse_since(since)
     if ts:
         sql += f" and {alias}.updated_at >= ?"
         args.append(ts)
+    end = parse_until(until)
+    if end:
+        sql += f" and coalesce({alias}.started_at, {alias}.updated_at) <= ?"
+        args.append(end)
+    if exclude:
+        sql += f" and {alias}.id not in ({','.join('?' * len(exclude))})"
+        args += list(exclude)
     return sql, args
+
+
+def parse_until(until: str | None) -> float | None:
+    """An end date: "7d" means up to a week ago; a bare ISO date includes that whole day."""
+    if not until:
+        return None
+    if _SINCE.match(until.strip().lower()):
+        return parse_since(until)
+    end = datetime.fromisoformat(until)
+    if len(until.strip()) == 10:  # a date with no time: the end of that day
+        end = end.replace(hour=23, minute=59, second=59)
+    return end.timestamp()
 
 
 def fmt_time(ts: float | None) -> str | None:
@@ -150,62 +192,129 @@ def session_row(r: sqlite3.Row) -> dict:
     }
 
 
-def search(con, query: str, agent=None, project=None, since=None, limit=8) -> list[dict]:
-    """Rank chats by fusing message-level and title-level full-text matches."""
-    fsql, fargs = _filters(agent, project, since)
-    scores: dict[str, float] = {}
-    hits: dict[str, dict] = {}
-    for weight, mode in ((1.0, "and"), (0.5, "or")):
-        q = fts_query(query, mode)
-        if not q:
-            return []
-        rows = con.execute(
-            f"""select m.session_id sid, m.seq seq,
-                       snippet(messages_fts, 0, '«', '»', '…', 24) snip
-                from messages_fts join messages m on m.id = messages_fts.rowid
-                join sessions s on s.id = m.session_id
-                where messages_fts match ? {fsql}
-                order by bm25(messages_fts) limit 400""",
-            [q, *fargs],
-        ).fetchall()
-        rank = 0
-        for r in rows:
-            h = hits.setdefault(r["sid"], {"count": 0, "snippet": r["snip"], "seq": r["seq"], "mode": mode})
-            if h["mode"] != mode:
-                continue  # already counted by the stricter pass
-            h["count"] += 1
-            if h["count"] == 1:
-                scores[r["sid"]] = scores.get(r["sid"], 0) + weight / (20 + rank)
-                rank += 1
-        trows = con.execute(
+# Reciprocal rank fusion (Cormack et al., 2009) of up to five rankings of each chat: its best
+# message, the summed BM25 of its best few messages, the title an agent gave it, a message
+# holding every query word, and, when embeddings are on, its message closest in meaning.
+# Weights were tuned on LongMemEval and on personal search evals together; see
+# docs/research/retrieval-benchmarks.md.
+FUSION_K = 20
+WEIGHTS = {"best": 0.5, "sum": 1.0, "title": 2.0, "all": 1.0, "dense": 1.0}
+TOP_HITS = 3  # messages per chat summed, and returned as hits
+POOL = 2000  # matching messages considered per query
+
+
+def search(
+    con, query: str, agent=None, project=None, since=None, limit=8, until=None, exclude=None, vector=None
+) -> list[dict]:
+    """Rank chats for a query, each with its best few matching messages.
+
+    since / until: only chats active in that window, e.g. since="2w" or until="2026-09-30".
+    exclude: chat ids to leave out, such as ones already read.
+    vector: the query's embedding; by default recall embeds the query itself when embeddings
+    are on (see embeddings.py). False searches by keywords only.
+    """
+    q = fts_query(query, "or")
+    if not q:
+        return []
+    if vector is None:
+        from .. import embeddings
+
+        vector = embeddings.query_vector(query)
+    fsql, fargs = _filters(con, agent, project, since, until=until, exclude=exclude)
+    msql, margs = _message_window(since, until)
+    rows = con.execute(
+        f"""select m.id mid, m.session_id sid, m.seq seq, bm25(messages_fts) score
+            from messages_fts join messages m on m.id = messages_fts.rowid
+            join sessions s on s.id = m.session_id
+            where messages_fts match ? {fsql} {msql}
+            order by score limit ?""",
+        [q, *fargs, *margs, POOL],
+    ).fetchall()
+    hits: dict[str, list] = {}
+    for r in rows:  # best first, so each chat's list is in rank order
+        hits.setdefault(r["sid"], []).append(r)
+    by_best = list(hits)
+    by_sum = sorted(hits, key=lambda sid: sum(h["score"] for h in hits[sid][:TOP_HITS]))
+    # Only titles an agent wrote: an untitled chat's "title" is its opening message, which the
+    # message rankings already count, and counting it twice cost 7 points on LongMemEval.
+    by_title = [
+        r["sid"]
+        for r in con.execute(
             f"""select f.id sid from sessions_fts f join sessions s on s.id = f.id
                 where sessions_fts match ? {fsql}
-                order by bm25(sessions_fts, 0, 10.0, 2.0, 3.0) limit 100""",
+                and s.title != substr(replace(s.first_prompt, char(10), ' '), 1, 80)
+                order by bm25(sessions_fts, 0, 10.0, 2.0, 3.0) limit 200""",
             [q, *fargs],
-        ).fetchall()
-        for rank, r in enumerate(trows):
-            scores[r["sid"]] = scores.get(r["sid"], 0) + 1.5 * weight / (20 + rank)
-        if len(scores) >= limit * 2:
-            break
-    for sid, h in hits.items():
-        scores[sid] += 0.002 * min(h["count"], 20)
+        )
+    ]
+    # Chats with one message that holds every word: the strongest sign for a short query.
+    every = fts_query(query, "and")
+    by_all = []
+    if every and every != q and WEIGHTS["all"]:
+        for r in con.execute(
+            f"""select m.session_id sid from messages_fts join messages m on m.id = messages_fts.rowid
+                join sessions s on s.id = m.session_id
+                where messages_fts match ? {fsql} {msql}
+                order by bm25(messages_fts) limit ?""",
+            [every, *fargs, *margs, POOL],
+        ):
+            if r["sid"] not in by_all:
+                by_all.append(r["sid"])
+    by_dense = []
+    if vector is not None and vector is not False and WEIGHTS["dense"]:
+        from .. import embeddings
+
+        by_dense = embeddings.ranking(con, vector, fsql, fargs, msql, margs, 200)
+    scores: dict[str, float] = {}
+    rankings = (("best", by_best), ("sum", by_sum), ("title", by_title), ("all", by_all), ("dense", by_dense))
+    for name, ranking in rankings:
+        for rank, sid in enumerate(ranking):
+            scores[sid] = scores.get(sid, 0) + WEIGHTS[name] / (FUSION_K + rank + 1)
     top = sorted(scores, key=scores.get, reverse=True)[:limit]
     if not top:
         return []
-    rows = {r["id"]: r for r in con.execute(f"select * from sessions where id in ({','.join('?' * len(top))})", top)}
+    sessions = {
+        r["id"]: r for r in con.execute(f"select * from sessions where id in ({','.join('?' * len(top))})", top)
+    }
+    snippets = _snippets(con, q, [h["mid"] for sid in top for h in hits.get(sid, [])[:TOP_HITS]])
     out = []
     for sid in top:
-        d = session_row(rows[sid])
-        h = hits.get(sid)
-        d["matches"] = h["count"] if h else 0
-        d["snippet"] = h["snippet"] if h else rows[sid]["first_prompt"][:200]
-        d["match_at"] = h["seq"] if h else None
+        mine = hits.get(sid, [])
+        found = [{"seq": h["seq"], "snippet": snippets.get(h["mid"], "")} for h in mine[:TOP_HITS]]
+        d = session_row(sessions[sid])
+        d["matches"] = len(mine)
+        d["snippet"] = found[0]["snippet"] if found else sessions[sid]["first_prompt"][:200]
+        d["match_at"] = found[0]["seq"] if found else None
+        d["hits"] = found
         out.append(d)
     return out
 
 
-def recent(con, agent=None, project=None, since=None, limit=15) -> list[dict]:
-    fsql, fargs = _filters(agent, project, since)
+def _message_window(since, until) -> tuple[str, list]:
+    """Keep message hits inside a date window too, for chats that span it."""
+    sql, args = "", []
+    if ts := parse_since(since):
+        sql += " and (m.ts is null or m.ts >= ?)"
+        args.append(ts)
+    if end := parse_until(until):
+        sql += " and (m.ts is null or m.ts <= ?)"
+        args.append(end)
+    return sql, args
+
+
+def _snippets(con, q: str, ids: list[int]) -> dict[int, str]:
+    if not ids:
+        return {}
+    rows = con.execute(
+        f"""select rowid, snippet(messages_fts, 0, '«', '»', '…', 24) snip from messages_fts
+            where messages_fts match ? and rowid in ({",".join("?" * len(ids))})""",
+        [q, *ids],
+    )
+    return {r["rowid"]: r["snip"] for r in rows}
+
+
+def recent(con, agent=None, project=None, since=None, limit=15, until=None) -> list[dict]:
+    fsql, fargs = _filters(con, agent, project, since, until=until)
     rows = con.execute(
         f"select * from sessions s where n_messages > 0 {fsql} order by updated_at desc limit ?",
         [*fargs, limit],

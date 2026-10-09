@@ -7,20 +7,23 @@
       projects/<name>/<id>.md      project facts, decisions, lessons, open threads
       unfiled/<id>.md              project facts from chats outside any project folder
       archive/...                  superseded and expired notes, same layout
-      .recall/                     project registry and the deletion ledger
+      .recall/                     project registry and deletion ledger
 
 Notes are plain markdown with YAML frontmatter, so people can read and edit them,
-or open the folder as an Obsidian vault. The SQLite index is rebuilt from these
-files, so hand edits always win. The folder is a git repository and every memory
+or open the folder as an Obsidian vault. Each note ends with wikilinks to its most
+related notes, which recall rewrites on every run (see links.py). The SQLite index
+is rebuilt from these files, so hand edits always win. The folder is a git repository and every memory
 run is one commit: `git log` shows what changed and `git revert` undoes it.
 """
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -39,6 +42,7 @@ SECTIONS = {
 CONFIDENCE = {"high": 1.0, "medium": 0.7, "low": 0.4}
 GLOBAL_INDEX_LINES = 40
 PROJECT_INDEX_LINES = {"preference": 12, "fact": 30, "decision": 20, "lesson": 20, "open": 10}
+RELATED_MARK = "<!-- recall: related notes, rewritten on each run -->"
 README = (
     "# Agent memory\n\nMaintained by recall from your coding-agent chats. Start at MEMORY.md. "
     "Every note is plain markdown: edit or delete anything, and recall respects it on its next run. "
@@ -63,6 +67,8 @@ class Note:
     sources: list[str] = field(default_factory=list)  # chat ids
     supersedes: list[str] = field(default_factory=list)
     superseded_by: str | None = None
+    related: list[str] = field(default_factory=list)  # note ids, kept by links.relink
+    footer: str = field(default="", repr=False)  # the related-notes footer as last written
     path: str = ""
 
     def score(self, now: float) -> float:
@@ -91,6 +97,7 @@ class NoteStore:
         self._meta = os.path.join(root, ".recall")
         os.makedirs(self._meta, exist_ok=True)
         self.registry = _read_json(os.path.join(self._meta, "projects.json"))  # project key -> folder
+        self.titles: dict[str, str] = {}  # note id -> title, for rendering links
         if not os.path.isdir(os.path.join(root, ".git")):
             subprocess.run(["git", "init", "-q", root], check=False)
             with open(os.path.join(root, "README.md"), "w") as f:
@@ -110,6 +117,7 @@ class NoteStore:
                     note = read_note_file(os.path.join(dirpath, name))
                     if note:
                         notes[note.id] = note
+                        self.titles[note.id] = note.title
         return notes
 
     def write(self, note: Note) -> None:
@@ -118,13 +126,22 @@ class NoteStore:
         path = os.path.join(directory, f"{note.id}.md")
         if note.path and os.path.abspath(note.path) != os.path.abspath(path) and os.path.exists(note.path):
             os.remove(note.path)  # the note moved: archived, or its project folder changed
-        meta = {k: v for k, v in asdict(note).items() if k not in ("body", "path") and v not in (None, [], "")}
+        meta = {k: v for k, v in asdict(note).items() if k not in _NOT_FRONTMATTER and v not in (None, [], "")}
+        self.titles[note.id] = note.title
+        note.footer = self.footer(note)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write("---\n" + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, width=100))
-            f.write("---\n" + note.body.strip() + "\n")
+            f.write("---\n" + note.body.strip() + (f"\n\n{note.footer}" if note.footer else "") + "\n")
         os.replace(tmp, path)
         note.path = path
+
+    def footer(self, note: Note) -> str:
+        """Wikilinks to the note's related notes, titled so they read well in Obsidian."""
+        if not note.related:
+            return ""
+        links = " · ".join(f"[[{i}|{_link_text(self.titles.get(i, i))}]]" for i in note.related)
+        return f"{RELATED_MARK}\nRelated: {links}"
 
     def project_folder(self, key: str, name: str) -> str:
         if key in self.registry:
@@ -227,12 +244,35 @@ class NoteStore:
         return subprocess.run([*git, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 
 
+@contextmanager
+def writing(timeout: float = 0):
+    """Take turns changing notes: a memory run folding in new memories, and `recall memory
+    link` recomputing links. Yields False if the lock was not free within `timeout` seconds."""
+    os.makedirs(paths.HOME, exist_ok=True)
+    with open(os.path.join(paths.HOME, "notes.lock"), "w") as lock:
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.time() >= deadline:
+                    yield False
+                    return
+                time.sleep(0.1)
+        yield True
+
+
 def read_note_file(path: str) -> Note | None:
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
     except OSError:
         return None
+    return parse_note(text, path)
+
+
+def parse_note(text: str, path: str) -> Note | None:
     m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
     if not m:
         return None
@@ -240,7 +280,7 @@ def read_note_file(path: str) -> Note | None:
         meta = yaml.safe_load(m.group(1)) or {}
     except yaml.YAMLError:
         return None
-    fields = {k: v for k, v in meta.items() if k in Note.__dataclass_fields__ and k not in ("body", "path")}
+    fields = {k: v for k, v in meta.items() if k in Note.__dataclass_fields__ and k not in _NOT_FRONTMATTER}
     fields.setdefault("id", os.path.basename(path)[:-3])
     fields.setdefault("type", "fact")
     fields.setdefault("scope", "project")
@@ -248,7 +288,16 @@ def read_note_file(path: str) -> Note | None:
     for k in ("created", "updated", "last_seen"):
         if k in fields:
             fields[k] = str(fields[k])  # YAML reads bare dates as date objects
-    return Note(**fields, body=m.group(2).strip(), path=path)
+    body, mark, footer = m.group(2).partition(RELATED_MARK)
+    related = [i.strip() for i in re.findall(r"\[\[([^\]|#]+)", footer)]
+    return Note(**fields, body=body.strip(), related=related, footer=(mark + footer).strip(), path=path)
+
+
+_NOT_FRONTMATTER = ("body", "path", "related", "footer")  # the body and its link footer live below the frontmatter
+
+
+def _link_text(title: str) -> str:
+    return re.sub(r"[\[\]|#]", "", title).strip()
 
 
 def _index_line(note: Note, href: str) -> str:

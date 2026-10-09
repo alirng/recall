@@ -35,6 +35,9 @@ def disable() -> str:
             os.remove(PLIST)
     elif sys.platform.startswith("linux"):
         subprocess.run(["systemctl", "--user", "disable", "--now", "recall-dream.timer"], capture_output=True)
+        for unit in ("recall-dream.timer", "recall-dream.service"):
+            if os.path.exists(os.path.join(SYSTEMD, unit)):
+                os.remove(os.path.join(SYSTEMD, unit))
     return "nightly run removed"
 
 

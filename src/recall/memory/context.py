@@ -3,8 +3,10 @@
 import os
 import re
 
+from .. import rules
 from ..chats import store
 from ..chats.projects import resolve
+from . import links
 from .notes import Note, NoteStore
 
 MAX_CHARS = 6000  # inside Claude Code's 10k hook limit and Codex's ~2.5k-token budget
@@ -16,20 +18,27 @@ FOOTER = (
 )
 
 
-def session_context(cwd: str | None, notes: NoteStore | None = None) -> str:
-    """Working preferences plus the current project's index, sized for session start."""
+def session_context(cwd: str | None, notes: NoteStore | None = None, agent: str = "claude") -> str:
+    """Working preferences, the always-on rules this agent would otherwise miss, and the
+    current project's index, sized for session start."""
     notes = notes or NoteStore()
     parts = []
     prefs = _section(_read(os.path.join(notes.root, "MEMORY.md")), "How you work")
     if prefs and "(nothing yet)" not in prefs:
         parts.append("## How this developer works\n" + _strip_links(prefs))
-    project = resolve(cwd) if cwd else None
-    entry = notes.registry.get(project.key) if project else None
-    if entry:
-        index = _read(os.path.join(notes.root, "projects", entry["folder"], "MEMORY.md"))
-        body = index.split("\n", 3)[-1].strip()  # drop the title and header lines
-        if body:
-            parts.append(f"## Project memory: {project.name}\n" + _strip_links(body))
+    try:
+        lines = rules.pointers(cwd, agent)
+    except Exception:  # a rule file recall cannot read must not cost the session its memory
+        lines = []
+    if lines:
+        parts.append(
+            "## Rules this repo gives other agents\n"
+            "Always-on rules written for another agent, which you do not load yourself:\n" + "\n".join(lines)
+        )
+    name, indexes = project_indexes(cwd, notes)
+    bodies = [b for i in indexes if (b := _index_body(i))]
+    if bodies:
+        parts.append(f"## Project memory: {name}\n" + _strip_links("\n\n".join(bodies)))
     if not parts:
         return ""
     body = "\n\n".join(parts)
@@ -39,6 +48,25 @@ def session_context(cwd: str | None, notes: NoteStore | None = None) -> str:
     # The tag lets every chat parser strip this block, so memory never re-learns
     # itself from transcripts that recorded the injected context.
     return f"<recall-memory>\n# Memory from earlier sessions\n\n{body}\n\n{FOOTER}\n</recall-memory>\n"
+
+
+def project_indexes(cwd: str | None, notes: NoteStore) -> tuple[str | None, list[str]]:
+    """The project a folder belongs to and the MEMORY.md of each of its folder keys: one key
+    for a folder no project lists, every key a project in projects.yaml spans otherwise."""
+    from .. import projects
+
+    if not cwd:
+        return None, []
+    found = projects.for_folder(cwd)
+    if found:
+        keys = projects.note_keys(found, notes.registry)
+        name = found.name
+    else:
+        project = resolve(cwd)
+        keys = [project.key] if project and project.key in notes.registry else []
+        name = project.name if project else None
+    indexes = [_read(os.path.join(notes.root, "projects", notes.registry[k]["folder"], "MEMORY.md")) for k in keys]
+    return name, [i for i in indexes if i]
 
 
 def index_notes(con, notes: dict[str, Note]) -> None:
@@ -82,10 +110,23 @@ def search(con, query: str, project: str | None = None, limit: int = 10) -> list
     sql = "select n.* from notes_fts f join notes n on n.id = f.id where notes_fts match ?"
     args: list = [q]
     if project:
-        sql += " and (n.project_name like ? or n.project like ?)"
-        args += [f"%{project}%", f"%{project}%"]
+        from .. import projects
+
+        found = projects.find(project)
+        keys = (
+            projects.note_keys(found, {r[0] for r in con.execute("select distinct project from notes")})
+            if found
+            else []
+        )
+        if keys:
+            sql += f" and n.project in ({','.join('?' * len(keys))})"
+            args += keys
+        else:
+            sql += " and (n.project_name like ? or n.project like ?)"
+            args += [f"%{project}%", f"%{project}%"]
     sql += " order by bm25(notes_fts, 0, 5.0, 1.0, 2.0) limit ?"
-    rows = con.execute(sql, [*args, limit]).fetchall()
+    rows = con.execute(sql, [*args, limit * 3]).fetchall()
+    rows = _with_meaning(con, query, rows, project, limit)
     return [
         {
             "note_id": r["id"],
@@ -100,6 +141,35 @@ def search(con, query: str, project: str | None = None, limit: int = 10) -> list
         }
         for r in rows
     ]
+
+
+def _with_meaning(con, query: str, rows: list, project: str | None, limit: int) -> list:
+    """Fuse keyword matches with notes close in meaning when embeddings are on (RRF, k=60)."""
+    from .. import embeddings
+
+    if embeddings.configured() is None:
+        return rows[:limit]
+    notes = NoteStore().load()
+    if project:
+        keep = {
+            r["id"]
+            for r in con.execute(
+                "select id from notes where project_name like ? or project like ?", (f"%{project}%", f"%{project}%")
+            )
+        }
+        notes = {i: n for i, n in notes.items() if i in keep or i in {r["id"] for r in rows}}
+    meaning = embeddings.note_ranking(con, notes, query)[: limit * 3]
+    scores: dict[str, float] = {}
+    for ranking in ([r["id"] for r in rows], meaning):
+        for rank, i in enumerate(ranking):
+            scores[i] = scores.get(i, 0) + 1 / (60 + rank + 1)
+    top = sorted(scores, key=scores.get, reverse=True)[:limit]
+    by_id = (
+        {r["id"]: r for r in con.execute(f"select * from notes where id in ({','.join('?' * len(top))})", top)}
+        if top
+        else {}
+    )
+    return [by_id[i] for i in top if i in by_id]
 
 
 def read_note(note_id: str) -> dict | None:
@@ -121,6 +191,10 @@ def read_note(note_id: str) -> dict | None:
         "source_chats": n.sources,
         "supersedes": n.supersedes,
         "superseded_by": n.superseded_by,
+        "related": [
+            {"note_id": r["note_id"], "title": notes[r["note_id"]].title, "reason": r["reason"]}
+            for r in links.neighbours(n, notes)
+        ],
         "path": n.path,
     }
 
@@ -131,6 +205,14 @@ def _read(path: str) -> str:
             return f.read()
     except OSError:
         return ""
+
+
+def _index_body(index: str) -> str:
+    """A project's MEMORY.md without its title, repo line and maintenance note."""
+    lines = index.split("\n")
+    while lines and (not lines[0].strip() or lines[0].startswith(("# ", "Repo: ", "_Maintained by recall"))):
+        lines.pop(0)
+    return "\n".join(lines).strip()
 
 
 def _section(markdown: str, heading: str) -> str:

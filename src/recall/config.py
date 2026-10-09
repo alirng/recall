@@ -10,7 +10,9 @@ from . import paths
 DEFAULTS = {
     "sources": [],  # agents to import from; empty means every agent found
     "model": {},  # provider, name, and for some providers base_url / api_key / effort
+    "embeddings": {},  # optional semantic search: provider, name, base_url; see embeddings.py
     "dream": {"max_minutes": 120, "max_calls": 80},
+    "usage_log": True,  # recall logs its own use to usage.jsonl; see usage.py
 }
 
 

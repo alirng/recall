@@ -141,25 +141,27 @@ def legacy_items():
     if con is None:
         return
     have_transcript = {os.path.basename(p)[:-6] for p in _transcript_paths()}
-    rows = con.execute("select key, value from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'")
-    for key, value in rows:
+    # SQLite reads the few fields a fingerprint needs, so an unchanged chat never becomes
+    # Python objects. Parsing every header in Python took seconds and over 100 MB.
+    rows = con.execute(
+        "select key, coalesce(nullif(json_extract(value, '$.lastUpdatedAt'), 0),"
+        " nullif(json_extract(value, '$.createdAt'), 0), length(value))"
+        " from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'"
+        " and case when json_valid(value) then json_type(value) = 'object'"
+        " and (json_array_length(value, '$.conversation') > 0"
+        " or json_array_length(value, '$.fullConversationHeadersOnly') > 0) end"
+    )
+    for key, fp in rows:
         cid = key.split(":", 1)[1]
-        if cid in have_transcript or not value:
-            continue
-        try:
-            header = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(header, dict):
-            continue
-        has_turns = header.get("conversation") or header.get("fullConversationHeadersOnly")
-        if not has_turns:
-            continue
-        fp = str(header.get("lastUpdatedAt") or header.get("createdAt") or len(value))
-        yield Item(f"{STATE_DB}#{key}", fp, lambda c=cid, h=header: load_legacy(c, h))
+        if cid not in have_transcript:
+            yield Item(f"{STATE_DB}#{key}", str(fp), lambda c=cid: load_legacy(c))
 
 
-def load_legacy(cid: str, header: dict) -> Session | None:
+def load_legacy(cid: str) -> Session | None:
+    row = _db().execute("select value from cursorDiskKV where key = ?", (f"composerData:{cid}",)).fetchone()
+    header = json.loads(row[0]) if row and row[0] else None
+    if not isinstance(header, dict):
+        return None
     s = Session("cursor", cid, f"{STATE_DB}#composerData:{cid}")
     s.title = header.get("name")
     s.project = _workspace_folders().get(cid)

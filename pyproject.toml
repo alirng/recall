@@ -27,6 +27,7 @@ Changelog = "https://github.com/alirng/recall/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1"]
+embeddings = ["numpy>=2"]
 
 [project.scripts]
 recall = "recall.cli:main"

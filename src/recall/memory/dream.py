@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from .. import config, paths
 from ..chats import indexer, store
 from ..llm import BudgetExceeded, Client, FatalError, LLMError, from_spec
-from . import consolidate, context, extract, routing
-from .notes import NoteStore, today
+from . import consolidate, context, extract, links, routing
+from .notes import NoteStore, today, writing
 
 MIN_MESSAGES = 2
 READING_SHARE = 0.8  # of a time budget; the rest is kept for consolidation
@@ -137,6 +137,8 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
     stop_reason = None
     try:
         for done, future in enumerate(as_completed(futures), 1):
+            if future.cancelled():  # dropped once a budget ran out; its chats carry over
+                continue
             try:
                 for unit, candidates in future.result():
                     complete = collector.add(unit, candidates)
@@ -166,6 +168,11 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
 
 
 def _fold(con, client: Client, log) -> Counter:
+    with writing(timeout=60):  # a relink in progress finishes first; if one hangs, carry on
+        return _fold_notes(con, client, log)
+
+
+def _fold_notes(con, client: Client, log) -> Counter:
     notes_store = NoteStore()
     notes = notes_store.load()
     deleted = notes_store.reconcile(notes)
@@ -181,6 +188,9 @@ def _fold(con, client: Client, log) -> Counter:
     except (BudgetExceeded, LLMError) as e:
         log(f"consolidation stopped early ({e}); the next run continues from here")
     changes = {k: v for k, v in stats.items() if v and k != "batches"}
+    relinked = links.relink(notes_store, notes)
+    if relinked:
+        changes["relinked"] = relinked
     summary = ", ".join(f"{v} {k}" for k, v in changes.items())
     if changes or deleted:
         notes_store.compile(notes)

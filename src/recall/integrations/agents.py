@@ -1,5 +1,5 @@
 """Connect recall to coding agents: its MCP server, the /recall skill, and the
-session-start hook that loads memory.
+session-start hooks that load memory in Claude Code and Codex.
 
 Every config file is backed up beside itself (<file>.recall-backup) before it
 changes, and `recall uninstall` reverses each step.
@@ -20,6 +20,7 @@ SHARED_SKILLS = os.path.expanduser("~/.agents/skills")  # one copy, linked into 
 SKILL_DIRS = {"Claude Code": "~/.claude/skills", "Codex": "~/.codex/skills", "Cursor": "~/.cursor/skills"}
 CLAUDE_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 CODEX_CONFIG = os.path.expanduser("~/.codex/config.toml")
+CODEX_HOOKS = os.path.expanduser("~/.codex/hooks.json")
 CURSOR_MCP = os.path.expanduser("~/.cursor/mcp.json")
 _CODEX_BLOCK = re.compile(rf"\n?\[mcp_servers\.{NAME}\]\n(?:(?!\[).*\n?)*")
 
@@ -37,6 +38,7 @@ def install(components=COMPONENTS, dry_run: bool = False) -> list[str]:
         report += _skill(dry_run)
     if "hook" in components:
         report.append(f"Claude Code  {_hook_claude(cmd, dry_run)}")
+        report.append(f"Codex        {_hook_codex(cmd, dry_run)}")
     return report
 
 
@@ -52,6 +54,7 @@ def uninstall(components=COMPONENTS) -> list[str]:
         report += _skill(remove=True)
     if "hook" in components:
         report.append(f"Claude Code  {_hook_claude('', remove=True)}")
+        report.append(f"Codex        {_hook_codex('', remove=True)}")
     return report
 
 
@@ -61,7 +64,7 @@ def uninstall(components=COMPONENTS) -> list[str]:
 def _mcp_claude(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
     if not shutil.which("claude"):
         return "Claude Code not found, skipped"
-    registered = subprocess.run(["claude", "mcp", "get", NAME], capture_output=True).returncode == 0
+    registered = _claude_registered()
     if remove:
         if registered and not dry_run:
             subprocess.run(["claude", "mcp", "remove", NAME, "-s", "user"], check=True, capture_output=True)
@@ -153,7 +156,7 @@ def _hook_claude(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
     except json.JSONDecodeError:
         return f"{CLAUDE_SETTINGS} is not valid JSON, skipped"
     groups = settings.setdefault("hooks", {}).setdefault("SessionStart", [])
-    ours = [g for g in groups if any(_is_ours(h) for h in g.get("hooks", []))]
+    ours = _our_hooks(settings)
     if remove:
         if ours and not dry_run:
             settings["hooks"]["SessionStart"] = [g for g in groups if g not in ours]
@@ -167,6 +170,49 @@ def _hook_claude(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
         groups.append({"hooks": [{"type": "command", "command": f"{cmd} context --hook", "timeout": 10}]})
         _write(CLAUDE_SETTINGS, json.dumps(settings, indent=2))
     return f"session-start hook added to {CLAUDE_SETTINGS}"
+
+
+def _hook_codex(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
+    """Codex runs SessionStart hooks from ~/.codex/hooks.json and adds their output to the
+    session as developer context, once you have trusted the hook in Codex's /hooks."""
+    if not os.path.isdir(os.path.dirname(CODEX_HOOKS)):
+        return "Codex not found, skipped"
+    try:
+        config = json.loads(_read(CODEX_HOOKS) or "{}")
+    except json.JSONDecodeError:
+        return f"{CODEX_HOOKS} is not valid JSON, skipped"
+    groups = config.setdefault("hooks", {}).setdefault("SessionStart", [])
+    ours = _our_hooks(config)
+    if remove:
+        if ours and not dry_run:
+            config["hooks"]["SessionStart"] = [g for g in groups if g not in ours]
+            if not config["hooks"]["SessionStart"]:
+                del config["hooks"]["SessionStart"]
+            _write(CODEX_HOOKS, json.dumps(config, indent=2))
+        return "session-start hook removed" if ours else "no session-start hook installed"
+    if ours:
+        return "session-start hook already installed"
+    if not dry_run:
+        hook = {
+            "type": "command",
+            "command": f"{cmd} context --hook --agent codex",
+            "timeout": 10,
+            "statusMessage": "Loading memory from recall",
+        }
+        groups.append({"hooks": [hook]})
+        _write(CODEX_HOOKS, json.dumps(config, indent=2))
+    return f"session-start hook added to {CODEX_HOOKS}; trust it once with /hooks in Codex"
+
+
+def _our_hooks(settings: dict | None = None) -> list[dict]:
+    if settings is None:
+        settings = _json(CLAUDE_SETTINGS)
+    groups = settings.get("hooks", {}).get("SessionStart", [])
+    return [g for g in groups if any(_is_ours(h) for h in g.get("hooks", []))]
+
+
+def _claude_registered() -> bool:
+    return subprocess.run(["claude", "mcp", "get", NAME], capture_output=True).returncode == 0
 
 
 def _is_ours(hook: dict) -> bool:
@@ -183,6 +229,13 @@ def _read(path: str) -> str:
             return f.read()
     except OSError:
         return ""
+
+
+def _json(path: str) -> dict:
+    try:
+        return json.loads(_read(path) or "{}")
+    except json.JSONDecodeError:
+        return {}
 
 
 def _write(path: str, text: str) -> None:

@@ -39,7 +39,10 @@ helped. The checks are:
 - **Evals.** `recall eval search` checks that the right chat comes back for a question.
   `recall eval memory --fresh` checks which memories the model extracts from a set of chats.
   Both compare against expectations written by hand. Search also samples known-item queries
-  from your own history.
+  from your own history. `recall eval longmemeval --cases longmemeval_s_cleaned.json` runs
+  the public LongMemEval benchmark's session retrieval (download the file from
+  huggingface.co/datasets/xiaowu0162/longmemeval-cleaned). A search change should hold up on
+  both: LongMemEval has real labels but synthetic chats, your own history is the reverse.
 - **End to end.** Run the CLI, the MCP server (`recall serve`) and the session-start hook
   (`recall context` prints what the hook loads) against real history.
 
@@ -49,6 +52,7 @@ the averages before and after your change:
 
 ```bash
 uv run recall eval search
+uv run recall eval longmemeval --cases ~/Downloads/longmemeval_s_cleaned.json
 uv run recall eval memory --model claude:haiku --fresh
 ```
 
