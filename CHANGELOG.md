@@ -5,6 +5,8 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-09
+
 ### Added
 
 - INSTALL.md: install instructions written for a coding agent, so "install recall for me:
