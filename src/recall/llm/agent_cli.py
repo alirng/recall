@@ -164,18 +164,13 @@ class Claude(Provider):
         # Extended thinking adds 3-5x the output tokens to extraction and no quality.
         env = {**plan_env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"), "MAX_THINKING_TOKENS": "0"}
         start = time.time()
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=600,
-                cwd=tempfile.gettempdir(),
-                env=env,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise LLMError("claude timed out") from e
+        # An empty folder: Claude Code indexes its working folder at startup, and the shared
+        # temp folder can hold thousands of files, which costs seconds of CPU on every call.
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=tmp, env=env)
+            except subprocess.TimeoutExpired as e:
+                raise LLMError("claude timed out") from e
         try:
             out = json.loads(proc.stdout)
         except json.JSONDecodeError as e:

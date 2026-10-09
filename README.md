@@ -39,26 +39,51 @@ LoCoMo, with each benchmark's own metrics and prompts. Every number here is repr
 - **Finds a conversation that answers the question 98.7% of the time, and every one that does
   90.6% of the time** (top five, LongMemEval_S, 470 questions): the highest session-retrieval
   scores published for the benchmark.
-- **87% of answers correct with Claude Haiku 5.5**, a small and inexpensive model (a
-  stratified 200-question sample); with exactly the right sessions in hand, the same model
-  scores 91%.
+- **87.4% of answers correct with Claude Haiku 5.5** across all 500 questions, a small and
+  inexpensive model; handed exactly the right sessions, the same model scores 92.0%.
+- **Haiku 5.5 with recall beats Sonnet 5.5 with recall at a quarter of the cost**: reading
+  recall's top 20 chats, Haiku answers 90.5% for $0.009 a question, against 89.0% for $0.037
+  from Sonnet reading matched excerpts.
 - **No model calls to index or to search.** Memory services run an LLM over every message
   they store. recall indexes on your machine (SQLite, plus an optional local embedding model)
   and searches in 6–20 ms.
 
-<p align="center"><img src="docs/benchmarks/accuracy.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 87.0%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory 62.6%" width="760"></p>
+<p align="center"><img src="docs/benchmarks/accuracy.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 87.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></p>
 
-| LongMemEval_S, end to end | Accuracy | Answer model / judge | History read per question | LLM calls to store a message |
+| LongMemEval_S, end to end | Accuracy | Answer model / judge | Read per question | LLM calls to store a message |
 | --- | --- | --- | --- | --- |
 | Mastra | 94.9% | gpt-5-mini | ~30k tokens | observer and reflector |
 | Mem0 (platform) | 94.4% | GPT-5 / GPT-5 | ~7k tokens | 1 |
 | Hindsight | 91.4% | Gemini-3 Pro / GPT-OSS-120B | token budget | 1+ |
 | Honcho | 90.4% | Claude Haiku 4.5 / GPT-4o | ~5% of history | 1+ |
-| **recall** | **87.0%** | **Claude Haiku 5.5 / Claude Haiku 5.5** | **~32k tokens** | **0** |
+| **recall** | **87.4%** | **Claude Haiku 5.5 / Claude Haiku 5.5** | **~44k tokens** | **0** |
 | Supermemory | 85.2% | Gemini-3 / GPT-4o | not reported | 1+ |
 | EverMemOS | 83.0% | GPT-4.1-mini | ~6.7k tokens | 1+ |
 | Zep | 71.2% | GPT-4o / GPT-4o | ~1.6k tokens | several |
 | Full history, no memory | 62.6% | Claude Haiku 4.5 / GPT-4o | ~115k tokens | 0 |
+
+<p align="center"><img src="docs/benchmarks/cost.svg" alt="Line chart of LongMemEval_S accuracy against cost per question on a log scale. recall with Haiku 5.5: matched windows 83.0% at $0.0022, top 5 chats 87.5% at $0.0028, top 10 87.0% at $0.0049, top 20 90.5% at $0.0088. recall with Sonnet 5.5, matched windows: 89.0% at $0.037. References: Haiku 5.5 with only the answer sessions 91.0% at $0.0015; full history with Sonnet 5, 87.2% at $0.37; ICM folders with Sonnet 5, 74.4% at $0.018" width="760"></p>
+
+| How much recall hands the model (200-question sample) | Haiku 5.5 | Cost a question | Sonnet 5.5 | Cost a question |
+| --- | --- | --- | --- | --- |
+| Matched excerpts from the top 5 chats | 83.0% | $0.0022 | 89.0% | $0.037 |
+| Top 5 chats in full | 87.5% | $0.0028 | | |
+| Top 10 chats in full | 87.0% | $0.0049 | | |
+| Top 20 chats in full | 90.5% | $0.0088 | | |
+| Only the sessions holding the answer (ceiling) | 91.0% | $0.0015 | | |
+
+<p align="center"><img src="docs/benchmarks/by-type.svg" alt="Grouped bar chart of LongMemEval_S accuracy by question type for recall's matched windows, recall's top 10 chats, and the answer sessions only" width="760"></p>
+
+| By question type (all 500, Haiku 5.5) | Matched windows | Top 10 chats | Answer sessions only |
+| --- | --- | --- | --- |
+| Single session, user | 90.6% | 93.8% | 95.3% |
+| Single session, assistant | 96.4% | 98.2% | 98.2% |
+| Preference | 66.7% | 60.0% | 73.3% |
+| Multi-session | 67.8% | 80.2% | 87.6% |
+| Knowledge update | 91.7% | 95.8% | 95.8% |
+| Temporal | 83.5% | 90.6% | 97.6% |
+| Abstention | 86.7% | 76.7% | 76.7% |
+| **All** | **82.4%** | **87.4%** | **92.0%** |
 
 <p align="center"><img src="docs/benchmarks/retrieval.svg" alt="Bar chart of LongMemEval_S session retrieval, every answer session in the top five with user turns indexed: recall with embeddings 88.3%, recall keywords only 82.8%, engram dense 81.3%, engram hybrid 80.2%, engram BM25 67.3%, the benchmark's reference BM25 51.3%" width="760"></p>
 
@@ -76,11 +101,12 @@ LoCoMo, with each benchmark's own metrics and prompts. Every number here is repr
 
 **How to read these numbers.** The other systems' figures are their own, measured with
 their own answer models and judges; a one-harness rerun of several memory products moved
-their scores by +3 to −28 points. recall's run uses Claude Haiku 5.5 to answer and to judge,
-with the benchmark's prompts. Retrieval is where recall leads; end to end it reads more than
-the leaders do (about 32k tokens of whole chats a question, against Mem0's ~7k of distilled
-facts), and closing that gap is the next piece of work. Method, sources and confidence
-intervals: [docs/research/retrieval-benchmarks.md](docs/research/retrieval-benchmarks.md).
+their scores by +3 to −28 points. recall's runs use Claude Haiku 5.5 as the judge, with the
+benchmark's prompts. Retrieval is where recall leads. End to end it hands the model more than
+the leaders do (about 44k tokens of whole chats a question, against Mem0's ~7k of distilled
+facts), and closing that gap is the next piece of work. Costs are list prices for answering.
+Method, sources and confidence intervals:
+[docs/research/retrieval-benchmarks.md](docs/research/retrieval-benchmarks.md).
 
 ## Contents
 
@@ -91,14 +117,24 @@ intervals: [docs/research/retrieval-benchmarks.md](docs/research/retrieval-bench
 
 ## Install
 
-Requirements: macOS or Linux, Python 3.11+, and at least one of Claude Code, Codex or Cursor.
+**Let your agent do it.** Paste this into Claude Code, Codex or Cursor:
 
-```bash
-uv tool install git+https://github.com/alirng/recall
-# or: pipx install git+https://github.com/alirng/recall
+```text
+Install recall for me: follow https://raw.githubusercontent.com/alirng/recall/main/INSTALL.md
 ```
 
-A PyPI release (`recall-agents`) is coming; the command is `recall` either way.
+The agent checks what you have, asks which model should write your memories (the one choice
+that decides where chat text goes), installs, sets up, and checks it worked.
+
+**Or by hand.** Requirements: macOS or Linux, Python 3.11+, and at least one of Claude Code,
+Codex or Cursor.
+
+```bash
+uv tool install 'recall-agents[embeddings]'     # or: pipx install 'recall-agents[embeddings]'
+```
+
+The `embeddings` extra is only needed for [semantic search](#semantic-search-optional); the
+command is `recall` either way.
 
 ## Quick start
 
@@ -112,13 +148,15 @@ Setup asks a few questions and does the rest:
 1. Agents      finds Claude Code, Codex and Cursor; import from all of them or some
 2. Model       picks who writes your memories, then tests it with a live call
 3. Index       reads your chat history into a local search index
-4. Connect     adds the MCP tools, the /recall skill and a Claude Code session hook
+4. Connect     adds the MCP tools, the /recall skill and session-start hooks (Claude Code, Codex)
 5. Schedule    updates memory nightly (launchd on macOS, systemd on Linux)
 6. First run   starts in the background, newest chats first
 ```
 
-Then ask any agent about an earlier conversation, or just start working: Claude Code opens
-each session with your preferences and the current project's notes already loaded.
+`recall setup --yes --model claude:haiku --embeddings nomic-embed-text` answers every question
+up front, which is how an agent runs it. Then ask any agent about an earlier conversation, or
+just start working: Claude Code and Codex open each session with your preferences and the
+current project's notes already loaded.
 
 ## Choosing a model
 
@@ -323,7 +361,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 
 | Command | Does |
 | --- | --- |
-| `recall setup` | the guided first run |
+| `recall setup [--yes] [--model SPEC] [--embeddings NAME]` | the guided first run; the flags answer its questions up front |
 | `recall model [--show]` | choose, or show, the model that writes memories |
 | `recall search <words>` · `show <id>` · `recent` | chat history |
 | `recall embed` | embed messages for semantic search (needs `[embeddings]` in config.toml) |

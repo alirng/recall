@@ -46,7 +46,7 @@
     "title": "LongMemEval_S: answers judged correct",
     "subtitle": "End to end: retrieve, then answer. Vendor figures are self-reported, with their own answer models and judges.",
     "ceiling": {
-      "value": 91.0,
+      "value": 92.0,
       "label": "Haiku 5.5 given only the answer sessions"
     },
     "rows": [
@@ -76,7 +76,7 @@
       },
       {
         "name": "recall",
-        "value": 87.0,
+        "value": 87.4,
         "ours": true,
         "note": "Claude Haiku 5.5"
       },
@@ -114,18 +114,18 @@
   },
   "tokens_vs_accuracy": {
     "title": "Accuracy against context read per question",
-    "subtitle": "LongMemEval_S. Tokens the answer model reads for one question (log scale).",
+    "subtitle": "LongMemEval_S. Tokens the answer model reads for one question (log scale); recall's are measured prompt tokens.",
     "points": [
       {
         "name": "recall, top 10 chats",
-        "tokens": 31600,
-        "value": 87.0,
+        "tokens": 44100,
+        "value": 87.4,
         "ours": true
       },
       {
         "name": "recall, matched windows",
-        "tokens": 11800,
-        "value": 83.0,
+        "tokens": 17300,
+        "value": 82.4,
         "ours": true
       },
       {
@@ -169,6 +169,134 @@
         "value": 62.6,
         "anchor": "end",
         "label_dx": -10
+      }
+    ]
+  },
+  "cost_curve": {
+    "title": "LongMemEval_S: accuracy against cost",
+    "subtitle": "recall retrieves; the model answers. 200-question stratified sample, judged by Claude Haiku 5.5.",
+    "x_min": 0.001,
+    "x_max": 0.5,
+    "x_ticks": [
+      0.001,
+      0.003,
+      0.01,
+      0.03,
+      0.1,
+      0.3
+    ],
+    "y_min": 70,
+    "y_max": 95,
+    "series": [
+      {
+        "name": "recall + Haiku 5.5",
+        "points": [
+          {
+            "label": "Windows",
+            "cost": 0.00222,
+            "value": 83.0,
+            "dy": 24
+          },
+          {
+            "label": "Top 5",
+            "cost": 0.00279,
+            "value": 87.5
+          },
+          {
+            "label": "Top 10",
+            "cost": 0.00492,
+            "value": 87.0
+          },
+          {
+            "label": "Top 20",
+            "cost": 0.00883,
+            "value": 90.5
+          }
+        ]
+      },
+      {
+        "name": "recall + Sonnet 5.5",
+        "points": [
+          {
+            "label": "Windows",
+            "cost": 0.03749,
+            "value": 89.0
+          }
+        ]
+      }
+    ],
+    "references": [
+      {
+        "name": "Haiku 5.5, answer sessions only",
+        "cost": 0.0015,
+        "value": 91.0,
+        "anchor": "start",
+        "dx": 10
+      },
+      {
+        "name": "Full history, Sonnet 5 (Cost of Remembering)",
+        "cost": 0.372,
+        "value": 87.2,
+        "anchor": "end",
+        "dx": -10
+      },
+      {
+        "name": "ICM folders, Sonnet 5",
+        "cost": 0.018,
+        "value": 74.4,
+        "anchor": "start",
+        "dx": 10
+      }
+    ]
+  },
+  "by_type": {
+    "title": "LongMemEval_S by question type",
+    "subtitle": "All 500 questions; Claude Haiku 5.5 answers and judges.",
+    "categories": [
+      "Single session,\nuser",
+      "Single session,\nassistant",
+      "Preference",
+      "Multi-session",
+      "Knowledge\nupdate",
+      "Temporal",
+      "Abstention"
+    ],
+    "series": [
+      {
+        "name": "recall, matched windows",
+        "values": [
+          90.6,
+          96.4,
+          66.7,
+          67.8,
+          91.7,
+          83.5,
+          86.7
+        ]
+      },
+      {
+        "name": "recall, top 10 chats",
+        "values": [
+          93.8,
+          98.2,
+          60.0,
+          80.2,
+          95.8,
+          90.6,
+          76.7
+        ]
+      },
+      {
+        "name": "Answer sessions only",
+        "values": [
+          95.3,
+          98.2,
+          73.3,
+          87.6,
+          95.8,
+          97.6,
+          76.7
+        ]
       }
     ]
   }

@@ -12,6 +12,11 @@
   .ceiling { stroke: #52514e; }
   .ring { stroke: #fcfcfb; }
   .halo { stroke: #fcfcfb; stroke-width: 4px; paint-order: stroke; stroke-linejoin: round; }
+  .s1 { fill: #2a78d6; stroke: #2a78d6; }
+  .s2 { fill: #eb6834; stroke: #eb6834; }
+  .s3 { fill: #1baf7a; stroke: #1baf7a; }
+  .ref { fill: #898781; stroke: #898781; }
+  .frame { fill: none; stroke: #c3c2b7; }
   @media (prefers-color-scheme: dark) {
     .surface { fill: #1a1a19; }
     .ink { fill: #ffffff; }
@@ -23,6 +28,10 @@
     .ceiling { stroke: #c3c2b7; }
     .ring { stroke: #1a1a19; }
     .halo { stroke: #1a1a19; }
+    .s1 { fill: #3987e5; stroke: #3987e5; }
+    .s2 { fill: #d95926; stroke: #d95926; }
+    .s3 { fill: #199e70; stroke: #199e70; }
+    .frame { stroke: #383835; }
   }
   text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 </style>
@@ -41,8 +50,8 @@
 <text class="muted" x="468.7" y="412" font-size="11" text-anchor="middle">80%</text>
 <line class="grid" x1="538.0" y1="78" x2="538.0" y2="396" stroke-width="1"/>
 <text class="muted" x="538.0" y="412" font-size="11" text-anchor="middle">100%</text>
-<line class="ceiling" x1="506.8" y1="74" x2="506.8" y2="396" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text class="ink2 halo" x="500.8" y="70" font-size="11" text-anchor="end">Haiku 5.5 given only the answer sessions: 91%</text>
+<line class="ceiling" x1="510.3" y1="74" x2="510.3" y2="396" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text class="ink2 halo" x="504.3" y="70" font-size="11" text-anchor="end">Haiku 5.5 given only the answer sessions: 92%</text>
 <text class="ink" x="181.4" y="97.5" font-size="13" text-anchor="end">Mastra</text>
 <path class="other" d="M191.4,84.0 H516.3 Q520.3,84.0 520.3,88.0 V98.0 Q520.3,102.0 516.3,102.0 H191.4 Z"><title>Mastra: 94.9%</title></path>
 <text class="ink halo" x="528.3" y="97.5" font-size="12.5">94.9%</text>
@@ -60,8 +69,8 @@
 <text class="ink halo" x="512.7" y="187.5" font-size="12.5">90.4%</text>
 <text class="muted" x="594.0" y="187.5" font-size="11.5">Claude Haiku 4.5</text>
 <text class="ink" x="181.4" y="217.5" font-size="13" text-anchor="end" font-weight="600">recall</text>
-<path class="ours" d="M191.4,204.0 H488.9 Q492.9,204.0 492.9,208.0 V218.0 Q492.9,222.0 488.9,222.0 H191.4 Z"><title>recall: 87.0%</title></path>
-<text class="ink halo" x="500.9" y="217.5" font-size="12.5" font-weight="600">87.0%</text>
+<path class="ours" d="M191.4,204.0 H490.3 Q494.3,204.0 494.3,208.0 V218.0 Q494.3,222.0 490.3,222.0 H191.4 Z"><title>recall: 87.4%</title></path>
+<text class="ink halo" x="502.3" y="217.5" font-size="12.5" font-weight="600">87.4%</text>
 <text class="muted" x="594.0" y="217.5" font-size="11.5">Claude Haiku 5.5</text>
 <text class="ink" x="181.4" y="247.5" font-size="13" text-anchor="end">Supermemory</text>
 <path class="other" d="M191.4,234.0 H482.7 Q486.7,234.0 486.7,238.0 V248.0 Q486.7,252.0 482.7,252.0 H191.4 Z"><title>Supermemory: 85.2%</title></path>

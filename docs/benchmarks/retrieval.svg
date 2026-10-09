@@ -12,6 +12,11 @@
   .ceiling { stroke: #52514e; }
   .ring { stroke: #fcfcfb; }
   .halo { stroke: #fcfcfb; stroke-width: 4px; paint-order: stroke; stroke-linejoin: round; }
+  .s1 { fill: #2a78d6; stroke: #2a78d6; }
+  .s2 { fill: #eb6834; stroke: #eb6834; }
+  .s3 { fill: #1baf7a; stroke: #1baf7a; }
+  .ref { fill: #898781; stroke: #898781; }
+  .frame { fill: none; stroke: #c3c2b7; }
   @media (prefers-color-scheme: dark) {
     .surface { fill: #1a1a19; }
     .ink { fill: #ffffff; }
@@ -23,6 +28,10 @@
     .ceiling { stroke: #c3c2b7; }
     .ring { stroke: #1a1a19; }
     .halo { stroke: #1a1a19; }
+    .s1 { fill: #3987e5; stroke: #3987e5; }
+    .s2 { fill: #d95926; stroke: #d95926; }
+    .s3 { fill: #199e70; stroke: #199e70; }
+    .frame { stroke: #383835; }
   }
   text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 </style>

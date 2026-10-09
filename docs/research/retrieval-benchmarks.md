@@ -197,25 +197,37 @@ accuracy, so they appear in 5.2.
 
 Claude Haiku 5.5 (`claude-haiku-5-5`) answers with the benchmark's step-by-step reading
 prompt and judges with the benchmark's per-type judge prompts; every call stays under 100k
-tokens. The sample is 200 of the 500 LongMemEval_S questions, stratified by type and
-including 12 abstention questions, so each accuracy carries a 95% interval of about ±5 points.
-Costs are API-equivalent at Haiku 5.5's list price ($0.10 per million input tokens and $0.50
-per million output tokens below 100k), answer and judge together; the run itself went through
-a Claude subscription.
+tokens. Costs are list prices for answering ($0.10 per million input tokens and $0.50 per
+million output below 100k for Haiku 5.5; $2 and $10 for Sonnet 5.5), from measured token
+counts; the runs themselves went through a Claude subscription.
 
-| What the model reads | Accuracy | History tokens a question | Answer latency (median) | Cost a question |
+All 500 questions (including the 30 abstention questions), Haiku 5.5:
+
+| What the model reads | Accuracy | Prompt tokens a question | Answer latency (median) |
+| --- | --- | --- | --- |
+| recall: matched windows of the top 5 chats | 0.824 | ~17,300 | 7.1 s |
+| recall: the top 10 chats in full | **0.874** | ~44,100 | 7.3 s |
+| Oracle: only the sessions holding the answer | 0.920 | ~10,600 | 7.1 s |
+
+Accuracy against cost, on the 200-question stratified sample (each accuracy ±~5 points),
+judged by Haiku 5.5 throughout so that only the answering model changes:
+
+| What recall hands the model | Haiku 5.5 | Cost a question | Sonnet 5.5 | Cost a question |
 | --- | --- | --- | --- | --- |
-| recall: matched windows of the top 5 chats | 0.830 | ~11,800 | 7.1 s | $0.0025 |
-| recall: the top 10 chats in full | **0.870** | ~31,600 | 7.3 s | $0.0052 |
-| Oracle: only the sessions holding the answer | 0.910 | ~6,700 | 7.1 s | $0.0018 |
+| Matched windows of the top 5 chats | 0.830 | $0.0022 | 0.890 | $0.037 |
+| Top 5 chats in full | 0.875 | $0.0028 | | |
+| Top 10 chats in full | 0.870 | $0.0049 | | |
+| Top 20 chats in full | 0.905 | $0.0088 | | |
+| Oracle | 0.910 | $0.0015 | | |
 
-With the top 10 chats, Haiku 5.5 reaches 96% of its own oracle score, and every answer session
-was in what it read; with windows, 33 of the 34 misses still had the answer in front of the
-model. The remaining errors are reading and reasoning, which matches the LongMemEval paper's
-finding that 40-50% of errors happen with the right sessions retrieved [lme-paper]. Longer
-context helped multi-session (0.69 → 0.79) and temporal questions (0.86 → 0.94) but hurt
-abstention (0.92 → 0.67): with more to read, the model more often answers a question it should
-decline.
+With the top 20 chats, Haiku 5.5 comes within half a point of its own oracle and beats Sonnet
+5.5 reading windows at a quarter of the cost. A Sonnet 5.5 run over the top 10 chats was
+stopped for time. With the top 10 chats every answer session was in what the model read; with
+windows, nearly all misses still had the answer in front of the model. The remaining errors are
+reading and reasoning, which matches the LongMemEval paper's finding that 40-50% of errors happen
+with the right sessions retrieved [lme-paper]. Longer context helped multi-session (0.68 →
+0.80) and temporal questions (0.84 → 0.91) and hurt abstention (0.87 → 0.77): with more to read,
+the model more often answers a question it should decline.
 
 **Against the published end-to-end numbers on LongMemEval_S** (vendor-reported unless noted;
 different answer models and judges, so these are context, not a ranking):
@@ -226,7 +238,7 @@ different answer models and judges, so these are context, not a ranking):
 | Mastra observational memory | 94.9 | gpt-5-mini | ~30,000 | observer and reflector |
 | Hindsight | 91.4 | Gemini-3 Pro / GPT-OSS-120B | token budget | extraction per message |
 | Honcho | 90.4 | Haiku 4.5 / GPT-4o | median ~5% of history | deriver per message batch |
-| **recall (this run)** | **87.0** | **Haiku 5.5 / Haiku 5.5** | **~31,600** | **none** |
+| **recall (this run)** | **87.4** | **Haiku 5.5 / Haiku 5.5** | **~44,100** | **none** |
 | Supermemory | 81.6-85.2 | GPT-4o to Gemini-3 / GPT-4o | not reported | extraction |
 | EverMemOS | 83.0 | GPT-4.1-mini | ~6,700 | extraction, plus a verifier at query time |
 | ICM folders, "Cost of Remembering" (n=39) | 74.4 | Sonnet 5 | 5,314 | none |
@@ -243,8 +255,8 @@ the published retrieval-only projects; the end-to-end number sits a few points u
 leaders, of which a part is the judge and sample and a part is reading, not finding. recall
 spends no model calls at ingest (the others extract facts from every message with an LLM) and
 none at query time; the calling agent is the reader. The cost of that is context: an agent
-reading recall's top 10 chats reads ~30k tokens where Mem0's reader gets ~7k of distilled facts.
-Reading matched windows instead cuts that to ~12k for 4 points of accuracy.
+reading recall's top 10 chats reads ~44k tokens where Mem0's reader gets ~7k of distilled facts.
+Reading matched windows instead cuts that to ~17k for 5 points of accuracy.
 
 ### 5.3 Which embedding model
 

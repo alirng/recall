@@ -27,6 +27,11 @@ STYLE = """
   .ceiling { stroke: #52514e; }
   .ring { stroke: #fcfcfb; }
   .halo { stroke: #fcfcfb; stroke-width: 4px; paint-order: stroke; stroke-linejoin: round; }
+  .s1 { fill: #2a78d6; stroke: #2a78d6; }
+  .s2 { fill: #eb6834; stroke: #eb6834; }
+  .s3 { fill: #1baf7a; stroke: #1baf7a; }
+  .ref { fill: #898781; stroke: #898781; }
+  .frame { fill: none; stroke: #c3c2b7; }
   @media (prefers-color-scheme: dark) {
     .surface { fill: #1a1a19; }
     .ink { fill: #ffffff; }
@@ -38,6 +43,10 @@ STYLE = """
     .ceiling { stroke: #c3c2b7; }
     .ring { stroke: #1a1a19; }
     .halo { stroke: #1a1a19; }
+    .s1 { fill: #3987e5; stroke: #3987e5; }
+    .s2 { fill: #d95926; stroke: #d95926; }
+    .s3 { fill: #199e70; stroke: #199e70; }
+    .frame { stroke: #383835; }
   }
   text { font-family: %s; }
 </style>""" % FONT
@@ -160,12 +169,125 @@ def scatter(spec: dict, path: str, width: int = 760, height: int = 440) -> None:
         f.write("\n".join(out) + "\n")
 
 
+def cost_curve(spec: dict, path: str, width: int = 760, height: int = 480) -> None:
+    """Accuracy against cost per question, one line per answer model, each point a setting:
+    the chart frontier labs use for effort levels."""
+    left, right, top, bottom = 70, width - 40, 118, height - 62
+    lo, hi = math.log10(spec["x_min"]), math.log10(spec["x_max"])
+    y_lo, y_hi = spec["y_min"], spec["y_max"]
+
+    def px(cost: float) -> float:
+        return left + (math.log10(cost) - lo) / (hi - lo) * (right - left)
+
+    def py(v: float) -> float:
+        return bottom - (v - y_lo) / (y_hi - y_lo) * (bottom - top)
+
+    out = header(width, height, spec["title"], spec["subtitle"])
+    x = 24
+    for i, series in enumerate(spec["series"], 1):  # legend, one row above the plot
+        out.append(f'<circle class="s{i} ring" cx="{x + 6}" cy="88" r="6" stroke-width="2"/>')
+        out.append(f'<text class="ink" x="{x + 18}" y="92.5" font-size="12.5" font-weight="600">{escape(series["name"])}</text>')
+        x += 32 + text_width(series["name"], 12.5)
+    for ref in spec.get("references", []):
+        out.append(f'<circle class="ref ring" cx="{x + 6}" cy="88" r="5" stroke-width="2"/>')
+        out.append(f'<text class="ink2" x="{x + 18}" y="92.5" font-size="12.5">Reference points</text>')
+        break
+    for v in range(int(y_lo), int(y_hi) + 1, 5):
+        out.append(f'<line class="grid" x1="{left}" y1="{py(v):.1f}" x2="{right}" y2="{py(v):.1f}" stroke-width="1"/>')
+        out.append(f'<text class="muted" x="{left - 8}" y="{py(v) + 4:.1f}" font-size="11" text-anchor="end">{v}%</text>')
+    for t in spec["x_ticks"]:
+        label = f"${t:.4f}".rstrip("0").rstrip(".") if t < 0.01 else f"${t:.2f}".rstrip("0").rstrip(".")
+        out.append(f'<text class="muted" x="{px(t):.1f}" y="{bottom + 18}" font-size="11" text-anchor="middle">{label}</text>')
+    out.append(f'<line class="axis" x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke-width="1"/>')
+    out.append(
+        f'<text class="muted" x="{(left + right) / 2:.0f}" y="{height - 22}" font-size="11.5" text-anchor="middle">'
+        "cost per question to answer (USD, list price, log scale)</text>"
+    )
+    out.append(
+        f'<text class="muted" transform="translate(18 {(top + bottom) / 2:.0f}) rotate(-90)" font-size="11.5" '
+        'text-anchor="middle">answers judged correct</text>'
+    )
+    for i, series in enumerate(spec["series"], 1):
+        pts = sorted(series["points"], key=lambda p: p["cost"])
+        line = " ".join(f"{px(p['cost']):.1f},{py(p['value']):.1f}" for p in pts)
+        out.append(f'<polyline class="s{i}" points="{line}" fill="none" stroke-width="2" style="fill:none"/>')
+        for p in pts:
+            cx, cy = px(p["cost"]), py(p["value"])
+            out.append(
+                f'<circle class="s{i} ring" cx="{cx:.1f}" cy="{cy:.1f}" r="6" stroke-width="2">'
+                f'<title>{escape(series["name"])}, {escape(p["label"])}: {p["value"]:.1f}% at ${p["cost"]:.4f}</title></circle>'
+            )
+            out.append(
+                f'<text class="ink halo" x="{cx + p.get("dx", 0):.1f}" y="{cy + p.get("dy", -12):.1f}" font-size="11.5" '
+                f'text-anchor="middle">{escape(p["label"])}</text>'
+            )
+    for ref in spec.get("references", []):
+        cx, cy = px(ref["cost"]), py(ref["value"])
+        out.append(
+            f'<circle class="ref ring" cx="{cx:.1f}" cy="{cy:.1f}" r="5" stroke-width="2">'
+            f'<title>{escape(ref["name"])}: {ref["value"]:.1f}%</title></circle>'
+        )
+        out.append(
+            f'<text class="ink2 halo" x="{cx + ref.get("dx", 10):.1f}" y="{cy + ref.get("dy", 4):.1f}" font-size="11.5" '
+            f'text-anchor="{ref.get("anchor", "start")}">{escape(ref["name"])}</text>'
+        )
+    out.append("</svg>")
+    with open(path, "w") as f:
+        f.write("\n".join(out) + "\n")
+
+
+def grouped(spec: dict, path: str, width: int = 760) -> None:
+    """Accuracy by question type: one group per type, one bar per setting."""
+    cats, series = spec["categories"], spec["series"]
+    left, right, top = 70, width - 24, 118
+    plot_h = 250
+    bottom = top + plot_h
+    height = bottom + 70
+    group_w = (right - left) / len(cats)
+    bar_w = min(18, (group_w - 24) / len(series) - 2)
+
+    def py(v: float) -> float:
+        return bottom - v / 100 * plot_h
+
+    out = header(width, height, spec["title"], spec["subtitle"])
+    x = 24
+    for i, s_ in enumerate(series, 1):
+        out.append(f'<rect class="s{i}" x="{x}" y="82" width="12" height="12" rx="3"/>')
+        out.append(f'<text class="ink" x="{x + 18}" y="92.5" font-size="12.5">{escape(s_["name"])}</text>')
+        x += 36 + text_width(s_["name"], 12.5)
+    for v in range(0, 101, 25):
+        out.append(f'<line class="grid" x1="{left}" y1="{py(v):.1f}" x2="{right}" y2="{py(v):.1f}" stroke-width="1"/>')
+        out.append(f'<text class="muted" x="{left - 8}" y="{py(v) + 4:.1f}" font-size="11" text-anchor="end">{v}%</text>')
+    for c, cat in enumerate(cats):
+        gx = left + c * group_w + (group_w - (bar_w + 2) * len(series)) / 2
+        for i, s_ in enumerate(series, 1):
+            v = s_["values"][c]
+            bx, h = gx + (i - 1) * (bar_w + 2), v / 100 * plot_h
+            r = min(4, bar_w / 2, h)
+            out.append(
+                f'<path class="s{i}" d="M{bx:.1f},{bottom} V{bottom - h + r:.1f} Q{bx:.1f},{bottom - h:.1f} {bx + r:.1f},{bottom - h:.1f} '
+                f'H{bx + bar_w - r:.1f} Q{bx + bar_w:.1f},{bottom - h:.1f} {bx + bar_w:.1f},{bottom - h + r:.1f} V{bottom} Z">'
+                f'<title>{escape(cat)}, {escape(s_["name"])}: {v:.1f}%</title></path>'
+            )
+        cx = left + c * group_w + group_w / 2
+        for j, part in enumerate(cat.split("\n")):
+            out.append(f'<text class="ink2" x="{cx:.1f}" y="{bottom + 18 + j * 14}" font-size="11.5" text-anchor="middle">{escape(part)}</text>')
+    out.append(f'<line class="axis" x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke-width="1"/>')
+    out.append("</svg>")
+    with open(path, "w") as f:
+        f.write("\n".join(out) + "\n")
+
+
 def main() -> None:
     with open(os.path.join(HERE, "results.json")) as f:
         data = json.load(f)
     bars(data["retrieval_user_turns_all5"], os.path.join(HERE, "retrieval.svg"))
     bars(data["qa_accuracy"], os.path.join(HERE, "accuracy.svg"))
     scatter(data["tokens_vs_accuracy"], os.path.join(HERE, "tokens.svg"))
+    if "cost_curve" in data:
+        cost_curve(data["cost_curve"], os.path.join(HERE, "cost.svg"))
+    if "by_type" in data:
+        grouped(data["by_type"], os.path.join(HERE, "by-type.svg"))
 
 
 if __name__ == "__main__":

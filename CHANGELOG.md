@@ -5,6 +5,20 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- INSTALL.md: install instructions written for a coding agent, so "install recall for me:
+  follow <link>" in Claude Code, Codex or Cursor sets everything up. The agent asks only which
+  model writes memories, since that decides where chat text goes.
+- `recall setup --model SPEC --embeddings NAME` answers those questions up front, for agents
+  and scripts.
+- docs/benchmarks: the benchmark results as data, and charts drawn from it.
+
+### Fixed
+
+- The Claude plan provider runs Claude Code from an empty folder. From the shared temp folder,
+  Claude Code indexed thousands of files at the start of every call.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
@@ -26,7 +40,8 @@ All notable changes to recall are listed here. The format follows
   its own metrics, so search changes are measured against published numbers. `--official`
   scores the benchmark's own question subset, `--hybrid` adds embeddings, and `--qa MODEL`
   runs it end to end: recall retrieves, the model answers and judges with the benchmark's
-  prompts, and the run reports accuracy, context tokens and model calls.
+  prompts, and the run reports accuracy, context tokens and model calls; `--judge` grades
+  with a different model, and answering and judging tokens are reported apart.
 - `recall eval locomo`: session retrieval on LoCoMo.
 - `recall eval search` also scores `paraphrase_cases.jsonl` when present: chats described in
   other words than they used, where semantic search matters.

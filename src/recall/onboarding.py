@@ -44,7 +44,10 @@ class Prompter:
             print(f"  enter a number from 1 to {len(options)}")
 
 
-def run(assume_yes: bool = False) -> None:
+def run(assume_yes: bool = False, model: str | None = None, embeddings: str | None = None) -> None:
+    """The guided first run. model (e.g. "claude:haiku", "local:qwen3:4b") and embeddings (an
+    Ollama embedding model, e.g. "nomic-embed-text") answer those questions up front, so an
+    agent can install recall in one command after asking the person."""
     ask = Prompter(assume_yes)
     cfg = config.load()
 
@@ -55,7 +58,13 @@ def run(assume_yes: bool = False) -> None:
     config.save(cfg)
 
     print("\n2. Who writes your memories\n")
-    cfg["model"] = choose_model(ask, current=cfg["model"])
+    if model:
+        cfg["model"] = _settings_from_spec(model)
+        _test(build(cfg["model"]))
+    else:
+        cfg["model"] = choose_model(ask, current=cfg["model"])
+    if embeddings:
+        cfg["embeddings"] = {"provider": "ollama", "name": embeddings}
     config.save(cfg)
 
     print("\n3. Indexing chats…")
@@ -63,7 +72,7 @@ def run(assume_yes: bool = False) -> None:
     print("   " + ", ".join(f"{name}: {r['indexed']} new" for name, r in result.items()))
 
     print()
-    if ask.yes("4. Connect recall to your agents (MCP tools, /recall skill, Claude Code session hook)?"):
+    if ask.yes("4. Connect recall to your agents (MCP tools, /recall skill, session-start hooks)?"):
         for line in integrations.install():
             print("   " + line)
 
@@ -73,6 +82,9 @@ def run(assume_yes: bool = False) -> None:
 
     if ask.yes("\n6. Start the first memory run now, in the background (newest chats first)?"):
         _start_first_run(dream)
+    if embeddings:
+        print("\n7. Embedding your chats for semantic search, in the background…")
+        _start_background("embed")
     print(f"\nDone. Your memory lives in {paths.MEMORY}; start at MEMORY.md.")
 
 
@@ -226,6 +238,26 @@ def _small_first(models: list[str]) -> str:
             if hint in m.lower():
                 return m
     return models[0] if models else ""
+
+
+def _settings_from_spec(spec: str) -> dict:
+    """ "claude:haiku" or "local:qwen3:4b" as [model] settings. API providers need a key, which
+    only `recall model` asks for."""
+    kind, _, name = spec.partition(":")
+    if kind in API_BASE_URLS or kind in ("anthropic", "custom"):
+        raise SystemExit(f"{kind} needs an API key: run `recall model` to set it up")
+    settings = {"provider": kind, **({"name": name} if name else {})}
+    if kind == "local":
+        settings["server"] = "ollama"
+    return settings
+
+
+def _start_background(*args: str) -> None:
+    os.makedirs(paths.LOGS, exist_ok=True)
+    log = os.path.join(paths.LOGS, f"{args[0]}.log")
+    with open(log, "a") as f:
+        subprocess.Popen([sys.argv[0], *args], stdout=f, stderr=f, start_new_session=True)
+    print(f"   running; follow along with: tail -f {log}")
 
 
 def _start_first_run(dream: dict) -> None:

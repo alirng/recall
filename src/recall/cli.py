@@ -302,7 +302,7 @@ def cmd_usage(a) -> None:
 def cmd_setup(a) -> None:
     from . import onboarding
 
-    onboarding.run(assume_yes=a.yes)
+    onboarding.run(assume_yes=a.yes, model=a.model, embeddings=a.embeddings)
 
 
 def cmd_model(a) -> None:
@@ -405,6 +405,8 @@ def _parser() -> argparse.ArgumentParser:
 
     sp = command("setup", cmd_setup, "first run: pick agents and a model, index, connect, schedule")
     sp.add_argument("--yes", action="store_true", help="accept every default")
+    sp.add_argument("--model", help="who writes memories, e.g. claude:haiku, chatgpt:gpt-6-luna, local:qwen3:4b")
+    sp.add_argument("--embeddings", metavar="NAME", help="turn on semantic search with this Ollama model")
     sp = command("model", cmd_model, "choose which model writes memories")
     sp.add_argument("--show", action="store_true", help="print the current choice")
 

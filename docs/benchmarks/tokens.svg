@@ -12,6 +12,11 @@
   .ceiling { stroke: #52514e; }
   .ring { stroke: #fcfcfb; }
   .halo { stroke: #fcfcfb; stroke-width: 4px; paint-order: stroke; stroke-linejoin: round; }
+  .s1 { fill: #2a78d6; stroke: #2a78d6; }
+  .s2 { fill: #eb6834; stroke: #eb6834; }
+  .s3 { fill: #1baf7a; stroke: #1baf7a; }
+  .ref { fill: #898781; stroke: #898781; }
+  .frame { fill: none; stroke: #c3c2b7; }
   @media (prefers-color-scheme: dark) {
     .surface { fill: #1a1a19; }
     .ink { fill: #ffffff; }
@@ -23,12 +28,16 @@
     .ceiling { stroke: #c3c2b7; }
     .ring { stroke: #1a1a19; }
     .halo { stroke: #1a1a19; }
+    .s1 { fill: #3987e5; stroke: #3987e5; }
+    .s2 { fill: #d95926; stroke: #d95926; }
+    .s3 { fill: #199e70; stroke: #199e70; }
+    .frame { stroke: #383835; }
   }
   text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 </style>
 <rect class="surface" width="760" height="440" rx="8"/>
 <text class="ink" x="24" y="34" font-size="17" font-weight="600">Accuracy against context read per question</text>
-<text class="ink2" x="24" y="56" font-size="12.5">LongMemEval_S. Tokens the answer model reads for one question (log scale).</text>
+<text class="ink2" x="24" y="56" font-size="12.5">LongMemEval_S. Tokens the answer model reads for one question (log scale); recall&#x27;s are measured prompt tokens.</text>
 <line class="grid" x1="64" y1="352.0" x2="720" y2="352.0" stroke-width="1"/>
 <text class="muted" x="56" y="356.0" font-size="11" text-anchor="end">60%</text>
 <line class="grid" x1="64" y1="284.0" x2="720" y2="284.0" stroke-width="1"/>
@@ -67,8 +76,8 @@
 <text class="ink halo" x="653.9" y="151.0" font-size="12" text-anchor="end">Full history, Sonnet 5 87.2%</text>
 <circle class="other ring" cx="609.7" cy="334.3" r="5" stroke-width="2"><title>Full history, Haiku 4.5: 62.6% at 115,000 tokens</title></circle>
 <text class="ink halo" x="599.7" y="338.3" font-size="12" text-anchor="end">Full history, Haiku 4.5 62.6%</text>
-<circle class="ours ring" cx="461.2" cy="168.4" r="6" stroke-width="2"><title>recall, top 10 chats: 87.0% at 31,600 tokens</title></circle>
-<text class="ink halo" x="471.2" y="172.4" font-size="12" text-anchor="start" font-weight="600">recall, top 10 chats 87.0%</text>
-<circle class="ours ring" cx="347.9" cy="195.6" r="6" stroke-width="2"><title>recall, matched windows: 83.0% at 11,800 tokens</title></circle>
-<text class="ink halo" x="357.9" y="199.6" font-size="12" text-anchor="start" font-weight="600">recall, matched windows 83.0%</text>
+<circle class="ours ring" cx="499.5" cy="165.7" r="6" stroke-width="2"><title>recall, top 10 chats: 87.4% at 44,100 tokens</title></circle>
+<text class="ink halo" x="509.5" y="169.7" font-size="12" text-anchor="start" font-weight="600">recall, top 10 chats 87.4%</text>
+<circle class="ours ring" cx="391.9" cy="199.7" r="6" stroke-width="2"><title>recall, matched windows: 82.4% at 17,300 tokens</title></circle>
+<text class="ink halo" x="401.9" y="203.7" font-size="12" text-anchor="start" font-weight="600">recall, matched windows 82.4%</text>
 </svg>
