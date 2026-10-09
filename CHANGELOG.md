@@ -5,6 +5,8 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
 ### Added
 
 - Projects. `~/.agents/memory/projects.yaml` lists the projects you work on, each with the
