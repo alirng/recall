@@ -34,9 +34,12 @@ scored against the session labels:
 Each history's notes are kept in the run folder (notes/<id>/r<repeat>/) for --arm notes.
 
 --from-candidates RUN_DIR freezes extraction: each history's candidates come from that earlier
-extraction run (repeat r replays its repeat r, cycling when it has fewer) and only consolidation
-and grading run again, so a consolidation change is measured without extraction noise. It takes
-the earlier run's histories unless --case picks some, and always calls the model afresh.
+extraction run (repeat r replays its repeat r, cycling when it has fewer; --candidates-repeat K
+replays its repeat K every time) and only consolidation and grading run again, so a
+consolidation change is measured without extraction noise. It takes the earlier run's histories
+unless --case picks some, and always calls the model afresh. Consolidation is most of an
+extraction run's model calls (about 85% on MemoryCode), so a replay costs nearly as much as a
+fresh run; what it removes is extraction's share of the noise.
 
 Agent mode gives the history's final coding requests to Claude Code (evals_agent.run_agent) and
 grades its code with the benchmark's checks, ported from the authors' evaluate_model_output.py
@@ -327,14 +330,24 @@ def from_args(a) -> dict:
             source = candidate_index(replay)
             if not a.case:  # the histories the earlier run read
                 histories = [x for x in histories if any(k[0] == str(x.id) for k in source["rows"])]
-            settings.update(histories=len(histories), from_candidates=source["dir"])
+            fixed = getattr(a, "candidates_repeat", None)
+            settings.update(histories=len(histories), from_candidates=source["dir"], candidates_repeat=fixed)
             settings.update(
                 short=sum(x.length == "short" for x in histories), long=sum(x.length == "long" for x in histories)
             )
         name = "memorycode-consolidate" if replay else "memorycode-extract"
         run = h.Run(name, a.split, settings, a.who, a.runs_dir)
         return run_extract(
-            histories, run, a.model, a.judge or h.JUDGE, a.fresh, a.repeats, a.workers, a.against, replay
+            histories,
+            run,
+            a.model,
+            a.judge or h.JUDGE,
+            a.fresh,
+            a.repeats,
+            a.workers,
+            a.against,
+            replay,
+            getattr(a, "candidates_repeat", None),
         )
     from . import evals_agent
 
@@ -394,7 +407,10 @@ def run_extract(
     workers: int = 4,
     against: str | None = None,
     from_candidates: str | None = None,
+    candidates_repeat: int | None = None,
 ) -> dict:
+    """from_candidates: replay that run's candidates (repeat r takes its repeat r, or always
+    candidates_repeat), so only consolidation and grading run."""
     from .llm import Client, from_spec
 
     provider = from_spec(model, config.load()["model"])
@@ -423,7 +439,7 @@ def run_extract(
         started = time.time()
         replay = None
         if source:
-            replay = source_candidates(source, x.id, repeat)
+            replay = source_candidates(source, x.id, candidates_repeat or repeat)
         row, transcript = extract_history(x, repeat, run, client, grader, replay)
         row["seconds"] = round(time.time() - started, 1)
         if repeats > 1:
