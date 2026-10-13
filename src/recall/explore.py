@@ -39,15 +39,17 @@ create table if not exists explorations (
   commit_sha text, commit_source text, branch text, dirty text, created_at real,
   prompt text, report text, origin text,
   prompt_terms text, report_terms text,  -- matching words, kept so a hook need not re-read reports
-  started_at real  -- when the exploration began; created_at is when its report came
+  started_at real,  -- when the exploration began; created_at is when its report came
+  session_id text  -- the chat recall indexes it under (a Claude subagent's: its parent's), for `recall forget`
 );
 create index if not exists explorations_repo on explorations(repo, created_at);
+create index if not exists explorations_session on explorations(session_id);
 create virtual table if not exists explorations_fts using fts5(
   id unindexed, prompt, report, tokenize='porter unicode61'
 );
 -- Prompts seen at a subagent's start, for its stop when no transcript holds the prompt
 -- (Claude Code without session persistence). Kept a day.
-create table if not exists exploration_starts (session text, prompt text, at real);
+create table if not exists exploration_starts (session_id text, prompt text, at real);
 """
 
 MAX_CHARS = 5000  # the whole injected block
@@ -140,6 +142,7 @@ def record(
     report: str,
     created_at: float | None = None,
     started_at: float | None = None,
+    session_id: str | None = None,
     origin: str = "hook",
     commit: str | None = None,
     commit_source: str = "head",
@@ -161,7 +164,7 @@ def record(
         commit, dirty = co.commit, dirty_files(co.top)
     con.execute("delete from explorations_fts where id = ?", (id,))
     con.execute(
-        "insert or replace into explorations values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "insert or replace into explorations values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             id,
             agent,
@@ -180,6 +183,7 @@ def record(
             " ".join(_tokens(prompt)),
             " ".join(sorted(set(_tokens(report)))),
             started_at,
+            session_id,
         ),
     )
     con.execute("insert into explorations_fts values (?,?,?)", (id, prompt, report))
@@ -525,7 +529,7 @@ def on_start(e):
     if e.session:
         con = connect()
         con.execute("delete from exploration_starts where at < ?", (time.time() - 86400,))
-        con.execute("insert into exploration_starts values (?,?,?)", (e.session, prompt, time.time()))
+        con.execute("insert into exploration_starts values (?,?,?)", (f"{e.agent}:{e.session}", prompt, time.time()))
         con.commit()
     block, info = brief(e.cwd, prompt)
     _log("explore_start", e, info)
@@ -546,8 +550,8 @@ def on_stop(e) -> None:
     prompt = (e.prompt if e.agent == "cursor" else None) or (first_prompt(path) if path else None)
     con = connect()
     started = con.execute(
-        "select rowid, prompt from exploration_starts where session = ? and at > ? order by at",
-        (e.session, time.time() - 7200),
+        "select rowid, prompt from exploration_starts where session_id = ? and at > ? order by at",
+        (f"{e.agent}:{e.session}", time.time() - 7200),
     ).fetchall()
     if prompt:  # this start is accounted for
         started = [r for r in started if _BLOCK.sub("\n", r[1]).strip() == _BLOCK.sub("\n", prompt).strip()][:1]
@@ -559,7 +563,15 @@ def on_stop(e) -> None:
     con.commit()
     sid = raw.get("agent_id") or raw.get("subagent_id") or (os.path.basename(path).split(".")[0] if path else None)
     ok = bool(sid and prompt and report) and record(
-        con, id=f"{e.agent}:{sid}", agent=e.agent, agent_type=e.subagent, folder=e.cwd, prompt=prompt, report=report
+        con,
+        id=f"{e.agent}:{sid}",
+        agent=e.agent,
+        agent_type=e.subagent,
+        folder=e.cwd,
+        prompt=prompt,
+        report=report,
+        # Cursor and Codex index a subagent as a chat of its own; Claude Code keeps it in its parent's.
+        session_id=f"{e.agent}:{e.session if e.agent == 'claude' else sid}",
     )
     _log("explore_stop", e, {"recorded": ok, "chars": len(report or "")})
     return None
@@ -651,6 +663,7 @@ class Past:
     prompt: str
     report: str
     started_at: float | None = None
+    session_id: str | None = None  # see the explorations table
 
 
 def past_explorations(index) -> list[Past]:
@@ -700,7 +713,17 @@ def _past_cursor(index) -> list[Past]:
         if prompt and report:
             seconds = (ts or 0) / 1000 or None
             out.append(
-                Past(f"cursor:{cid}", "cursor", kind, folder, seconds, prompt, report, (start or 0) / 1000 or None)
+                Past(
+                    f"cursor:{cid}",
+                    "cursor",
+                    kind,
+                    folder,
+                    seconds,
+                    prompt,
+                    report,
+                    (start or 0) / 1000 or None,
+                    f"cursor:{cid}",
+                )
             )
     return out
 
@@ -724,7 +747,7 @@ def _past_codex(index) -> list[Past]:
             continue
         role = meta.get("agent_role") or ""
         if is_explorer(role) and (prompt := first_prompt(source)) and (report := last_reply(source)):
-            out.append(Past(sid, "codex", role, folder or meta.get("cwd"), ts, prompt, report, start))
+            out.append(Past(sid, "codex", role, folder or meta.get("cwd"), ts, prompt, report, start, sid))
     return out
 
 
@@ -752,7 +775,20 @@ def _past_claude() -> list[Past]:
             from .chats.sources import iso_ts
 
             name = os.path.basename(path)[: -len(".jsonl")]
-            out.append(Past(f"claude:{name}", "claude", kind, folder, iso_ts(ts), prompt, report, iso_ts(start)))
+            parent = os.path.basename(os.path.dirname(os.path.dirname(path)))  # <session>/subagents/agent-x.jsonl
+            out.append(
+                Past(
+                    f"claude:{name}",
+                    "claude",
+                    kind,
+                    folder,
+                    iso_ts(ts),
+                    prompt,
+                    report,
+                    iso_ts(start),
+                    f"claude:{parent}",
+                )
+            )
     return out
 
 
@@ -817,6 +853,7 @@ def backfill(con, index, log=None) -> dict:
             report=p.report,
             created_at=p.created_at,
             started_at=p.started_at,
+            session_id=p.session_id,
             origin="history",
             commit=sha,
             commit_source="estimated",
