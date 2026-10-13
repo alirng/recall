@@ -11,6 +11,12 @@ from .chats import indexer, store
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:2] == ["eval", "compare"]:  # its own arguments: run folders and "vs"
+        from . import evals_compare
+
+        evals_compare.main(argv[2:])
+        return
     args = _parser().parse_args(argv)
     try:
         args.handler(args)
@@ -492,6 +498,8 @@ def cmd_serve(a) -> None:
 def cmd_eval(a) -> None:
     from . import evals
 
+    if a.case:  # --case takes ids one at a time or comma-separated, as compare --flips prints them
+        a.case = [i for c in a.case for i in c.split(",") if i]
     if a.kind == "swe-contextbench":
         from . import evals_swecb
 
@@ -714,7 +722,7 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-calls", type=int, help="cap on model calls per night")
     command("serve", cmd_serve, "run the MCP server over stdio")
 
-    sp = command("eval", cmd_eval, "measure search, answer, memory or session-start quality")
+    sp = command("eval", cmd_eval, "measure search, answer, memory or session-start quality; `eval compare` pairs runs")
     kinds = [
         "search",
         "memory",
@@ -762,7 +770,7 @@ def _parser() -> argparse.ArgumentParser:
     v2.add_argument(
         "--split", choices=["train", "test", "holdout", "all"], default="train", help="which cases (default train)"
     )
-    v2.add_argument("--case", action="append", metavar="ID", help="only this case; repeatable")
+    v2.add_argument("--case", action="append", metavar="ID", help="only this case; repeatable, or ID,ID,...")
     v2.add_argument("--against", metavar="RUN_DIR", help="paired comparison with an earlier run of the same eval")
     v2.add_argument("--keyword", action="store_true", help="search --v2: keywords only, even when embeddings are on")
     v2.add_argument("--repeats", type=int, default=1, help="agent, memory: run each case N times")
