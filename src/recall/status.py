@@ -706,3 +706,24 @@ def check_edit(
     words = {"same_copy": " in this working copy", "conflict": " and would conflict", "overlap": ""}[worst]
     notice = f"recall: {os.path.basename(path)} is also open in “{other.title}”{words}"
     return Decision(action, "\n".join(lines), notice)
+
+
+def on_edit(event):
+    """The edit hook (hooks.py): the person's rules for each file the edit touches."""
+    from . import usage
+    from .chats.store import parse_since
+    from .integrations.hooks import Reply
+
+    since = parse_since("12h")
+    found = [
+        d
+        for f in event.files
+        if (d := check_edit(event.agent, event.session, f, event.cwd, since, event.acts, event.transcript))
+    ]
+    if not found:
+        return None
+    action = min((d.action for d in found), key=ACTIONS.index)
+    message = "\n".join(dict.fromkeys(d.message for d in found))
+    usage.record("hook", "check_edit", {"files": event.files, "action": action}, message, client=event.agent)
+    refuse = action in ("worktree", "ask")
+    return Reply(context=None if refuse else message, deny=message if refuse else None, notice=found[0].notice)

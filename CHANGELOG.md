@@ -5,6 +5,13 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **One hook command.** Every hook recall installs, for every agent, now runs
+  `recall hook --agent <agent>`, which hands the event to the features that want it and
+  answers in that agent's format. `recall install` replaces the older `context --hook` and
+  `status --hook` entries, which keep working until then. CONTRIBUTING.md has how to add one.
+
 ### Added
 
 - **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor

@@ -152,27 +152,31 @@ def cmd_memory(a) -> None:
 
 
 def cmd_context(a) -> None:
-    try:  # a session-start hook must never break the session, whatever goes wrong
-        from . import projects, usage
+    if a.hook:  # the old session-start hook command; `recall hook` answers it now
+        return cmd_hook(a)
+    try:
         from .memory.context import session_context
 
-        event = json.load(sys.stdin) if a.hook else {}
-        # Claude Code and Codex send cwd; Cursor sends workspace_roots
-        cwd = event.get("cwd") or next(iter(event.get("workspace_roots") or []), None) or a.cwd or os.getcwd()
-        text = session_context(cwd, agent=a.agent)
-        print(text, end="")
-        if a.hook:
-            found = projects.for_folder(cwd)
-            usage.record(
-                "hook",
-                "session_start",
-                {"cwd": cwd, "source": event.get("source")},
-                text,
-                client=a.agent,
-                project=found.id if found else None,
-            )
+        print(session_context(a.cwd or os.getcwd(), agent=a.agent), end="")
     except Exception as e:
         print(f"recall context: {e}", file=sys.stderr)
+
+
+def cmd_hook(a) -> None:
+    """Every hook of every agent: read its JSON, answer through hooks.py. Never breaks the
+    session, whatever goes wrong: an agent that blocks an edit on a bad reply (Cursor) still
+    gets its "go ahead"."""
+    from .integrations import hooks
+
+    raw = {}
+    try:
+        raw = json.load(sys.stdin)
+        out, code = hooks.dispatch(a.agent, raw)
+    except Exception as e:
+        print(f"recall hook: {e}", file=sys.stderr)
+        out, code = hooks.silent(a.agent, raw), 0
+    sys.stdout.write(out)
+    sys.exit(code)
 
 
 # --- projects -------------------------------------------------------------------
@@ -299,10 +303,9 @@ def cmd_usage(a) -> None:
 def cmd_status(a) -> None:
     from . import status
 
-    since = store.parse_since(a.since)
-    if a.hook:
-        return _status_hook(a, since)
-    s = status.status(since)
+    if a.hook:  # the edit hook's first command; `recall hook` answers it now
+        return cmd_hook(a)
+    s = status.status(store.parse_since(a.since))
     if a.json:
         print(json.dumps(s, indent=2))
         return
@@ -321,38 +324,6 @@ def cmd_status(a) -> None:
         repos.setdefault(x["repo"] or "no folder", []).append(x)
     for repo, xs in repos.items():
         print(f"  {repo:14} {', '.join(dict.fromkeys(x['branch'] or '?' for x in xs))}")
-
-
-def _status_hook(a, since: float) -> None:
-    """Around an edit: apply the person's rules if another chat has open changes to the same
-    file. Never breaks the session, whatever goes wrong: an agent that blocks the edit on a
-    bad reply still gets its "go ahead"."""
-    from .integrations import hooks
-
-    try:
-        from . import status, usage
-
-        event = json.load(sys.stdin)
-        edit = hooks.parse(a.agent, event)
-        found = edit and [
-            d
-            for f in edit.files
-            if (d := status.check_edit(a.agent, edit.session, f, edit.cwd, since, edit.acts, edit.transcript))
-        ]
-        if not found:
-            if quiet := hooks.silent(a.agent):
-                print(quiet)
-            return
-        action = min((d.action for d in found), key=status.ACTIONS.index)
-        message = "\n".join(dict.fromkeys(d.message for d in found))
-        out, code = hooks.render(a.agent, event, action, message, found[0].notice)
-        print(out)
-        usage.record("hook", "check_edit", {"files": edit.files, "action": action}, message, client=a.agent)
-        sys.exit(code)
-    except Exception as e:
-        if quiet := hooks.silent(a.agent):
-            print(quiet)
-        print(f"recall status: {e}", file=sys.stderr)
 
 
 # --- setup and integrations ---------------------------------------------------
@@ -566,8 +537,10 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--project")
     sp = command("context", cmd_context, "print the memory block agents load at session start")
     sp.add_argument("--cwd", help="project folder (default: the current directory)")
-    sp.add_argument("--hook", action="store_true", help="read the folder from a hook's JSON input")
+    sp.add_argument("--hook", action="store_true", help="old hook entry; same as `recall hook`")
     sp.add_argument("--agent", choices=["claude", "codex", "cursor"], default="claude", help="who will read it")
+    sp = command("hook", cmd_hook, "answer an agent's hook, reading its JSON input (recall install sets this up)")
+    sp.add_argument("--agent", default="claude", help="claude, codex, cursor, gemini or opencode")
 
     sp = command("projects", cmd_projects, "your projects over time, as git-style lanes")
     sp.add_argument("action", nargs="?", choices=["lanes", "suggest", "show"], default="lanes")
@@ -582,8 +555,8 @@ def _parser() -> argparse.ArgumentParser:
     sp = command("status", cmd_status, "what your agents are working on now, and files two of them both changed")
     sp.add_argument("--since", default="12h", help="how far back, e.g. 2h, 12h or 1d")
     sp.add_argument("--json", action="store_true")
-    sp.add_argument("--hook", action="store_true", help="run as an agent's before-edit hook, reading its JSON input")
-    sp.add_argument("--agent", default="claude", help="--hook: which agent is editing (claude, codex, cursor, …)")
+    sp.add_argument("--hook", action="store_true", help="old hook entry; same as `recall hook`")
+    sp.add_argument("--agent", default="claude", help="--hook: which agent (claude, codex, cursor, …)")
     sp = command("usage", cmd_usage, "how recall itself gets used, from its local log")
     sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
     sp.add_argument("--json", action="store_true")
