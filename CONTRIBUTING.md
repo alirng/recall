@@ -56,6 +56,20 @@ uv run recall eval longmemeval --cases ~/Downloads/longmemeval_s_cleaned.json
 uv run recall eval memory --model claude:haiku --fresh
 ```
 
+To tell a gain from noise, compare the runs case by case:
+`recall eval compare BEFORE_RUN... vs AFTER_RUN...`. It prints the paired difference with a
+bootstrap interval, how many cases got better or worse, each run's spread, and the smallest
+difference those runs can detect. A change smaller than that needs more repeats or more cases,
+and the command says which. `--flips` lists the cases whose outcome changes from run to run,
+so you can repeat only those. Two habits keep the comparison honest:
+
+- **Change one stage, freeze the rest.** For a consolidation change, replay an earlier run's
+  extracted candidates (`--from-candidates RUN_DIR`) instead of extracting again.
+- **Control for priming.** Loading any notes can help an agent, whatever they say. For a claim
+  that notes help, the MemoryCode agent eval has a `placebo` arm, which loads another
+  history's notes of the same size. Notes help by their content only as far as `hook` beats
+  `placebo`.
+
 Personal eval sets name real chats, so they stay in `~/.agents/recall/evals/`. See Privacy
 below.
 
