@@ -348,7 +348,24 @@ def cmd_serve(a) -> None:
 def cmd_eval(a) -> None:
     from . import evals
 
-    if a.kind in ("longmemeval", "locomo"):
+    if a.kind == "swe-contextbench":
+        from . import evals_swecb
+
+        evals_swecb.from_args(a)
+        return
+    if a.kind == "memorycode":
+        from . import evals_memorycode
+
+        evals_memorycode.from_args(a)
+        return
+    if a.kind == "amb":
+        from . import evals_amb
+
+        evals_amb.from_args(a)
+        return
+    if a.kind == "agent" or a.v2:
+        _eval_v2(a)
+    elif a.kind in ("longmemeval", "locomo"):
         if not a.cases:
             sys.exit(f"recall eval {a.kind} needs --cases pointing at the dataset's JSON file")
         embedder = cache = None
@@ -388,6 +405,52 @@ def cmd_eval(a) -> None:
             a.sample,
             paraphrased if os.path.exists(paraphrased) else None,
         )
+
+
+def _eval_v2(a) -> None:
+    """The v2 evals: search_v2 (find rate), qa_v2 (an agent answering with recall's tools) and
+    memory_v2 (note quality), each writing a run folder; see evals_harness.py."""
+    from . import evals_harness as harness
+
+    kinds = {"search": "search_v2", "agent": "qa_v2", "memory": "memory_v2"}
+    if a.kind not in kinds:
+        sys.exit(f"--v2 applies to search and memory, not {a.kind}")
+    cases = harness.load_cases(kinds[a.kind], a.split, a.cases, a.case, a.limit)
+    settings = {"cases": len(cases), "note": a.note or ""}
+    if a.kind == "agent":
+        from . import evals_agent
+
+        model = a.model or evals_agent.DEFAULT_MODEL
+        settings.update(repeats=a.repeats, workers=a.workers, timeout=a.timeout, skill=a.skill)
+        run = harness.Run(kinds[a.kind], a.split, settings, a.who, a.runs_dir)
+        evals_agent.run(
+            cases,
+            run,
+            model,
+            a.judge or harness.JUDGE,
+            a.repeats,
+            a.workers,
+            a.timeout,
+            a.consistency,
+            a.skill,
+            a.against,
+        )
+    elif a.kind == "memory":
+        from . import evals_memory
+
+        settings.update(repeats=a.repeats)
+        con = harness.corpus()
+        run = harness.Run(kinds[a.kind], a.split, settings, a.who, a.runs_dir)
+        evals_memory.run(
+            con, cases, run, a.model, a.judge or harness.JUDGE, a.fresh, a.repeats, a.consistency, a.against
+        )
+    else:
+        from . import evals_search
+
+        con = harness.corpus()
+        settings["keyword_only"] = a.keyword
+        run = harness.Run(kinds[a.kind], a.split, settings, a.who, a.runs_dir)
+        evals_search.run(con, cases, run, a.against, keyword_only=a.keyword)
 
 
 # --- arguments ----------------------------------------------------------------
@@ -473,10 +536,11 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-calls", type=int, help="cap on model calls per night")
     command("serve", cmd_serve, "run the MCP server over stdio")
 
-    sp = command("eval", cmd_eval, "measure search or memory quality")
-    sp.add_argument("kind", nargs="?", choices=["search", "memory", "longmemeval", "locomo"], default="search")
+    sp = command("eval", cmd_eval, "measure search, answer or memory quality")
+    kinds = ["search", "memory", "agent", "longmemeval", "locomo", "swe-contextbench", "memorycode", "amb"]
+    sp.add_argument("kind", nargs="?", choices=kinds, default="search")
     sp.add_argument("--cases", help="JSONL of hand-written cases; for longmemeval, the dataset's JSON file")
-    sp.add_argument("--limit", type=int, help="longmemeval: score only the first N questions")
+    sp.add_argument("--limit", type=int, help="longmemeval: the first N questions; v2: a fixed sample of N cases")
     sp.add_argument("--user-only", action="store_true", help="longmemeval: index only user turns, as the paper does")
     sp.add_argument("--official", action="store_true", help="longmemeval: only the questions its own script scores")
     sp.add_argument("--hybrid", action="store_true", help="longmemeval, locomo: also rank by meaning ([embeddings])")
@@ -484,15 +548,54 @@ def _parser() -> argparse.ArgumentParser:
         "--qa", metavar="MODEL", help="longmemeval: answer and judge with MODEL, e.g. claude:claude-haiku-5-5"
     )
     sp.add_argument("--qa-sample", type=int, default=200, help="--qa: questions in the stratified sample")
-    sp.add_argument("--judge", metavar="MODEL", help="--qa: grade with MODEL instead of the answering model")
+    sp.add_argument(
+        "--judge",
+        metavar="MODEL",
+        help="--qa, agent, memory --v2: grade with MODEL (v2 default claude:claude-sonnet-5-5)",
+    )
     sp.add_argument(
         "--context", choices=["sessions", "windows", "oracle"], default="sessions", help="--qa: what it reads"
     )
     sp.add_argument("--top-k", type=int, default=10, help="--qa, sessions: how many chats it reads")
     sp.add_argument("--out", help="--qa: write each question's result here as JSONL")
     sp.add_argument("--sample", type=int, default=150)
-    sp.add_argument("--model", help="memory evals: e.g. chatgpt:gpt-6-luna, claude:haiku, local:qwen3:4b")
+    sp.add_argument(
+        "--model",
+        help="memory evals: e.g. chatgpt:gpt-6-luna, claude:haiku, local:qwen3:4b; agent: the Claude model under "
+        "test (default claude-haiku-5-5)",
+    )
     sp.add_argument("--fresh", action="store_true", help="memory evals: skip cached answers, to measure variance")
+    v2 = sp.add_argument_group("v2 evals (search --v2, memory --v2, agent)")
+    v2.add_argument("--v2", action="store_true", help="search, memory: the v2 cases and run folder")
+    v2.add_argument(
+        "--split", choices=["train", "test", "holdout", "all"], default="train", help="which cases (default train)"
+    )
+    v2.add_argument("--case", action="append", metavar="ID", help="only this case; repeatable")
+    v2.add_argument("--against", metavar="RUN_DIR", help="paired comparison with an earlier run of the same eval")
+    v2.add_argument("--keyword", action="store_true", help="search --v2: keywords only, even when embeddings are on")
+    v2.add_argument("--repeats", type=int, default=1, help="agent, memory: run each case N times")
+    v2.add_argument("--workers", type=int, default=4, help="agent: cases run at once")
+    v2.add_argument("--timeout", type=int, default=300, help="agent: seconds before a case counts as timed out")
+    v2.add_argument("--consistency", type=int, default=8, help="agent, memory: re-judge N cases to check the grader")
+    v2.add_argument("--skill", action="store_true", help="agent: also give the agent recall's skill text")
+    v2.add_argument("--who", help="name in the run folder and ledger (default $RECALL_EVAL_WHO or harness)")
+    v2.add_argument("--note", help="a note for the ledger line")
+    v2.add_argument("--runs-dir", help="where run folders go; the ledger is LEDGER.md beside it")
+    scb = sp.add_argument_group("swe-contextbench (also --hybrid, --split, --case, --limit, --against, --who, --note)")
+    scb.add_argument("--data", help="the benchmark folder, holding repo/ (GitHub) and hf/ (Hugging Face)")
+    scb.add_argument("--subset", choices=["lite", "full"], default="lite", help="related tasks (default lite)")
+    scb.add_argument("--corpus", choices=["transcripts", "records"], default="transcripts", help="past chats to index")
+    scb.add_argument("--query", choices=["problem", "title"], default="problem", help="the issue in full, or line 1")
+    scb.add_argument("--scope", choices=["repo", "all"], default="repo", help="search the task's repo, or every repo")
+    scb.add_argument(
+        "--agent", metavar="MODEL", nargs="?", const="", help="Claude Code finds the chats (default claude-haiku-5-5)"
+    )
+    mc = sp.add_argument_group("memorycode, amb (also --data, --agent, --model, --hybrid, --split, --limit, --repeats)")
+    mc.add_argument(
+        "--arm", choices=["none", "tools", "notes", "hook", "full"], default="tools", help="memorycode --agent"
+    )
+    mc.add_argument("--notes", metavar="RUN_DIR", help="memorycode --arm notes: the extraction run whose notes to use")
+    mc.add_argument("--queries", type=int, default=3, help="memorycode --agent: requests per history (0: all)")
     return p
 
 
