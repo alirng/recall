@@ -51,6 +51,9 @@ def save(account: str, key: str) -> str:
     return "file"
 
 
+ENV = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+
+
 def load(ref: str | None, account: str) -> str | None:
     if not ref:
         return None
@@ -68,6 +71,18 @@ def load(ref: str | None, account: str) -> str | None:
             return None
         return r.stdout.strip() or None
     raise ValueError(f"unknown key reference {ref!r}; use env:NAME, keychain or file")
+
+
+def find(account: str) -> str | None:
+    """A key stored earlier for this account, for a provider named without a key reference
+    (e.g. `--model anthropic:claude-haiku-5-5` while config.toml uses another provider): the OS
+    key store, then keys.json, then the vendor's usual environment variable."""
+    for ref in ("keychain" if _keychain_available() else None, "file", f"env:{ENV.get(account, '')}"):
+        if ref and ref != "env:":
+            key = load(ref, account)
+            if key:
+                return key
+    return None
 
 
 def _read_file() -> dict:
