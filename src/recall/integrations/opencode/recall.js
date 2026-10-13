@@ -9,7 +9,7 @@ const EDITS = ["edit", "write", "apply_patch"]
 function check(phase, sessionID, tool, args, cwd) {
   const payload = JSON.stringify({ hook_event_name: phase, session_id: sessionID, tool, args, cwd })
   return new Promise((resolve) => {
-    const child = execFile(RECALL, ["status", "--hook", "--agent", "opencode"], { timeout: 10000 }, (err, out) => {
+    const child = execFile(RECALL, ["hook", "--agent", "opencode"], { timeout: 10000 }, (err, out) => {
       try {
         resolve(!err && out.trim() ? JSON.parse(out) : null)
       } catch {

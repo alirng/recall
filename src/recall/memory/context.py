@@ -222,3 +222,23 @@ def _section(markdown: str, heading: str) -> str:
 
 def _strip_links(text: str) -> str:
     return re.sub(r" \(\[note\]\([^)]*\)\)", "", text)
+
+
+def on_session_start(event):
+    """The session-start hook (hooks.py): the memory block for the chat's folder, on a new,
+    resumed or cleared session and again after compaction."""
+    from .. import projects, usage
+    from ..integrations.hooks import Reply
+
+    cwd = event.cwd or os.getcwd()
+    text = session_context(cwd, agent=event.agent)
+    found = projects.for_folder(cwd)
+    usage.record(
+        "hook",
+        "session_start",
+        {"cwd": cwd, "source": event.source},
+        text,
+        client=event.agent,
+        project=found.id if found else None,
+    )
+    return Reply(context=text) if text else None

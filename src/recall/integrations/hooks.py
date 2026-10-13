@@ -1,29 +1,52 @@
-"""Each agent's edit hook speaks its own JSON. `parse` turns what an agent sends around an
-edit into an Edit; `render` turns recall's decision back into what that agent understands,
-as (stdout, exit code); `silent` is what to print when there is nothing to say.
+"""recall's hooks, for every agent: one command per agent event, `recall hook --agent X`.
 
-A decision is tell (the agent carries on and is told), or ask / worktree (the edit is
-refused once, with the reason as the agent's next instruction; status.check_edit lets the
-retry through). No agent's hooks can make it ask the person before an edit in every mode,
-but all of these can refuse one, so ask works the same everywhere.
+`parse` turns what an agent sends into an Event of one kind. The handlers for that kind
+(HANDLERS: functions in their own modules, each taking the Event) return Replies, and
+`render` merges them into the one answer that agent accepts, as (stdout, exit code). A
+failing handler is skipped; the hook itself never breaks the session. INSTALL lists the
+(event, matcher) entries `recall install` writes for each agent.
 
-  claude  PreToolUse on Edit/Write: context or deny.
-  codex   PreToolUse on apply_patch, whose input is the patch text: context or deny. A patch
-          applied through a shell command is not seen; a hook on every shell command would
-          cost each one a Python start. Codex runs a hook only after it is trusted in /hooks.
+A new feature adds its kind's handler to HANDLERS and its entries to INSTALL. A kind whose
+reply format is not confirmed for an agent is parsed but answered with silence there.
+
+Kinds, and what a Reply can carry for them:
+  session_start, compact   context (memory at the start, and again after compaction)
+  edit                     before an edit: deny (refuse once, the reason is the agent's
+                           next instruction) or context; Cursor, Gemini and OpenCode can
+                           only refuse before an edit and inform after it (Event.acts)
+  read, tool_failure       context after the tool ran
+  prompt                   context with the person's prompt
+  stop                     keep_going: the agent continues its turn with that text
+  subagent_start/_stop     context
+
+Formats, confirmed against each agent's docs or source, or live (October 2026):
+  claude  PreToolUse on Edit/Write: additionalContext, or deny. SessionStart (also after
+          compaction, source "compact"): plain text. PostToolUse (Read), PostToolUseFailure,
+          UserPromptSubmit, SubagentStart: hookSpecificOutput.additionalContext. Stop: block.
+          The subagent's prompt is only in PreToolUse on Agent/Task, whose updatedInput
+          reaches the subagent (tested live). PostCompact and SubagentStop cannot inform.
+  codex   Claude's event names and JSON, but any field it does not know makes the reply
+          invalid. Its edit tool is apply_patch, whose input is the patch text; a patch
+          applied through a shell command is not seen. It has no read tool (reads are shell
+          commands, parsed here) and no failure event (a shell call always succeeds).
+          SubagentStart takes context, without the prompt. A hook runs once trusted in /hooks.
   cursor  preToolUse on Write can only allow or deny, and must always print JSON or the edit
-          is blocked; postToolUse carries context. Cursor also runs Claude Code's hooks, so
-          the claude hook stands down inside Cursor and Cursor's own hooks answer.
+          is blocked; postToolUse (Write, Read, or a Shell call that exited non-zero) and
+          postToolUseFailure carry additional_context; stop takes followup_message.
+          beforeSubmitPrompt, preCompact and subagentStart cannot inform: they are observed.
+          Its edit fires Read then Write under one tool_use_id (Event.call). Cursor also
+          runs Claude Code's hooks (with cursor_version set); the claude adapter stands down.
   gemini  BeforeTool on write_file/replace can deny; AfterTool carries context.
   opencode  recall's plugin (opencode/recall.js) sends its own JSON: "before" can refuse
           (the plugin throws), "after" can add a note to the tool's result.
-
-Elsewhere (Antigravity, Devin, Copilot, Cline, Kiro…) the MCP tool open_elsewhere and an
-AGENTS.md line are the way in, until their hooks are confirmed working.
 """
 
+import importlib
 import json
-from dataclasses import dataclass
+import os
+import shlex
+import sys
+from dataclasses import dataclass, field
 
 from ..status import patch_files
 
@@ -33,75 +56,271 @@ EDIT_TOOLS = {
     "cursor": "Write",
     "gemini": "^(write_file|replace)$",
 }
+
+# Handlers per kind, as "module:function"; each gets the Event and returns a Reply or None.
+HANDLERS: dict[str, list[str]] = {
+    "session_start": ["recall.memory.context:on_session_start"],
+    "compact": ["recall.memory.context:on_session_start"],
+    "edit": ["recall.status:on_edit"],
+}
+
+# The entries `recall install` writes: (event, matcher) per agent, all answered by one command.
+INSTALL: dict[str, list[tuple[str, str | None]]] = {
+    "claude": [("SessionStart", None), ("PreToolUse", EDIT_TOOLS["claude"])],
+    "codex": [("SessionStart", None), ("PreToolUse", EDIT_TOOLS["codex"])],
+    "cursor": [("preToolUse", EDIT_TOOLS["cursor"]), ("postToolUse", EDIT_TOOLS["cursor"])],
+    "gemini": [("BeforeTool", EDIT_TOOLS["gemini"]), ("AfterTool", EDIT_TOOLS["gemini"])],
+}
+
 DELIVERS = ("worktree", "ask", "tell")
 
 
 @dataclass
-class Edit:
-    session: str
-    files: list[str]
-    cwd: str | None
-    acts: tuple[str, ...] = DELIVERS  # the actions this call can carry out
+class Event:
+    agent: str
+    kind: str
+    name: str  # the agent's own event name, for the reply
+    session: str | None
+    cwd: str | None = None
     transcript: str | None = None  # where the agent writes this chat, to tell it from others
+    tool: str | None = None
+    files: list[str] = field(default_factory=list)
+    acts: tuple[str, ...] = DELIVERS  # edit: what this call can carry out (refuse, tell)
+    observe: bool = False  # the agent cannot be answered at this event; handlers may only note it
+    prompt: str | None = None  # the person's prompt, or a subagent's
+    error: str | None = None  # tool_failure: what went wrong
+    call: str | None = None  # the tool call's id (Cursor's edit fires Read then Write under one id)
+    subagent: str | None = None  # subagent_start/_stop: the subagent's type
+    report: str | None = None  # subagent_stop: what the subagent handed back
+    source: str | None = None  # session_start: startup, resume, clear or compact
+    raw: dict = field(default_factory=dict)
 
 
-def parse(agent: str, event: dict) -> Edit | None:
-    args = event.get("tool_input") or {}
-    cwd = event.get("cwd") or next(iter(event.get("workspace_roots") or []), None)
-    if agent == "claude":
-        if event.get("cursor_version"):
+@dataclass
+class Reply:
+    context: str | None = None  # for the model
+    deny: str | None = None  # refuse this tool call, with the reason (before a tool only)
+    keep_going: str | None = None  # continue the turn with this text (stop only)
+    notice: str | None = None  # one line for the person
+
+
+# --- parsing ---------------------------------------------------------------------------
+
+# Claude Code and Codex share event names; Cursor's are camelCase.
+_KINDS = {
+    "SessionStart": "session_start",
+    "UserPromptSubmit": "prompt",
+    "Stop": "stop",
+    "stop": "stop",
+    "PostToolUseFailure": "tool_failure",
+    "postToolUseFailure": "tool_failure",
+    "SubagentStart": "subagent_start",
+    "subagentStart": "subagent_start",
+    "SubagentStop": "subagent_stop",
+    "subagentStop": "subagent_stop",
+    # Neither can carry context; the next SessionStart (source compact) delivers after it.
+    "PostCompact": "compact",
+    "preCompact": "compact",
+    "beforeSubmitPrompt": "prompt",
+}
+_OBSERVE = {"PostCompact", "preCompact", "beforeSubmitPrompt"}
+_SUBAGENT_TOOLS = ("Agent", "Task", "Subagent", "mcp_task")
+_READERS = {"cat", "head", "tail", "sed", "nl", "less", "more", "bat", "awk", "grep", "rg"}
+
+
+def shell_reads(command, cwd: str | None) -> list[str]:
+    """The files a shell command reads with cat, sed, head and the like: Codex has no read
+    tool. Only arguments that name an existing file count."""
+    if isinstance(command, list):  # ["bash", "-lc", "cat x"] or the words themselves
+        command = command[-1] if len(command) >= 3 and command[-2] in ("-c", "-lc") else " ".join(command)
+    try:
+        words = shlex.split(str(command or ""))
+    except ValueError:
+        return []
+    out, head = [], True
+    for w in words:
+        if w in ("|", "||", "&&", ";"):
+            head = True
+            continue
+        if head:
+            reader, head = os.path.basename(w) in _READERS, False
+            continue
+        if reader and not w.startswith("-"):
+            full = w if os.path.isabs(w) or not cwd else os.path.join(cwd, w)
+            if os.path.isfile(full):
+                out.append(full)
+    return list(dict.fromkeys(out))
+
+
+def parse(agent: str, raw: dict) -> Event | None:
+    if agent == "claude" and raw.get("cursor_version"):
+        return None  # Cursor running Claude Code's hooks; Cursor's own hooks answer
+    args = raw.get("tool_input") or {}
+    cwd = raw.get("cwd") or next(iter(raw.get("workspace_roots") or []), None)
+    session = raw.get("conversation_id") if agent == "cursor" else raw.get("session_id")
+    name = str(raw.get("hook_event_name") or "")
+    tool = raw.get("tool_name") or raw.get("tool")
+    e = Event(agent, "", name, session, cwd, raw.get("transcript_path"), tool, raw=raw)
+    e.call = raw.get("tool_use_id")
+
+    if name == "SessionStart":
+        e.source = raw.get("source")
+        e.kind = "compact" if e.source == "compact" else "session_start"
+    elif name in _KINDS:
+        e.kind = _KINDS[name]
+        e.prompt = raw.get("prompt") or raw.get("task")
+        e.error = raw.get("error") or raw.get("error_message")
+        e.subagent = raw.get("agent_type") or raw.get("subagent_type")
+        e.report = raw.get("last_assistant_message") or raw.get("summary")
+        # Cursor drops context at subagentStart; a subagent's end is for handlers to note.
+        e.observe = name in _OBSERVE or e.kind == "subagent_stop" or (agent == "cursor" and e.kind == "subagent_start")
+    elif name in ("PreToolUse", "preToolUse") and tool in _SUBAGENT_TOOLS:
+        # Claude Code's subagent prompt is only in its Agent/Task call; rewriting it reaches the
+        # subagent. Cursor could do the same only by approving the spawn, so it just observes.
+        e.kind, e.prompt, e.subagent = "subagent_start", args.get("prompt"), args.get("subagent_type")
+        e.observe = agent != "claude"
+    elif name in ("PostToolUse", "postToolUse") and tool == "Read":
+        e.kind, e.files = "read", [args["file_path"]] if args.get("file_path") else []
+    elif agent == "codex" and name == "PostToolUse" and tool == "Bash":
+        e.kind, e.files = "read", shell_reads(args.get("command"), cwd)
+        if not e.files:
             return None
+    elif agent == "cursor" and name == "postToolUse" and tool == "Shell":
+        # Cursor's non-streaming shell reports a failed command here, with its exit code.
+        try:
+            output = json.loads(raw.get("tool_output") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            output = {}
+        code = output.get("exitCode") if isinstance(output, dict) else None
+        if not code:
+            return None
+        e.kind, e.error = "tool_failure", str(output.get("output") or output.get("stderr") or f"exit code {code}")
+    elif agent == "claude":
         target = args.get("file_path") or args.get("notebook_path")
-        files = [target] if target else []
+        e.kind, e.files = "edit", [target] if target else []
     elif agent == "codex":
-        files = patch_files(str(args.get("command") or args.get("input") or ""), cwd)
+        e.kind, e.files = "edit", patch_files(str(args.get("command") or args.get("input") or ""), cwd)
     elif agent in ("cursor", "gemini", "opencode"):
         # These can refuse only before an edit and add a note only after it.
         if agent == "opencode":
-            args = event.get("args") or {}
-            files = patch_files(str(args.get("patchText") or ""), cwd) + (
-                [args["filePath"]] if args.get("filePath") else []
-            )
+            args = raw.get("args") or {}
+            files = patch_files(str(args.get("patchText") or ""), cwd)
+            files += [args["filePath"]] if args.get("filePath") else []
         else:
             target = args.get("file_path") or args.get("path") or args.get("target_file")
             files = [target] if target else []
-        after = str(event.get("hook_event_name", "")).lower().startswith(("post", "after"))
-        session = event.get("conversation_id") if agent == "cursor" else event.get("session_id")
-        acts = ("tell",) if after else ("worktree", "ask")
-        return Edit(session, files, cwd, acts, event.get("transcript_path")) if session and files else None
+        after = name.lower().startswith(("post", "after"))
+        e.kind, e.files, e.acts = "edit", files, ("tell",) if after else ("worktree", "ask")
     else:
         return None
-    session = event.get("session_id")
-    return (
-        Edit(session, list(dict.fromkeys(files)), cwd, transcript=event.get("transcript_path"))
-        if session and files
-        else None
+    if e.kind == "edit":
+        e.files = list(dict.fromkeys(e.files))
+        if not e.files:
+            return None
+    return e if e.session or e.kind == "session_start" else None
+
+
+# --- answering ----------------------------------------------------------------------------
+
+
+def _handler(ref: str):
+    module, func = ref.split(":")
+    return getattr(importlib.import_module(module), func)
+
+
+def merge(replies: list[Reply]) -> Reply:
+    """One Reply from many: a refusal wins and carries everything the agent should read."""
+    join = lambda parts: "\n\n".join(dict.fromkeys(p for p in parts if p)) or None  # noqa: E731
+    deny = join(r.deny for r in replies)
+    context = join(r.context for r in replies)
+    if deny:
+        deny, context = join([deny, context]), None
+    return Reply(
+        context, deny, join(r.keep_going for r in replies), next((r.notice for r in replies if r.notice), None)
     )
 
 
-def render(agent: str, event: dict, action: str, message: str, notice: str) -> tuple[str, int]:
+def dispatch(agent: str, raw: dict) -> tuple[str, int]:
+    event = parse(agent, raw)
+    if not event:
+        return silent(agent, raw), 0
+    replies = []
+    for ref in HANDLERS.get(event.kind, []):
+        try:
+            if reply := _handler(ref)(event):
+                replies.append(reply)
+        except Exception as e:  # one handler's failure must not cost the others, or the session
+            print(f"recall hook: {ref}: {e}", file=sys.stderr)
+    reply = merge(replies)
+    if event.observe or not (reply.context or reply.deny or reply.keep_going):
+        return silent(agent, raw), 0
+    return render(event, reply)
+
+
+def render(e: Event, r: Reply) -> tuple[str, int]:
+    agent, kind = e.agent, e.kind
+    if kind in ("session_start", "compact") and agent in ("claude", "codex"):
+        return r.context or "", 0  # plain text joins the session's context
+    if kind == "stop":
+        if agent == "cursor":
+            return (json.dumps({"followup_message": r.keep_going}), 0) if r.keep_going else ("", 0)
+        if agent in ("claude", "codex") and r.keep_going:
+            return json.dumps({"decision": "block", "reason": r.keep_going}), 0
+        return "", 0
+    if kind == "prompt" and agent in ("claude", "codex") and r.context:
+        return json.dumps(
+            {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": r.context}}
+        ), 0
+    if kind == "edit":
+        return _render_edit(e, r)
+    if kind in ("read", "tool_failure") and r.context:
+        if agent == "cursor":
+            return json.dumps({"additional_context": r.context}), 0
+        if agent in ("claude", "codex"):
+            return json.dumps({"hookSpecificOutput": {"hookEventName": e.name, "additionalContext": r.context}}), 0
+    if kind == "subagent_start" and r.context:
+        if agent == "claude" and e.name == "PreToolUse":
+            args = e.raw.get("tool_input") or {}
+            prompt = f"{args.get('prompt') or ''}\n\n{r.context}".strip()
+            return json.dumps(
+                {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args | {"prompt": prompt}}}
+            ), 0
+        if agent in ("claude", "codex") and e.name == "SubagentStart":
+            return json.dumps(
+                {"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": r.context}}
+            ), 0
+    return silent(agent, e.raw), 0  # a kind whose reply is not confirmed for this agent
+
+
+def _render_edit(e: Event, r: Reply) -> tuple[str, int]:
+    agent, message = e.agent, r.deny or r.context or ""
     if agent in ("claude", "codex"):
         out = {"hookEventName": "PreToolUse"}
-        if action == "tell":
-            out["additionalContext"] = message
-        else:
+        if r.deny:
             out |= {"permissionDecision": "deny", "permissionDecisionReason": message}
+        else:
+            out["additionalContext"] = message
         reply = {"hookSpecificOutput": out}
-        if agent == "claude":
-            reply["systemMessage"] = notice
+        if agent == "claude" and r.notice:
+            reply["systemMessage"] = r.notice  # Codex refuses fields it does not know
         return json.dumps(reply), 0
     if agent == "cursor":
-        if action == "tell":
-            return json.dumps({"additional_context": message}), 0
-        return json.dumps({"permission": "deny", "agent_message": message, "user_message": notice}), 0
+        if r.deny:
+            return json.dumps({"permission": "deny", "agent_message": message, "user_message": r.notice or ""}), 0
+        return json.dumps({"additional_context": message}), 0
     if agent == "gemini":
-        if action == "tell":
-            return json.dumps({"hookSpecificOutput": {"hookEventName": "AfterTool", "additionalContext": message}}), 0
-        return json.dumps({"decision": "deny", "reason": message}), 0
+        if r.deny:
+            return json.dumps({"decision": "deny", "reason": message}), 0
+        return json.dumps({"hookSpecificOutput": {"hookEventName": "AfterTool", "additionalContext": message}}), 0
     if agent == "opencode":
-        return json.dumps({"tell": message} if action == "tell" else {"deny": message}), 0
+        return json.dumps({"deny": message} if r.deny else {"tell": message}), 0
     return "", 0
 
 
-def silent(agent: str) -> str:
-    return json.dumps({"permission": "allow"}) if agent == "cursor" else ""
+def silent(agent: str, raw: dict | None = None) -> str:
+    """Cursor's preToolUse blocks the call unless it gets JSON back. For an edit that is an
+    allow; for any other tool (a Task, say) an empty answer, since allow would approve it."""
+    raw = raw or {}
+    if agent == "cursor" and str(raw.get("hook_event_name", "preToolUse")) == "preToolUse":
+        return json.dumps({"permission": "allow"} if raw.get("tool_name") in (None, "", "Write") else {})
+    return ""
