@@ -57,6 +57,7 @@ FEATURES = (
 DENSE = jit.DENSE
 LATER_SHARE = 0.25  # of sampled prompts, ones typed later in a chat rather than first
 JUDGE_BATCH = 8
+OFFLINE_WAIT = 5.0  # seconds to wait for an embedding when replaying offline (hooks wait 0.25)
 
 JUDGE_SYSTEM = (
     "You label data for a memory tool for coding agents. When a developer types a prompt, the tool may "
@@ -88,7 +89,6 @@ def build(con, n: int, out: str = PAIRS, vectors: bool = True) -> int:
     notes = NoteStore().load()
     sources = {i: [started.get(s) for s in nt.sources] for i, nt in notes.items()}
     note_from = {i: [s for s in nt.sources] for i, nt in notes.items()}
-    embedder = _embedder() if vectors else None
     queries = _sample(con, rng, n)
     written = 0
     with open(out, "w", encoding="utf-8") as f:
@@ -96,7 +96,7 @@ def build(con, n: int, out: str = PAIRS, vectors: bool = True) -> int:
             allowed = {
                 i for i, ts in sources.items() if q["chat"] not in note_from[i] and any(t and t < q["at"] for t in ts)
             }
-            vec = _vector(embedder, q["prompt"]) if embedder else None
+            vec = jit.embed_query(q["prompt"], timeout=OFFLINE_WAIT) if vectors else None
             found = jit.candidates(
                 con, q["prompt"], q["cwd"], own=[q["chat"]], until=q["at"], now=q["at"], allowed_notes=allowed,
                 vector=vec,
@@ -140,7 +140,7 @@ def refresh(con, path: str) -> dict:
         }
         items = jit.candidates(
             con, p["prompt"], p["cwd"], own=[p["chat"]], until=p["at"], now=p["at"], allowed_notes=allowed,
-            vector=jit.embed_query(p["prompt"]),
+            vector=jit.embed_query(p["prompt"], timeout=OFFLINE_WAIT),
         )  # fmt: skip
         found_by[key] = {c.id: c for c in items}
     stale = 0
@@ -187,6 +187,8 @@ def split_of(chat: str) -> str:
 
 def _material(con, c, notes) -> dict:
     """What the judge reads about an item: a chat's title, date, opening and ending, or a note."""
+    if c.kind == "rule":
+        return {"line": c.line}
     if c.kind == "note":
         n = notes.get(c.id)
         return {"title": n.title, "type": n.type, "body": n.body[:900]} if n else {"line": c.line}
@@ -203,25 +205,16 @@ def _material(con, c, notes) -> dict:
     }
 
 
-def _embedder():
-    from . import embeddings
-
-    return embeddings.configured()
-
-
-def _vector(embedder, text: str):
-    return jit.embed_query(text)
-
-
 # --- live fires ----------------------------------------------------------------------------------
 
 LIVE = os.path.join(paths.EVALS, "jit_live.jsonl")
 
 
 def harvest(con, path: str = LIVE, since: float | None = None) -> int:
-    """Turn the prompt fires in the usage log into pairs to label: the prompt the fire answered
-    (the session's user message just before it, once the chat is indexed) and each injected
-    item, with its features replayed at that moment. Pairs already in the file are kept."""
+    """Turn the fires in the usage log into pairs to label, once their chat is indexed: the
+    request each answered (the session's user message just before it) and each injected item.
+    Prompt fires get their gate features replayed at that moment, so they can refit the gate;
+    read fires name the file the agent had just read. Pairs already in the file are kept."""
     from datetime import datetime
 
     from . import usage
@@ -230,7 +223,9 @@ def harvest(con, path: str = LIVE, since: float | None = None) -> int:
     have = {p["id"]: p for p in (_read(path) if os.path.exists(path) else [])}
     notes = NoteStore().load()
     for e in usage.entries(since):
-        if e.get("tool") != "jit" or (e.get("args") or {}).get("event") != "prompt" or not e.get("ids"):
+        args = e.get("args") or {}
+        event = args.get("event")
+        if e.get("tool") != "jit" or event not in ("prompt", "read") or not e.get("ids"):
             continue
         chat, at = f"{e.get('client')}:{e.get('session')}", datetime.fromisoformat(e["at"]).timestamp()
         row = con.execute(
@@ -240,18 +235,23 @@ def harvest(con, path: str = LIVE, since: float | None = None) -> int:
         ).fetchone()
         prompt = jit.askable(row[0]) if row else None
         if not prompt:
-            continue  # not indexed yet, or not the prompt that fired
-        found = jit.candidates(
-            con, prompt, row[3], own=[chat], until=row[1] - 1, now=row[1], vector=jit.embed_query(prompt)
-        )
+            continue  # not indexed yet, or the message is not one a person typed
+        if event == "prompt":
+            vec = jit.embed_query(prompt, timeout=OFFLINE_WAIT)
+            found = jit.candidates(con, prompt, row[3], own=[chat], until=row[1] - 1, now=row[1], vector=vec)
+        elif args.get("file"):
+            found = jit.file_items(con, e.get("client") or "claude", args["file"], row[3], [chat])
+        else:
+            continue
         for c in found:
-            pid = hashlib.sha1(f"live:{chat}:{row[2]}:{c.id}".encode()).hexdigest()[:12]
+            pid = hashlib.sha1(f"live:{event}:{chat}:{row[2]}:{c.id}".encode()).hexdigest()[:12]
             if c.id in e["ids"] and pid not in have:
                 have[pid] = {
-                    "id": pid, "chat": chat, "seq": row[2], "split": "live", "first": row[2] == 0, "at": row[1],
-                    "cwd": row[3], "prompt": prompt[:1500], "kind": c.kind, "item": c.id, "line": c.line,
-                    "features": {k: round(v, 5) for k, v in c.features.items()}, "fired_at": e["at"], "p": e.get("p"),
-                    "material": _material(con, c, notes),
+                    "id": pid, "chat": chat, "seq": row[2], "split": "live", "event": event,
+                    "file": args.get("file"), "first": row[2] == 0, "at": row[1], "cwd": row[3],
+                    "prompt": prompt[:1500], "kind": c.kind, "item": c.id, "line": c.line,
+                    "features": {k: round(v, 5) for k, v in c.features.items()}, "fired_at": e["at"],
+                    "p": e.get("p"), "material": _material(con, c, notes),
                 }  # fmt: skip
     _write(path, list(have.values()))
     return len(have)
@@ -265,7 +265,12 @@ def live_precision(path: str = LIVE) -> dict:
         "fires_labelled": len(rows),
         "precision": round(good / len(rows), 3) if rows else None,
         "precision_ci95": _ci(good, len(rows)),
-        "by_kind": {k: sum(1 for p in rows if p["kind"] == k) for k in ("chat", "note")},
+        "by_event": {
+            ev: {"fires": len(mine), "relevant": sum(1 for p in mine if p["relevant"])}
+            for ev in ("prompt", "read")
+            if (mine := [p for p in rows if p.get("event", "prompt") == ev])
+        },
+        "by_kind": {k: sum(1 for p in rows if p["kind"] == k) for k in ("chat", "note", "rule")},
     }
 
 
@@ -326,7 +331,9 @@ def label(path: str, judge: str, workers: int = 2) -> dict:
 
 def _judge_block(p: dict) -> str:
     m = p["material"]
-    if p["kind"] == "note":
+    if p["kind"] == "rule":
+        item = f"Repository rule: {m.get('line')}"
+    elif p["kind"] == "note":
         item = f"Memory note ({m.get('type')}): {m.get('title')}\n{m.get('body', m.get('line', ''))}"
     else:
         item = (
@@ -334,7 +341,13 @@ def _judge_block(p: dict) -> str:
             f"It opened with: {m.get('opening')}\nIt ended with: {m.get('ending')}"
         )
     where = os.path.basename(p.get("cwd") or "") or "no folder"
-    return f"### Pair {p['id']}\nPrompt (typed in {where}):\n{p['prompt']}\n\nItem:\n{item}"
+    read = (
+        f"\n\nWorking on that, the agent had just read the file {p['file']}; the item was shown beside it, "
+        "so judge whether it bears on that work on that file."
+        if p.get("event") == "read"
+        else ""
+    )
+    return f"### Pair {p['id']}\nPrompt (typed in {where}):\n{p['prompt']}{read}\n\nItem:\n{item}"
 
 
 # --- fitting and checking -----------------------------------------------------------------
@@ -430,32 +443,24 @@ def threshold(probs: list[float], labels: list[bool]) -> dict:
     threshold whose false-injection rate has a Clopper-Pearson upper bound at or below ALPHA,
     trying only thresholds that fire on at least MIN_FIRES pairs (that choice sees no labels).
 
-    When no threshold passes, the bound cannot be promised from this data, and the gate falls
-    back to a conservative one: of the thresholds firing at least MIN_FIRES times, the one with
-    the fewest false injections per fire (the highest on ties). Its bound is reported as is."""
-    order = sorted(set(probs), reverse=True)
-    chosen, path, tried = None, [], []
-    failed = False
-    for t in order:
+    When none passes, the bound cannot be promised from this data, and the threshold is the
+    first in that sequence: the highest that fires on MIN_FIRES calibration pairs. That choice
+    sees no labels either, and its bound is reported as it stands."""
+    path, chosen, first = [], None, None
+    for t in sorted(set(probs), reverse=True):
         fired = [y for p, y in zip(probs, labels, strict=True) if p >= t]
         if len(fired) < MIN_FIRES:
             continue
         bad = sum(1 for y in fired if not y)
         u = upper(bad, len(fired))
-        step = {"t": round(t, 4), "fires": len(fired), "bad": bad, "upper": round(u, 3)}
-        tried.append(step)
-        if not failed:
-            path.append(step)
-            if u > ALPHA:
-                failed = True
-            else:
-                chosen = t
+        path.append({"t": round(t, 4), "fires": len(fired), "bad": bad, "upper": round(u, 3)})
+        first = t if first is None else first
+        if u > ALPHA:
+            break
+        chosen = t
     if chosen is not None:
         return {"threshold": chosen, "certified": True, "path": path}
-    if not tried:
-        return {"threshold": None, "certified": False, "path": path}
-    best = min(tried, key=lambda x: (x["bad"] / x["fires"], -x["t"]))
-    return {"threshold": best["t"], "certified": False, "path": path, "fallback": best}
+    return {"threshold": first, "certified": False, "path": path}
 
 
 def oof(pairs: list[dict], features: tuple[str, ...], folds: int = 5) -> list[float]:
@@ -474,56 +479,74 @@ def _fold(chat: str, folds: int) -> int:
     return int(hashlib.sha1(f"fold:{chat}".encode()).hexdigest()[:8], 16) % folds
 
 
-def report(path: str, features: tuple[str, ...] = FEATURES) -> dict:
+GATE_FEATURES = {"dense": FEATURES + DENSE, "keyword": FEATURES}
+
+
+def _uses(kind: str, p: dict) -> bool:
+    """The pairs a gate decides: the meaning gate those whose item has a stored vector."""
+    return kind == "keyword" or bool(p["features"].get("has_vec"))
+
+
+def report(path: str) -> dict:
+    """Fit both gates on train, check them on test, and check the decision jit makes with
+    them: the meaning gate for items with a stored vector, the keyword gate for the rest
+    (embeddings on), or the keyword gate for every item (embeddings off)."""
     pairs = [p for p in _read(path) if "relevant" in p and not p.get("stale")]
     train = [p for p in pairs if p["split"] == "train"]
     test = [p for p in pairs if p["split"] == "test"]
-    gate = fit(train, features)
-    probs = oof(train, features)
-    calib = threshold(probs, [p["relevant"] for p in train])
-    t = calib["threshold"]
-    test_p = [jit.probability(p["features"], gate) for p in test]
-    labels = [p["relevant"] for p in test]
-    out = {
-        "pairs": {
-            "train": len(train),
-            "test": len(test),
-            "relevant_share": round(sum(labels) / max(1, len(labels)), 3),
-        },
-        "features": list(features),
-        "auc": {
-            "gate": _auc_row(test_p, labels, test),
-            "score_only": _auc_row([p["features"]["score"] for p in test], labels, test),
-            "chats": _auc_row(*_kind(test_p, test, "chat")),
-            "notes": _auc_row(*_kind(test_p, test, "note")),
-        },
-        "threshold": t,
-        "certified": calib["certified"],
-        "calibration_path": calib["path"][-6:],
-        "fallback": calib.get("fallback"),
-        "gate": gate | {"threshold": t if t is not None else 1.01},
+    out: dict = {
+        "pairs": {"train": len(train), "test": len(test), "relevant_share": round(_share(test), 3)},
+        "auc_score_only": _auc_row([p["features"]["score"] for p in test], [p["relevant"] for p in test], test),
+        "gates": {},
     }
-    if t is not None:
-        fired = [(p, y) for p, y in zip(test_p, labels, strict=True) if p >= t]
-        good = sum(1 for _, y in fired if y)
-        prompts = {(q["chat"], q["seq"]) for q in test}
-        hits = [(y, q["kind"]) for p, y, q in zip(test_p, labels, test, strict=True) if p >= t]
-        out["test"] = {
-            "fires": len(fired),
-            "precision": round(good / len(fired), 3) if fired else None,
-            "precision_ci95": _ci(good, len(fired)),
-            "false_injection_rate": round(1 - good / len(fired), 3) if fired else None,
-            "fires_per_prompt": round(len(fired) / max(1, len(prompts)), 3),
-            "recall_of_relevant": round(good / max(1, sum(labels)), 3),
-            "by_kind": {
-                k: {
-                    "fires": sum(1 for _, kind in hits if kind == k),
-                    "good": sum(1 for y, kind in hits if y and kind == k),
-                }
-                for k in ("chat", "note")
-            },
+    gates = {}
+    for kind, feats in GATE_FEATURES.items():
+        tr = [p for p in train if _uses(kind, p)]
+        te = [p for p in test if _uses(kind, p)]
+        g = fit(tr, feats)
+        calib = threshold(oof(tr, feats), [p["relevant"] for p in tr])
+        gates[kind] = g | {"threshold": calib["threshold"] if calib["threshold"] is not None else 1.01}
+        probs = [jit.probability(p["features"], g) for p in te]
+        out["gates"][kind] = {
+            "features": list(feats),
+            "pairs": {"train": len(tr), "test": len(te)},
+            "auc": _auc_row(probs, [p["relevant"] for p in te], te),
+            "auc_chats": _auc_row(*_kind(probs, te, "chat")),
+            "auc_notes": _auc_row(*_kind(probs, te, "note")),
+            "threshold": calib["threshold"],
+            "certified": calib["certified"],
+            "calibration_path": calib["path"][:3] + (["…"] if len(calib["path"]) > 6 else []) + calib["path"][-3:]
+            if len(calib["path"]) > 6
+            else calib["path"],
+            "gate": gates[kind],
         }
+    for mode, route in (("embeddings_on", True), ("embeddings_off", False)):
+        fired = [p for p in test if _passes(p, gates, route)]
+        out[mode] = _fires(fired, test)
+    out["gate_file"] = gates
     return out
+
+
+def _passes(p: dict, gates: dict, embeddings: bool) -> bool:
+    g = gates["dense"] if embeddings and p["features"].get("has_vec") else gates["keyword"]
+    return jit.probability(p["features"], g) >= g["threshold"]
+
+
+def _fires(fired: list[dict], test: list[dict]) -> dict:
+    good = sum(1 for p in fired if p["relevant"])
+    return {
+        "fires": len(fired),
+        "precision": round(good / len(fired), 3) if fired else None,
+        "precision_ci95": _ci(good, len(fired)),
+        "fires_per_prompt": round(len(fired) / max(1, len({(q["chat"], q["seq"]) for q in test})), 3),
+        "recall_of_relevant": round(good / max(1, sum(p["relevant"] for p in test)), 3),
+        "by_kind": {k: f"{sum(1 for p in fired if p['kind'] == k and p['relevant'])}/"
+                    f"{sum(1 for p in fired if p['kind'] == k)}" for k in ("chat", "note")},
+    }  # fmt: skip
+
+
+def _share(rows: list[dict]) -> float:
+    return sum(p["relevant"] for p in rows) / max(1, len(rows))
 
 
 def _ci(good: int, n: int) -> list[float] | None:
@@ -545,9 +568,11 @@ def _kind(probs, rows, kind):
     return [probs[i] for i in keep], [rows[i]["relevant"] for i in keep], [rows[i] for i in keep]
 
 
-def session_chars(con, path: str, gate: dict, limit: int = 40) -> dict:
-    """Replay every prompt of held-out chats through the gate, with the per-session budgets
+def session_chars(con, path: str, gates: dict, limit: int = 40, embeddings: bool = True) -> dict:
+    """Replay every prompt of held-out chats through the gates, with the per-session budgets
     and once-per-session rule, and count the characters each session would have received."""
+    import statistics
+
     chats = sorted({p["chat"] for p in _read(path) if p["split"] == "test"})[:limit]
     per_session, fires = [], []
     for chat in chats:
@@ -561,26 +586,20 @@ def session_chars(con, path: str, gate: dict, limit: int = 40) -> dict:
             if not query:
                 continue
             at = (ts or time.time()) - 1
-            vec = jit.embed_query(query) if any(k in gate["weights"] for k in jit.DENSE) else None
+            vec = jit.embed_query(query, timeout=OFFLINE_WAIT) if embeddings else None
             found = jit.candidates(con, query, s[0] if s else None, own=[chat], until=at, now=at, vector=vec)
-            picked = [c for c in found if jit.probability(c.features, gate) >= gate["threshold"] and c.id not in seen]
-            picked = picked[: jit.MAX_ITEMS]
-            if not picked:
+            picked = [c for c in found if _passes({"features": c.features}, gates, embeddings) and c.id not in seen]
+            block = jit.render(picked[: jit.MAX_ITEMS])
+            if not block or chars + len(block) > jit.WINDOW_CHARS or n >= jit.WINDOW_FIRES:
                 continue
-            block = jit.render(picked)
-            if chars + len(block) > jit.WINDOW_CHARS or n >= jit.WINDOW_FIRES:
-                continue
-            seen |= {c.id for c in picked}
+            seen |= {c.id for c in picked[: jit.MAX_ITEMS]}
             chars += len(block)
             n += 1
         per_session.append(chars)
         fires.append(n)
-    import statistics
-
     return {
         "sessions": len(per_session),
         "chars_mean": round(statistics.fmean(per_session), 1) if per_session else None,
-        "chars_median": statistics.median(per_session) if per_session else None,
         "chars_max": max(per_session, default=None),
         "fires_mean": round(statistics.fmean(fires), 2) if fires else None,
         "sessions_with_a_fire": sum(1 for f in fires if f),
@@ -612,18 +631,29 @@ def from_args(a) -> None:
     if a.label:
         print(json.dumps(label(path, a.judge or "claude:claude-sonnet-5-5", a.workers), indent=2))
         return
-    feats = FEATURES + (() if a.keyword else DENSE)
-    out = report(path, feats)
-    if out.get("threshold") is not None:
-        out["session_chars"] = session_chars(store.connect(), path, out["gate"])
+    out = report(path)
+    con = store.connect()
+    out["session_chars"] = {
+        "embeddings_on": session_chars(con, path, out["gate_file"], embeddings=True),
+        "embeddings_off": session_chars(con, path, out["gate_file"], embeddings=False),
+    }
     print(json.dumps(out, indent=2))
     if a.write:
-        if out.get("threshold") is None:
-            sys.exit("too few labelled pairs to choose a threshold; the gate stays closed")
+        if any(g["threshold"] is None for g in out["gates"].values()):
+            sys.exit("too few labelled pairs to choose a threshold; the gates stay as they are")
+        uncertified = [k for k, g in out["gates"].items() if not g["certified"]]
+        if uncertified:
+            print(
+                f"warning: the {' and '.join(uncertified)} gate cannot promise at most {ALPHA:.0%} false injections "
+                f"with {1 - DELTA:.0%} confidence on these pairs; it uses the highest threshold that fires on "
+                f"{MIN_FIRES} of them instead. Label more pairs (--build, --label, or --live) to certify it.",
+                file=sys.stderr,
+            )
         os.makedirs(paths.HOME, exist_ok=True)
         with open(jit.GATE_FILE, "w") as f:
-            json.dump(out["gate"] | {"fitted": time.strftime("%Y-%m-%d"), "pairs": out["pairs"]}, f, indent=2)
-        print(f"gate written to {jit.GATE_FILE}")
+            stamp = {"fitted": time.strftime("%Y-%m-%d"), "pairs": out["pairs"], "uncertified": uncertified}
+            json.dump(out["gate_file"] | stamp, f, indent=2)
+        print(f"gates written to {jit.GATE_FILE}")
 
 
 def _read(path: str) -> list[dict]:
