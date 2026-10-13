@@ -3,6 +3,7 @@
 Python 3.11+, managed with uv. Runtime deps: `mcp` 2.x (`mcp.server.mcpserver.MCPServer`), `pyyaml`, `jsonschema`; `anthropic` is the optional `recall[anthropic]` extra.
 
 - Run from the repo with `uv run recall <cmd>`. Hooks, the MCP server and the nightly job run the installed `recall-agents` release from PyPI, so changes here reach them only through a release; leave that install in place. Run commands that write notes or the index against a scratch copy (set `RECALL_HOME` and `RECALL_MEMORY`), because the installed release reads the same `~/.agents` folders and may not understand a newer format.
+- Several chats edit this repo at once, so each task gets its own worktree on a branch off `origin/main` (`git worktree add .claude/worktrees/<topic> -b <topic> origin/main`), and all its edits stay inside it. Uncommitted changes in the main checkout belong to other chats: leave them as they are. Run `uv run recall status` before starting, and when recall reports another chat with open changes to a file you are editing, raise it with the user before going on.
 - Before committing: `uvx ruff format src && uvx ruff check src` (CI pins the ruff version; match it when CI and local disagree).
 - Extension points are in CONTRIBUTING.md. Read it before adding an agent source or a model provider.
 - recall never assumes a model vendor. Provider choice lives in `config.toml` `[model]`; code paths go through `llm.build()` / `llm.from_spec()` and the `Provider` interface.
