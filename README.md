@@ -543,11 +543,15 @@ and clones of the repo need nothing special. A file changed only through a shell
 not seen.
 
 The links never leave your machine. They live only in recall's index, and recall uses git
-read-only (`rev-list`, `log`, `show`, `blame`): nothing goes into a repo. That rules out
-commit messages, trailers, git notes, refs, branches and hooks, and nothing is pushed, so
-no chat id reaches a project or its collaborators. Links are worked out without a model,
-during the nightly run and on each `recall why`. Set `[links] enabled = false` in
-`config.toml` to stop linking; recall then drops the stored links.
+read-only (`rev-parse`, `rev-list`, `log`, `show`, `blame`, with optional locks, lazy fetching
+and textconv caches off): nothing goes into a repo. That rules out commit messages,
+trailers, git notes, refs, branches, hooks and objects, and nothing is pushed or fetched, so
+no chat id reaches a project or its collaborators. Agents are told to use what `recent_chats`
+returns to answer you, never to copy it into commits, PRs or files. Links are worked out
+without a model, during the nightly run and on each `recall why`. What recall reads from
+transcripts for them is kept after an agent deletes a transcript, since it cannot be read
+again. Set `[links] enabled = false` in `config.toml` to stop linking; recall then deletes
+all of it.
 
 ### What recall is used for
 
