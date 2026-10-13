@@ -20,6 +20,7 @@ KINDS = {
     "read": {"read_chat", "read_note", "show", "memory show"},
     "recent": {"recent_chats", "recent"},
     "load": {"session_start", "project_memory"},
+    "jit": {"jit"},
 }
 _enabled: bool | None = None
 
@@ -139,8 +140,46 @@ def summary(since: float | None = None) -> dict:
             "with_project": sum(1 for e in loads if e.get("project")),
             "empty": sum(1 for e in loads if not e.get("chars")),
         },
+        "jit": jit_summary(log),
         "projects": dict(Counter(e["project"] for e in log if e.get("project")).most_common(8)),
         "latest": log[-10:],
+    }
+
+
+def jit_summary(log: list[dict]) -> dict:
+    """What jit.py injected: fires by event, how often a prompt fired, characters per session,
+    and how many injected chats or notes the agent then opened (a read of that id by the same
+    agent within the hour: the log keeps no link between a hook's session and an MCP call's)."""
+    jit = [e for e in log if e.get("tool") == "jit"]
+    fires = [e for e in jit if e.get("ids")]
+    if not jit:
+        return {}
+    sessions: dict[str, int] = defaultdict(int)
+    for e in fires:
+        sessions[f"{e.get('client')}:{e.get('session')}"] += e.get("chars") or 0
+    followed = 0
+    for i, e in enumerate(log):
+        if e.get("tool") != "jit" or not e.get("ids"):
+            continue
+        start = datetime.fromisoformat(e["at"]).timestamp()
+        for later in log[i + 1 :]:
+            if datetime.fromisoformat(later["at"]).timestamp() - start > 3600:
+                break
+            same = kind(later) == "read" and later.get("client") == e.get("client")
+            if same and set(e["ids"]) & set(later.get("ids") or []):
+                followed += 1
+                break
+    prompts = [e for e in jit if (e.get("args") or {}).get("event") == "prompt"]
+    chars = sorted(sessions.values())
+    return {
+        "fires": len(fires),
+        "by_event": dict(Counter((e.get("args") or {}).get("event") for e in fires)),
+        "items": dict(Counter(k for e in fires for k in e.get("kinds") or [])),
+        "prompts": len(prompts),
+        "prompts_fired": sum(1 for e in prompts if e.get("ids")),
+        "sessions": len(sessions),
+        "chars_per_session": {"median": chars[len(chars) // 2], "max": chars[-1]} if chars else {},
+        "opened_after": followed,
     }
 
 
