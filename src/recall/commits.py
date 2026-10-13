@@ -1,14 +1,16 @@
 """Which chats produced which commits, worked out on this machine alone.
 
-For each chat recall reads the files its agent edited and the lines it left in them, from
-the same tool calls status.py reads (Edit, Write, StrReplace, apply_patch). It then matches
-them with commits in that repo: made after the edits, touching the same files, and adding
-the same lines. When two chats wrote the same line, the one that wrote it last before the
-commit gets it. A chat that ran `git commit` itself is matched by the sha git printed, or by
-the commit's subject when the agent keeps no command output (Cursor).
+For each chat recall reads the files its agent edited and the lines it left in them
+(chats/work.py, from the same tool calls status.py reads). It then matches them with commits
+in that repo: made after the edits, touching the same files, and adding the same lines. When
+two chats wrote the same line, the one that wrote it last before the commit gets it. Lines
+many commits add (boilerplate) are no evidence, and a line an earlier commit on the same
+history already added was moved, not written. A chat that ran `git commit` itself is matched
+by the sha git printed, or by the commit's subject when the agent keeps no command output
+(Cursor).
 
 Private by design. Links live only in recall's index. Git is only read (rev-list, log, show,
-blame), with optional locks off, so nothing is written to any repo: no commit messages,
+blame, merge-base), with optional locks off, so nothing is written to any repo: no commit messages,
 trailers, notes, refs, branches or hooks, and nothing is pushed. Every table here is derived:
 it can be rebuilt from the chats (which the archive keeps) and git. A chat whose transcript
 is gone keeps the edits read from it while it existed. `[links] enabled = false` in
