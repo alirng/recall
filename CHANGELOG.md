@@ -30,6 +30,13 @@ All notable changes to recall are listed here. The format follows
   interrupting it (`recall resolve --repo … --file …` from the command line). The row shows
   when it was sent and clears once the overlap does; pressing it again sends nothing more.
 
+- **Exploration subagents start from the last answer.** When Claude Code's Explore (or Codex's
+  explorer) starts in a repo recall has seen explored before, it gets the earlier report that
+  best matches its question, as pointers with the commit, age and files changed since, or
+  nothing when no report clears the gate. Reports are recorded by the subagent-stop hook of
+  Claude Code, Codex and Cursor with the commit they saw; `recall explore backfill` adds the
+  ones in your history. Cursor's subagents get them through `project_memory(path, task)`,
+  which any agent can call. `recall eval explore` replays your past explorations.
 - **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor
   chats active in the last 12 hours, the branch each is on and the files it edited, and flags a
   file that two chats in one repo both have open changes to: whether the two would conflict if
