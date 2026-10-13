@@ -12,7 +12,8 @@ DEFAULTS = {
     "sources": [],  # agents to import from; empty means every agent found
     "model": {},  # provider, name, and for some providers base_url / api_key / effort
     "embeddings": {},  # optional semantic search: provider, name, base_url; see embeddings.py
-    "dream": {"max_minutes": 120, "max_calls": 80},
+    # max_calls caps a plan's or local model's calls; on an API key max_usd (dollars) caps a run.
+    "dream": {"max_minutes": 120, "max_calls": 80, "max_usd": 1.0},
     "contexts": {},  # name -> folders, e.g. work = ["~/Projects/Acme"]; see contexts.py
     # connect = true: recall keeps every Claude Code, Codex and Cursor folder connected (see autopilot.py).
     # Unset until `recall setup` asks, once.

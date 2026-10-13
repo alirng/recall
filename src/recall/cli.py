@@ -211,6 +211,8 @@ def cmd_dream(a) -> None:
         max_chats=a.max_chats,
         max_calls=a.max_calls,
         max_minutes=a.max_minutes,
+        max_usd=a.max_usd if a.max_usd is not None else config.load()["dream"].get("max_usd"),
+        batch=not a.no_batch,
         read=not a.consolidate_only,
         fold=not a.extract_only,
     )
@@ -948,6 +950,8 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-chats", type=int, help="read at most N chats")
     sp.add_argument("--max-calls", type=int, help="stop after N model calls")
     sp.add_argument("--max-minutes", type=int, help="time budget; unread chats carry over")
+    sp.add_argument("--max-usd", type=float, help="dollar budget for an API key (default: [dream] max_usd)")
+    sp.add_argument("--no-batch", action="store_true", help="never use the provider's batch API this run")
     sp.add_argument("--extract-only", action="store_true", help="read chats but do not update notes")
     sp.add_argument("--consolidate-only", action="store_true", help="update notes without reading chats")
     sp = command("memory", cmd_memory, "browse memory notes")
