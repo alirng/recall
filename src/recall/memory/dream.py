@@ -90,9 +90,10 @@ def _link_commits(con, log) -> None:
 
     try:
         r = commits.update(con)
-        if r.get("links"):
-            log(f"commit links: {r['links']} in {r['repos']} repos ({r['seconds']}s)")
+        if r.get("links_written"):
+            log(f"commit links: {r['links_written']} written in {r['repos']} repos ({r['seconds']}s)")
     except Exception as e:  # never costs the night's memory run
+        con.rollback()
         log(f"commit links skipped: {e!r}")
 
 
