@@ -3,6 +3,7 @@
   recall eval jit --build N      replay N prompts from your history and write the pairs to label
   recall eval jit --label        a judge model labels each pair: was the item relevant?
   recall eval jit [--write]      fit the gate, check it, and with --write install it
+  recall eval jit --live         label the prompt fires in the usage log: live precision
 
 Building replays the moment each sampled prompt was typed: only chats started before it can
 match, a chat never matches itself, and only notes learned from earlier chats count. Each
@@ -210,6 +211,62 @@ def _embedder():
 
 def _vector(embedder, text: str):
     return jit.embed_query(text)
+
+
+# --- live fires ----------------------------------------------------------------------------------
+
+LIVE = os.path.join(paths.EVALS, "jit_live.jsonl")
+
+
+def harvest(con, path: str = LIVE, since: float | None = None) -> int:
+    """Turn the prompt fires in the usage log into pairs to label: the prompt the fire answered
+    (the session's user message just before it, once the chat is indexed) and each injected
+    item, with its features replayed at that moment. Pairs already in the file are kept."""
+    from datetime import datetime
+
+    from . import usage
+    from .memory.notes import NoteStore
+
+    have = {p["id"]: p for p in (_read(path) if os.path.exists(path) else [])}
+    notes = NoteStore().load()
+    for e in usage.entries(since):
+        if e.get("tool") != "jit" or (e.get("args") or {}).get("event") != "prompt" or not e.get("ids"):
+            continue
+        chat, at = f"{e.get('client')}:{e.get('session')}", datetime.fromisoformat(e["at"]).timestamp()
+        row = con.execute(
+            "select m.text, m.ts, m.seq, s.project from messages m join sessions s on s.id = m.session_id "
+            "where m.session_id = ? and m.role = 'user' and m.ts <= ? order by m.ts desc limit 1",
+            (chat, at + 5),
+        ).fetchone()
+        prompt = jit.askable(row[0]) if row else None
+        if not prompt:
+            continue  # not indexed yet, or not the prompt that fired
+        found = jit.candidates(
+            con, prompt, row[3], own=[chat], until=row[1] - 1, now=row[1], vector=jit.embed_query(prompt)
+        )
+        for c in found:
+            pid = hashlib.sha1(f"live:{chat}:{row[2]}:{c.id}".encode()).hexdigest()[:12]
+            if c.id in e["ids"] and pid not in have:
+                have[pid] = {
+                    "id": pid, "chat": chat, "seq": row[2], "split": "live", "first": row[2] == 0, "at": row[1],
+                    "cwd": row[3], "prompt": prompt[:1500], "kind": c.kind, "item": c.id, "line": c.line,
+                    "features": {k: round(v, 5) for k, v in c.features.items()}, "fired_at": e["at"], "p": e.get("p"),
+                    "material": _material(con, c, notes),
+                }  # fmt: skip
+    _write(path, list(have.values()))
+    return len(have)
+
+
+def live_precision(path: str = LIVE) -> dict:
+    """How many labelled live fires were relevant, with a 95% Clopper-Pearson interval."""
+    rows = [p for p in _read(path) if "relevant" in p] if os.path.exists(path) else []
+    good = sum(1 for p in rows if p["relevant"])
+    return {
+        "fires_labelled": len(rows),
+        "precision": round(good / len(rows), 3) if rows else None,
+        "precision_ci95": _ci(good, len(rows)),
+        "by_kind": {k: sum(1 for p in rows if p["kind"] == k) for k in ("chat", "note")},
+    }
 
 
 # --- labelling --------------------------------------------------------------------------------
@@ -541,6 +598,13 @@ def from_args(a) -> None:
         con = store.connect()
         n = build(con, a.build, path, vectors=not a.keyword)
         print(f"wrote {n} pairs to {path}; label them with `recall eval jit --label`")
+        return
+    if a.live:
+        live = a.cases or LIVE
+        n = harvest(store.connect(), live, store.parse_since(a.since) if getattr(a, "since", None) else None)
+        print(f"{n} live fires in {live}", file=sys.stderr)
+        label(live, a.judge or "claude:claude-sonnet-5-5", a.workers)
+        print(json.dumps(live_precision(live), indent=2))
         return
     if a.refresh:
         print(json.dumps(refresh(store.connect(), path), indent=2))
