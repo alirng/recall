@@ -168,7 +168,12 @@ def ask(case: dict, model: str, mcp_config: str, timeout: int, skill: bool = Fal
 
 
 def run_agent(
-    prompt: str, model: str = DEFAULT_MODEL, system: str = "", mcp_config: str | None = None, timeout: int = TIMEOUT
+    prompt: str,
+    model: str = DEFAULT_MODEL,
+    system: str = "",
+    mcp_config: str | None = None,
+    timeout: int = TIMEOUT,
+    settings: str | None = None,
 ) -> dict:
     """Run Claude Code headless on one prompt with recall's MCP tools and nothing else.
 
@@ -177,7 +182,8 @@ def run_agent(
     hooks, plugins, skills, CLAUDE.md or auto-memory; an empty temporary working folder; the
     signed-in plan rather than an API key; and no transcript saved, so the run never reaches
     ~/.claude/projects. system is appended to Claude Code's own system prompt. mcp_config:
-    a file from write_mcp_config() (by default one is written for this call).
+    a file from write_mcp_config() (by default one is written for this call). settings: JSON
+    for --settings, such as the hooks an arm tests (they run despite --setting-sources).
 
     Returns {"answer": the final reply, "row": status ("ok", "timeout", "api_error",
     "truncated" or "mcp_error"), detail and numbers (tokens, tool calls, seconds, cost),
@@ -213,6 +219,7 @@ def run_agent(
         "--disable-slash-commands",
         "--no-session-persistence",
         *(["--append-system-prompt", system] if system else []),
+        *(["--settings", settings] if settings else []),
     ]
     env = {**plan_env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"), "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
     cwd = tempfile.mkdtemp(prefix=TMP_PREFIX)
