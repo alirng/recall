@@ -91,7 +91,9 @@ jobs:
           recall status
           recall status --json > /dev/null
           readme="$GITHUB_WORKSPACE/README.md"
-          echo "{\"session_id\":\"ci\",\"tool_input\":{\"file_path\":\"$readme\"}}" | recall status --hook --agent claude
+          echo "{\"session_id\":\"ci\",\"tool_input\":{\"file_path\":\"$readme\"}}" | recall hook --agent claude
+          echo "{\"session_id\":\"ci\",\"hook_event_name\":\"SessionStart\",\"cwd\":\"$GITHUB_WORKSPACE\"}" | recall hook --agent codex
+          echo "{\"session_id\":\"ci\",\"tool_input\":{\"file_path\":\"$readme\"}}" | recall status --hook --agent claude  # the old entry
           # Cursor blocks the edit unless its hook answers, so the quiet answer must be "allow".
           echo "{\"conversation_id\":\"ci\",\"hook_event_name\":\"preToolUse\",\"tool_input\":{\"file_path\":\"$readme\"}}" \
-            | recall status --hook --agent cursor | grep -q '"permission": "allow"'
+            | recall hook --agent cursor | grep -q '"permission": "allow"'

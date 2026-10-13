@@ -534,6 +534,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall usage [--since 7d]` | how recall itself gets used, from its local log |
 | `recall status [--since 12h] [--json]` | what each agent is working on now, and files two chats both have open changes to |
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
+| `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first) |
 | `recall schedule enable \| disable \| status` | the nightly run |
 | `recall eval search \| agent \| memory \| swe-contextbench \| memorycode \| amb \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |

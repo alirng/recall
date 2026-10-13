@@ -82,6 +82,28 @@ Then run `uv run recall index`, and search for a chat you know with `uv run reca
 Field-level notes for about 25 agents are in
 [docs/research/agent-storage-and-integration.md](docs/research/agent-storage-and-integration.md).
 
+## Adding a hook
+
+Every hook of every agent runs one command, `recall hook --agent <agent>`.
+`src/recall/integrations/hooks.py` turns what the agent sends into an `Event` of one kind
+(edit, read, prompt, stop, compact, session start, …), runs the handlers for that kind, and
+merges their `Reply`s into the one answer that agent accepts.
+
+1. Write the handler in your feature's own module: a function that takes the `Event` and
+   returns a `Reply` (context for the model, a refusal, or text that keeps the agent going)
+   or `None`. Keep it fast: it runs on every matching event.
+2. Add it to `HANDLERS` under its kind, as `"recall.<module>:<function>"`.
+3. Add the agent events that should fire it to `INSTALL`, for Claude Code, Codex and Cursor
+   alike. `recall install` writes exactly these entries, replacing older ones of its own.
+4. If the kind is new, teach `parse` to recognise it and `render` to answer it for each
+   agent. Use formats confirmed in that agent's docs or source; a kind not confirmed for an
+   agent stays silent there. Codex rejects replies with fields it does not know, Cursor's
+   `preToolUse` must always print JSON, and Cursor runs Claude Code's hooks too (the claude
+   adapter stands down when `cursor_version` is present).
+
+Then pipe a recorded event through `recall hook --agent <agent>` for each agent and check the
+reply.
+
 ## Adding a model provider
 
 Every provider sits behind one interface, so recall does not depend on any one vendor.

@@ -159,59 +159,51 @@ def _skill(dry_run: bool = False, remove: bool = False) -> list[str]:
 # --- hooks ----------------------------------------------------------------------
 
 
+def _entries(agent: str, cmd: str) -> list[tuple[str, dict]]:
+    """recall's entries for one agent, from hooks.INSTALL: every one runs `recall hook`."""
+    command = f"{cmd} hook --agent {agent}"
+    out = []
+    for event, matcher in edit_hooks.INSTALL[agent]:
+        if agent == "cursor":  # Cursor lists commands directly under each event
+            entry = {"command": command, "timeout": 10}
+        elif agent == "gemini":  # Gemini CLI wants a name, and its timeouts are in milliseconds
+            entry = {"hooks": [{"type": "command", "name": "recall", "command": command, "timeout": 10000}]}
+        else:
+            hook = {"type": "command", "command": command, "timeout": 10}
+            if agent == "codex" and event == "SessionStart":
+                hook["statusMessage"] = "Loading memory from recall"
+            entry = {"hooks": [hook]}
+        out.append((event, {"matcher": matcher, **entry} if matcher else entry))
+    return out
+
+
 def _hook_claude(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
     """SessionStart output joins the session's context, so new, resumed and compacted
-    sessions all start with the memory block. The PreToolUse hook applies the coordination
-    rules before each edit (hooks.py)."""
+    sessions all start with the memory block; the other entries are in hooks.INSTALL."""
     if not os.path.isdir(os.path.dirname(CLAUDE_SETTINGS)):
         return "Claude Code not found, skipped"
-    wanted = {
-        "SessionStart": {"hooks": [{"type": "command", "command": f"{cmd} context --hook", "timeout": 10}]},
-        "PreToolUse": {
-            "matcher": edit_hooks.EDIT_TOOLS["claude"],
-            "hooks": [{"type": "command", "command": f"{cmd} status --hook --agent claude", "timeout": 10}],
-        },
-    }
-    return _hook_file(CLAUDE_SETTINGS, wanted, dry_run, remove)
+    return _hook_file(CLAUDE_SETTINGS, _entries("claude", cmd), dry_run, remove)
 
 
 def _hook_codex(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
-    """Codex adds SessionStart output to the session as developer context, and runs the
-    PreToolUse hook before each apply_patch, once you have trusted them in Codex's /hooks."""
+    """Codex runs its hooks from ~/.codex/hooks.json once you have trusted them in /hooks."""
     if not os.path.isdir(os.path.dirname(CODEX_HOOKS)):
         return "Codex not found, skipped"
-    start = {"type": "command", "command": f"{cmd} context --hook --agent codex", "timeout": 10}
-    edit = {"type": "command", "command": f"{cmd} status --hook --agent codex", "timeout": 10}
-    wanted = {
-        "SessionStart": {"hooks": [start | {"statusMessage": "Loading memory from recall"}]},
-        "PreToolUse": {"matcher": edit_hooks.EDIT_TOOLS["codex"], "hooks": [edit]},
-    }
-    report = _hook_file(CODEX_HOOKS, wanted, dry_run, remove)
-    return report + ("; trust them once with /hooks in Codex" if " added " in report else "")
+    report = _hook_file(CODEX_HOOKS, _entries("codex", cmd), dry_run, remove)
+    return report + ("; trust them once with /hooks in Codex" if " written " in report else "")
 
 
 def _hook_cursor(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
-    """Cursor's preToolUse can refuse an edit and its postToolUse can add context, so the edit
-    hook goes in both (hooks.py). Cursor reloads the file on save."""
+    """Cursor reloads ~/.cursor/hooks.json on save."""
     if not os.path.isdir(os.path.dirname(CURSOR_HOOKS)):
         return "Cursor not found, skipped"
-    edit = {"command": f"{cmd} status --hook --agent cursor", "matcher": edit_hooks.EDIT_TOOLS["cursor"], "timeout": 10}
-    return _hook_file(CURSOR_HOOKS, {"preToolUse": edit, "postToolUse": edit}, dry_run, remove, flat=True)
+    return _hook_file(CURSOR_HOOKS, _entries("cursor", cmd), dry_run, remove, flat=True)
 
 
 def _hook_gemini(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
-    """Gemini CLI's BeforeTool can refuse an edit and AfterTool can add context; its timeouts
-    are in milliseconds."""
     if not (shutil.which("gemini") or os.path.exists(GEMINI_SETTINGS)):
         return "Gemini CLI not found, skipped"
-    edit = {
-        "type": "command",
-        "name": "recall-edit",
-        "command": f"{cmd} status --hook --agent gemini",
-        "timeout": 10000,
-    }
-    group = {"matcher": edit_hooks.EDIT_TOOLS["gemini"], "hooks": [edit]}
-    return _hook_file(GEMINI_SETTINGS, {"BeforeTool": group, "AfterTool": group}, dry_run, remove)
+    return _hook_file(GEMINI_SETTINGS, _entries("gemini", cmd), dry_run, remove)
 
 
 def _hook_opencode(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
@@ -233,36 +225,43 @@ def _hook_opencode(cmd: str, dry_run: bool = False, remove: bool = False) -> str
     return f"edit plugin added at {OPENCODE_PLUGIN}"
 
 
-def _hook_file(path: str, wanted: dict, dry_run: bool, remove: bool, flat: bool = False) -> str:
-    """Add or remove recall's entries in one agent's hooks file, in one write so the backup
-    holds the file as it was. Claude Code and Codex wrap commands in groups under each event;
-    Cursor lists them directly (flat)."""
+def _hook_file(path: str, entries: list[tuple[str, dict]], dry_run: bool, remove: bool, flat: bool = False) -> str:
+    """Make recall's entries in one agent's hooks file exactly `entries`, keyed by (event,
+    matcher): add the missing, replace stale ones (an older command, a dropped matcher),
+    leave everyone else's alone. One write, so the backup holds the file as it was. Claude
+    Code, Codex and Gemini CLI wrap commands in groups under each event; Cursor lists them
+    directly (flat)."""
     try:
         config = json.loads(_read(path) or "{}")
     except json.JSONDecodeError:
         return f"{path} is not valid JSON, skipped"
     hooks = config.setdefault("hooks", {})
+
+    def ours(e: dict) -> bool:
+        return _is_ours(e) if flat else any(_is_ours(h) for h in e.get("hooks", []))
+
     changed = []
-    for event, entry in wanted.items():
-        entries = hooks.get(event, [])
-        ours = [e for e in entries if (_is_ours(e) if flat else any(_is_ours(h) for h in e.get("hooks", [])))]
-        if remove and ours:
-            hooks[event] = [e for e in entries if e not in ours]
-            if not hooks[event]:
-                del hooks[event]
+    for event in list(hooks):
+        keep = [e for e in hooks[event] if not ours(e) or (not remove and (event, e) in entries)]
+        if len(keep) != len(hooks[event]):
             changed.append(event)
-        elif not remove and not ours:
-            hooks.setdefault(event, []).append(entry)
-            changed.append(event)
+        if keep:
+            hooks[event] = keep
+        else:
+            del hooks[event]
+    if not remove:
+        for event, entry in entries:
+            if entry not in hooks.get(event, []):
+                hooks.setdefault(event, []).append(entry)
+                changed.append(event)
     if flat:
         config.setdefault("version", 1)
+    changed = list(dict.fromkeys(changed))
     if changed and not dry_run:
         _write(path, json.dumps(config, indent=2))
-    kinds = list(dict.fromkeys("session-start" if e == "SessionStart" else "edit" for e in changed))
-    what = " and ".join(kinds) + (" hooks" if len(changed) > 1 else " hook")
     if remove:
-        return f"{what} removed" if changed else "no hooks installed"
-    return f"{what} added to {path}" if changed else "hooks already installed"
+        return f"hooks removed ({', '.join(changed)})" if changed else "no hooks installed"
+    return f"hooks written to {path} ({', '.join(changed)})" if changed else "hooks already installed"
 
 
 def _claude_registered() -> bool:
@@ -271,7 +270,7 @@ def _claude_registered() -> bool:
 
 def _is_ours(hook: dict) -> bool:
     command = hook.get("command", "")
-    return NAME in command and (" context" in command or " status --hook" in command)
+    return NAME in command and any(k in command for k in (" hook --agent", " context --hook", " status --hook"))
 
 
 # --- helpers ------------------------------------------------------------------
