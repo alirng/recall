@@ -51,15 +51,40 @@ name = "qwen3:4b"
 server = "ollama"                      # local only
 base_url = "http://localhost:11434"    # local and custom
 api_key = "keychain"                   # env:NAME, keychain or file; never the key itself
+batch = "auto"                         # API keys: send the nightly run as batches, at half price; "off" never
+consolidate = "anthropic:claude-sonnet-5-5"  # optional: a second model folds memories into notes
+fallback = "claude:haiku"              # optional: the plan to use once the key's credits run out
 ```
 
 Whichever you pick, every call is validated against a strict JSON schema, retried with
-backoff, cached, logged, and capped by time and call budgets. recall's own calls never show
+backoff, cached, logged, and capped by time and call budgets (with an API key, a dollar budget). recall's own calls never show
 up in your chat history: Claude Code runs with no tools, no MCP servers, project settings only
 and no saved session, and Codex runs read-only and ephemeral, without your user config. The
 Anthropic API needs the `recall-agents[anthropic]` extra.
 
 For a local model, smaller is kinder to your laptop: a 4B model suits 16 GB of memory.
+
+### Batch API and the dollar budget
+
+With an Anthropic or OpenAI API key, the nightly run uses the provider's batch API: the same
+calls at half the price, answered within minutes rather than seconds. recall sends the night's
+extraction as one batch, then consolidation in rounds (every project's next batch of
+candidates side by side), and records each call's cost. A round of fewer than three calls is
+asked directly. A batch still running after 20 minutes is cancelled and the rest of the night
+runs synchronously; one still running when the time budget ends is collected by the next run.
+`batch = "off"` or `recall dream --no-batch` turns it off. Subscription CLIs (ChatGPT, Claude)
+and local models never use it.
+
+`[dream] max_usd` (default $1.00, or `--max-usd`) caps what a run may spend, in place of the
+call cap, which is there for plans' rate limits. A model whose price recall does not know is
+not capped by dollars; set `price = [in, out]` (dollars per million tokens) in `[model]`.
+Claude Max and Team plans include monthly API credits that cover this; give recall its own
+Console workspace with a spend limit. When the credits run out, the run carries on with
+`fallback` if you set one, or stops cleanly and continues the next night.
+
+On my history, Claude Haiku 5.5 read a backlog of 2,452 chats in one batch for $0.77, and the
+whole backlog (2,859 candidate memories folded into notes) took two nights at the $1 default.
+A typical night of about 40 new chats costs about 3 cents.
 
 ## Semantic search (optional)
 
@@ -99,7 +124,7 @@ else the `zstd` command (`brew install zstd`). With none of them, `recall index`
 | `recall search <words>` · `show <id>` · `recent` | chat history |
 | `recall forget <id> \| --project NAME [--yes]` | remove chats from the index, archive, vectors, exploration reports and the cached answers that quote them; lists the notes that cite them |
 | `recall embed` | embed messages for semantic search (needs `[embeddings]` in config.toml) |
-| `recall dream [--max-minutes N] [--max-calls N]` | update memory now; unlike the nightly run, it has no budget unless you give one |
+| `recall dream [--max-minutes N] [--max-calls N] [--max-usd X] [--no-batch]` | update memory now; unlike the nightly run, it has no budget unless you give one |
 | `recall memory [search <words> \| show <id> \| link]` | browse notes; `link` recomputes links now |
 | `recall projects [suggest \| show <name>] [--months N] [--all]` | your projects as lanes; `suggest` drafts projects.yaml |
 | `recall rules [project \| folder] [--write]` | which agent reads which instructions; `--write` closes the gaps |
