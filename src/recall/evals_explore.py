@@ -272,7 +272,7 @@ def _judge_offline(con, all_cases, rows, judge: str, sample: int, run) -> dict:
 
 # --- agent replay ---------------------------------------------------------------------------
 
-# What the replayed agents may use: reading and searching. Headless, everything else is denied,
+# What the replayed agents may use: reading and searching. In dontAsk mode everything else is denied,
 # so a replayed prompt (real chat history) cannot write, delete or reach the network through
 # them. find is left out because -exec and -delete write.
 READ_ONLY = [
@@ -417,9 +417,9 @@ def _run_one(earlier: list[dict], c: dict, arm: str, rep: int, model: str, timeo
         # recall among them) would serve the "without" arm too, or the "with" arm twice.
         "--setting-sources",
         "project,local",
-        # Read-only: anything not on READ_ONLY is denied, as headless runs cannot ask.
+        # Read-only: dontAsk denies every tool not on READ_ONLY, and nobody answers prompts.
         "--permission-mode",
-        "default",
+        "dontAsk",
         "--permission-prompts",
         "none",
         "--allowedTools",
@@ -607,7 +607,7 @@ def from_args(a) -> None:
         settings = {"model": model, "repeats": a.repeats, "limit": a.limit or 10, "workers": min(a.workers, 2)}
         settings["flags"] = (
             "claude -p --model M --output-format stream-json --verbose --no-session-persistence "
-            "--setting-sources project,local --permission-mode default --permission-prompts none "
+            "--setting-sources project,local --permission-mode dontAsk --permission-prompts none "
             f"--allowedTools {' '.join(READ_ONLY)} --strict-mcp-config --mcp-config '{{\"mcpServers\": {{}}}}' "
             "(prompt on stdin, its paths rewritten to the copy)"
         )
