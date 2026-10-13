@@ -961,6 +961,7 @@ def _parser() -> argparse.ArgumentParser:
     jg.add_argument("--build", type=int, metavar="N", help="replay N prompts from your history into pairs to label")
     jg.add_argument("--label", action="store_true", help="label the unlabelled pairs with the judge")
     jg.add_argument("--refresh", action="store_true", help="recompute the pairs' features, keeping their labels")
+    jg.add_argument("--live", action="store_true", help="label the prompt fires in the usage log: live precision")
     jg.add_argument("--write", action="store_true", help="install the fitted gate for this machine's hooks")
     return p
 
