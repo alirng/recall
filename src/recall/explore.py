@@ -42,8 +42,6 @@ create table if not exists explorations (
   started_at real,  -- when the exploration began; created_at is when its report came
   session_id text  -- the chat recall indexes it under (a Claude subagent's: its parent's), for `recall forget`
 );
-create index if not exists explorations_repo on explorations(repo, created_at);
-create index if not exists explorations_session on explorations(session_id);
 create virtual table if not exists explorations_fts using fts5(
   id unindexed, session_id unindexed, prompt, report, tokenize='porter unicode61'
 );
@@ -51,6 +49,16 @@ create virtual table if not exists explorations_fts using fts5(
 -- (Claude Code without session persistence). Kept a day.
 create table if not exists exploration_starts (session_id text, prompt text, at real);
 """
+
+INDEXES = """
+create index if not exists explorations_repo on explorations(repo, created_at);
+create index if not exists explorations_session on explorations(session_id);
+"""
+# explorations' columns, in the order record() writes them
+COLUMNS = (
+    "id agent agent_type repo root folder commit_sha commit_source branch dirty created_at prompt report "
+    "origin prompt_terms report_terms started_at session_id"
+).split()
 
 MAX_CHARS = 5000  # the whole injected block
 FINDINGS_CHARS = 3200  # of which the earlier report's pointers
@@ -77,7 +85,35 @@ def connect(path: str | None = None, timeout: float = 10) -> sqlite3.Connection:
     con = sqlite3.connect(path, timeout=timeout)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    _upgrade(con)
+    con.executescript(INDEXES)
     return con
+
+
+def _columns(con, table: str) -> list[str]:
+    return [r[1] for r in con.execute(f"pragma table_info({table})")]
+
+
+def _upgrade(con) -> None:
+    """Bring tables an earlier version of this code made up to SCHEMA: add missing columns to
+    explorations (never dropping its rows), and rebuild the search table and the start log,
+    which hold nothing that explorations does not."""
+    have = _columns(con, "explorations")
+    for c in (c for c in COLUMNS if c not in have):
+        con.execute(f"alter table explorations add column {c} {'real' if c.endswith('_at') else 'text'}")
+    for r in con.execute("select id, prompt, report, root, folder from explorations where prompt_terms is null"):
+        terms = (" ".join(_tokens(question(r[1], r[3:]))), " ".join(sorted(set(_tokens(r[2])))), r[0])
+        con.execute("update explorations set prompt_terms = ?, report_terms = ? where id = ?", terms)
+    if _columns(con, "explorations_fts") != ["id", "session_id", "prompt", "report"]:
+        con.execute("drop table explorations_fts")
+        con.executescript(SCHEMA)
+        for r in con.execute("select id, session_id, prompt, report, root, folder from explorations").fetchall():
+            con.execute("insert into explorations_fts values (?,?,?,?)", (*r[:2], question(r[2], r[4:]), r[3]))
+    if _columns(con, "exploration_starts") != ["session_id", "prompt", "at"]:
+        con.execute("drop table exploration_starts")
+        con.executescript(SCHEMA)
+    if con.in_transaction:
+        con.commit()
 
 
 # --- git ------------------------------------------------------------------------------
@@ -164,7 +200,7 @@ def record(
         commit, dirty = co.commit, dirty_files(co.top)
     con.execute("delete from explorations_fts where id = ?", (key,))
     con.execute(
-        "insert or replace into explorations values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        f"insert or replace into explorations ({', '.join(COLUMNS)}) values ({','.join('?' * len(COLUMNS))})",
         (
             key,
             agent,
@@ -180,13 +216,15 @@ def record(
             prompt,
             report,
             origin,
-            " ".join(_tokens(prompt)),
+            " ".join(_tokens(question(prompt, (co.top, folder)))),
             " ".join(sorted(set(_tokens(report)))),
             started_at,
             session_id,
         ),
     )
-    con.execute("insert into explorations_fts values (?,?,?,?)", (key, session_id, prompt, report))
+    con.execute(
+        "insert into explorations_fts values (?,?,?,?)", (key, session_id, question(prompt, (co.top, folder)), report)
+    )
     con.commit()
     return True
 
@@ -219,6 +257,21 @@ def _tokens(text: str) -> list[str]:
                 continue
             out.append(p[:-1] if p.endswith("s") and len(p) > 4 else p)
     return out
+
+
+# Where a checkout lives says nothing about the question: agents' own worktree folders.
+_WORKTREES = re.compile(
+    r"(?:~|/Users/[^/\s]+|/home/[^/\s]+)/\.(?:cursor|codex)/worktrees/[^/\s]+/[^/\s]+"
+    r"|[^\s`'\"]*/\.claude/worktrees/[^/\s]+"
+)
+
+
+def question(text: str, roots=()) -> str:
+    """A prompt as matched: without the checkout folders it names, so a question asked in one
+    clone or worktree matches the same question asked in another."""
+    for root in sorted({r.rstrip("/") for r in roots if r}, key=len, reverse=True):
+        text = text.replace(root, "")
+    return _WORKTREES.sub("", text)
 
 
 def _fts_query(text: str) -> str | None:
@@ -330,10 +383,8 @@ def _relative(path: str, roots: list[str]) -> str:
 # Lines that read as orders to whoever reads the report, rather than findings about the code:
 # a stored report is text another agent wrote, and the next one must not take it as a prompt.
 _ORDERS = re.compile(
-    r"(?i)\b(ignore|disregard|forget|override)\b.{0,40}\b(instructions?|prompt|rules|system)\b"
-    r"|\b(curl|wget)\b[^\n]*\|\s*(ba|z)?sh\b"
-    r"|^\W*(system|assistant|user|developer)\s*:"
-    r"|\byou (must|should|need to) (now|always|immediately)\b"
+    r"(?i)\b(ignore|disregard|forget)\b.{0,20}\b(all|any|previous|prior|above|earlier|your)\b.{0,20}\binstructions?\b"
+    r"|^(?:[-*]\s+)?(?:system|assistant|developer)\s*:\s"  # a bare role label, as in a transcript
 )
 
 
@@ -525,8 +576,11 @@ def brief(folder: str | None, prompt: str, con=None, threshold: float = THRESHOL
     here = checkout(folder)
     if not here or not prompt.strip():
         return None, {"reason": "not a git repo" if not here else "no prompt"}
-    con = con or connect()
-    found = candidates(con, here.repo, prompt)
+    try:  # on a spawn: a busy index (first use creates the tables) means no block, not a wait
+        con = con or connect(timeout=0.5)
+        found = candidates(con, here.repo, question(prompt, (here.top, folder)))
+    except sqlite3.OperationalError:
+        return None, {"reason": "index busy"}
     pick = best(found, threshold)
     info = {"repo": here.repo, "candidates": len(found), "top": round(found[0].score, 3) if found else None}
     if not pick:
@@ -577,14 +631,17 @@ def _remember_start(session_id: str, prompt: str) -> None:
     from .chats.redact import redact
 
     try:
-        con = sqlite3.connect(paths.DB, timeout=0.1)
-        con.executescript(SCHEMA)
+        con = connect(timeout=0.1)
+    except sqlite3.Error:
+        return  # only a stop without a transcript needs it
+    try:
         con.execute("delete from exploration_starts where at < ?", (time.time() - 86400,))
         con.execute("insert into exploration_starts values (?,?,?)", (session_id, redact(prompt), time.time()))
         con.commit()
-        con.close()
     except sqlite3.Error:
-        pass  # only a stop without a transcript needs it
+        pass
+    finally:
+        con.close()
 
 
 def on_stop(e) -> None:
