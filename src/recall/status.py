@@ -714,7 +714,7 @@ def on_edit(event):
     from .chats.store import parse_since
     from .integrations.hooks import Reply
 
-    since = parse_since("12h")
+    since = parse_since(event.raw.get("recall_since") or "12h")
     found = [
         d
         for f in event.files
