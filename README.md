@@ -578,7 +578,7 @@ recall logs its own use to `~/.agents/recall/usage.jsonl`: each MCP call, sessio
 and search, with the agent that made it, the words asked and the ids that came back, never
 chat or note text. `recall usage` sums it up: which agents use which tools, how many
 searches found nothing, how many led to opening a result, and what the mid-session hooks
-injected (ids only). `recall eval jit --live` has a judge label those injections, so you can
+injected (ids, plus the repo-relative path of a file whose read brought them). `recall eval jit --live` has a judge label those injections, so you can
 see how often they were relevant. It stays on your machine; set
 `usage_log = false` in `config.toml` to stop it.
 
