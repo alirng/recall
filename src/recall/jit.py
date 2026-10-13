@@ -763,12 +763,10 @@ def _around(text: str, names: list[str], n: int = 170) -> str:
 # --- failed commands ----------------------------------------------------------------------------
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_ERROR_LINE = [  # most telling first
-    re.compile(r"\b[A-Z]\w*(Error|Exception|Exit)\b\s*[:(]"),
-    re.compile(r"\b(error|ERROR|fatal|FATAL|panic)\b\s*(\[\w+\])?\s*:"),
+_ERROR_LINE = [  # most telling first; prose that merely says "failed" or "not found" is not one
+    re.compile(r"\b[A-Z]\w*(Error|Exception)\b\s*[:(]"),
+    re.compile(r"(^|\s)(error|ERROR|fatal|FATAL|panic)(\[\w+\])?\s*:"),
     re.compile(r"\b(TS\d{4}|E\d{3,4}|ERR!)\b"),
-    re.compile(r"(No such file|not found|cannot find|Cannot find|permission denied|Permission denied|undefined)"),
-    re.compile(r"\b(FAILED|failed|Failed)\b"),
 ]
 GENERIC = set(
     "error errors exception failed failure fatal exit code line file files command returned status non zero nonzero "
@@ -802,15 +800,18 @@ def error_signature(text: str) -> dict | None:
     return {"line": _clip(line, 160), "words": words[:8], "key": " ".join(words[:8])}
 
 
-def failure_items(con, sig: dict, cwd: str | None, own: list[str], project=False) -> list[Item]:
+def failure_items(
+    con, sig: dict, cwd: str | None, own: list[str], project=False, until: float | None = None
+) -> list[Item]:
     """Past chats where the same error came up, newest in this project first, with the first
     line of the agent's reply after it. A signature found in many chats is common knowledge,
     so it stays silent."""
-    from .chats import store
 
-    q = store.fts_query(" ".join(sig["words"]), "and")
-    if not q:
+    words = [w for w in sig["words"] if re.fullmatch(r"\w+", w)]
+    if len(words) < 3:
         return []
+    # Every word within a short span, as in a pasted copy of the same error line.
+    q = f"NEAR({' '.join(chr(34) + w + chr(34) for w in words)}, {len(words) + 6})"
     if project is False:
         project = _project(con, cwd)
     keys = project["keys"] if project else []
@@ -819,8 +820,9 @@ def failure_items(con, sig: dict, cwd: str | None, own: list[str], project=False
             from messages_fts f join messages m on m.id = f.rowid join sessions s on s.id = m.session_id
             where messages_fts match ? and s.origin = 'interactive'
               {f"and s.id not in ({','.join('?' * len(own))})" if own else ""}
+              {"and m.ts < ? and s.started_at < ?" if until else ""}
             group by m.session_id order by s.updated_at desc limit 40""",
-        [q, *own],
+        [q, *own, *([until, until] if until else [])],
     ).fetchall()
     if not rows or len(rows) > 20:
         return []
