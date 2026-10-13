@@ -126,6 +126,14 @@ _KINDS = {
 _OBSERVE = {"PostCompact", "preCompact", "beforeSubmitPrompt"}
 _SUBAGENT_TOOLS = ("Agent", "Task", "Subagent", "mcp_task")
 _READERS = {"cat", "head", "tail", "sed", "nl", "less", "more", "bat", "awk", "grep", "rg"}
+# The events and tools that are an edit, per agent: anything else is not parsed as one.
+_EDITS = {
+    "claude": ({"PreToolUse"}, {"Edit", "Write", "MultiEdit", "NotebookEdit"}),
+    "codex": ({"PreToolUse"}, {"apply_patch", "Edit", "Write"}),
+    "cursor": ({"preToolUse", "postToolUse"}, {"Write"}),
+    "gemini": ({"BeforeTool", "AfterTool"}, {"write_file", "replace"}),
+    "opencode": ({"before", "after"}, {"edit", "write", "apply_patch"}),
+}
 
 
 def shell_reads(command, cwd: str | None) -> list[str]:
@@ -137,16 +145,26 @@ def shell_reads(command, cwd: str | None) -> list[str]:
         words = shlex.split(str(command or ""))
     except ValueError:
         return []
-    out, head = [], True
+    out, head, base, skip = [], True, cwd, False
+    reader = cd = False
     for w in words:
         if w in ("|", "||", "&&", ";"):
             head = True
             continue
         if head:
-            reader, head = os.path.basename(w) in _READERS, False
+            name = os.path.basename(w)
+            reader, cd, head = name in _READERS, name == "cd", False
             continue
+        if skip or w in (">", ">>", "1>", "2>", "&>"):  # a redirect's target is written, not read
+            skip = not skip
+            continue
+        if cd:  # later commands run in the new folder
+            base = w if os.path.isabs(w) or not base else os.path.join(base, w)
+            continue
+        if w == "-i" or w.startswith("-i."):  # sed -i edits its files in place
+            reader = False
         if reader and not w.startswith("-"):
-            full = w if os.path.isabs(w) or not cwd else os.path.join(cwd, w)
+            full = w if os.path.isabs(w) or not base else os.path.join(base, w)
             if os.path.isfile(full):
                 out.append(full)
     return list(dict.fromkeys(out))
@@ -195,12 +213,14 @@ def parse(agent: str, raw: dict) -> Event | None:
         if not code:
             return None
         e.kind, e.error = "tool_failure", str(output.get("output") or output.get("stderr") or f"exit code {code}")
+    elif agent not in _EDITS or name not in _EDITS[agent][0] or tool not in _EDITS[agent][1]:
+        return None
     elif agent == "claude":
         target = args.get("file_path") or args.get("notebook_path")
         e.kind, e.files = "edit", [target] if target else []
     elif agent == "codex":
         e.kind, e.files = "edit", patch_files(str(args.get("command") or args.get("input") or ""), cwd)
-    elif agent in ("cursor", "gemini", "opencode"):
+    else:
         # These can refuse only before an edit and add a note only after it.
         if agent == "opencode":
             args = raw.get("args") or {}
@@ -211,13 +231,11 @@ def parse(agent: str, raw: dict) -> Event | None:
             files = [target] if target else []
         after = name.lower().startswith(("post", "after"))
         e.kind, e.files, e.acts = "edit", files, ("tell",) if after else ("worktree", "ask")
-    else:
-        return None
     if e.kind == "edit":
         e.files = list(dict.fromkeys(e.files))
         if not e.files:
             return None
-    return e if e.session or e.kind == "session_start" else None
+    return e if e.session or e.kind in ("session_start", "compact") else None
 
 
 # --- answering ----------------------------------------------------------------------------
@@ -228,16 +246,18 @@ def _handler(ref: str):
     return getattr(importlib.import_module(module), func)
 
 
+def _join(parts) -> str | None:
+    return "\n\n".join(dict.fromkeys(p for p in parts if p)) or None
+
+
 def merge(replies: list[Reply]) -> Reply:
     """One Reply from many: a refusal wins and carries everything the agent should read."""
-    join = lambda parts: "\n\n".join(dict.fromkeys(p for p in parts if p)) or None  # noqa: E731
-    deny = join(r.deny for r in replies)
-    context = join(r.context for r in replies)
+    deny = _join(r.deny for r in replies)
+    context = _join(r.context for r in replies)
     if deny:
-        deny, context = join([deny, context]), None
-    return Reply(
-        context, deny, join(r.keep_going for r in replies), next((r.notice for r in replies if r.notice), None)
-    )
+        deny, context = _join([deny, context]), None
+    notice = next((r.notice for r in replies if r.notice), None)
+    return Reply(context, deny, _join(r.keep_going for r in replies), notice)
 
 
 def dispatch(agent: str, raw: dict) -> tuple[str, int]:

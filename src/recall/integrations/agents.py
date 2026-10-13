@@ -9,6 +9,7 @@ changes, and `recall uninstall` reverses each step.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -269,8 +270,14 @@ def _claude_registered() -> bool:
 
 
 def _is_ours(hook: dict) -> bool:
-    command = hook.get("command", "")
-    return NAME in command and any(k in command for k in (" hook --agent", " context --hook", " status --hook"))
+    """recall's own entries: its executable running hook, or the older context/status --hook."""
+    try:
+        words = shlex.split(hook.get("command", ""))
+    except ValueError:
+        return False
+    if len(words) < 2 or os.path.basename(words[0]) != NAME:
+        return False
+    return words[1] == "hook" or (words[1] in ("context", "status") and "--hook" in words)
 
 
 # --- helpers ------------------------------------------------------------------

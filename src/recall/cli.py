@@ -171,6 +171,11 @@ def cmd_hook(a) -> None:
     raw = {}
     try:
         raw = json.load(sys.stdin)
+        # The older entries' flags still apply: a folder for an event that names none, a window.
+        if getattr(a, "cwd", None) and not (raw.get("cwd") or raw.get("workspace_roots")):
+            raw["cwd"] = a.cwd
+        if getattr(a, "since", None):
+            raw["recall_since"] = a.since
         out, code = hooks.dispatch(a.agent, raw)
     except Exception as e:
         print(f"recall hook: {e}", file=sys.stderr)
