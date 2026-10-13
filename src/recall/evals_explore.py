@@ -19,8 +19,9 @@ agent    (`recall eval explore --agent MODEL`) Reruns --limit past exploration p
          subagent_type Explore and the original prompt, with recall's hook (arm "with") or
          without it ("without"), --repeats times each. It measures the subagent's tokens, tool
          calls and time from Claude Code's own accounting, and a blind judge compares the two
-         reports of each repeat. Each run gets its own copy, so whatever the subagent does with
-         its shell stays in that copy; the owner's checkouts are only cloned from.
+         reports of each repeat. The prompt's paths to the original checkout are rewritten to
+         the copy, and the runs may only read and search (READ_ONLY; headless, everything else
+         is denied), so they explore the copy and change nothing.
 """
 
 import json
@@ -95,7 +96,8 @@ def replay(con, c: dict, files: dict) -> dict:
     def recall_of(other_id: str) -> float:
         return len(mine & files[other_id]) / len(mine)
 
-    found = explore.candidates(con, c["row"]["repo"], c["row"]["prompt"], before=c["start"] - GAP)
+    asked = explore.question(c["row"]["prompt"], (c["row"]["root"], c["row"]["folder"]))  # as brief() matches
+    found = explore.candidates(con, c["row"]["repo"], asked, before=c["start"] - GAP)
     score = {m.row["id"]: m.score for m in found}
     pick = explore.best(found, explore.THRESHOLD)
     ungated = explore.best(found, 0.0)
@@ -235,17 +237,21 @@ def _judge_offline(con, all_cases, rows, judge: str, sample: int, run) -> dict:
     picked = random.Random(h.SEED).sample(served, min(sample, len(served)))
     pick_of = {r["id"]: r["pick"] for r in rows}
     client = h.judge_client(judge)
-    verdicts = []
+    prompts = {}
+    for cid in picked:  # here, not in the workers: the database belongs to this thread
+        c = by_id[cid]
+        s_ = con.execute("select * from explorations where id = ?", (pick_of[cid],)).fetchone()
+        here = explore.Checkout(s_["root"], s_["repo"], c["row"]["commit_sha"], None)
+        earlier = explore.block(s_, here, now=c["start"], to=c["row"]["commit_sha"])
+        prompts[cid] = (
+            JUDGE_PROMPT.format(task=c["row"]["prompt"][:4000], earlier=earlier, report=c["row"]["report"][:16000]),
+            len(earlier),
+        )
 
     def one(cid: str):
-        c = by_id[cid]
-        s = con.execute("select * from explorations where id = ?", (pick_of[cid],)).fetchone()
-        here = explore.Checkout(s["root"], s["repo"], c["row"]["commit_sha"], None)
-        earlier = explore.block(s, here, now=c["start"], to=c["row"]["commit_sha"])
-        prompt = JUDGE_PROMPT.format(task=c["row"]["prompt"][:4000], earlier=earlier, report=c["row"]["report"][:16000])
-        v = client.json("explore-judge", JUDGE_SYSTEM, prompt, JUDGE_SCHEMA)
-        return cid, v, len(earlier)
+        return cid, client.json("explore-judge", JUDGE_SYSTEM, prompts[cid][0], JUDGE_SCHEMA), prompts[cid][1]
 
+    verdicts = []
     with ThreadPoolExecutor(max_workers=2) as pool:
         for cid, v, chars in pool.map(one, picked):
             verdicts.append(v | {"id": cid, "block_chars": chars})
@@ -265,6 +271,34 @@ def _judge_offline(con, all_cases, rows, judge: str, sample: int, run) -> dict:
 
 
 # --- agent replay ---------------------------------------------------------------------------
+
+# What the replayed agents may use: reading and searching. Headless, everything else is denied,
+# so a replayed prompt (real chat history) cannot write, delete or reach the network through
+# them. find is left out because -exec and -delete write.
+READ_ONLY = [
+    "Agent",
+    "Read",
+    "Grep",
+    "Glob",
+    "LS",
+    *(
+        f"Bash({c}:*)"
+        for c in (
+            *("git log", "git show", "git diff", "git grep", "git ls-files", "git status", "git blame"),
+            *("ls", "rg", "grep", "cat", "head", "tail", "wc", "pwd"),
+        )
+    ),
+]
+
+
+def local_prompt(row, repo: str) -> str:
+    """The original prompt, with the folders it ran in replaced by the scratch copy: most
+    name their checkout by absolute path, and must explore the copy at the old commit."""
+    prompt = row["prompt"]
+    for old in sorted({row["folder"], row["root"]} - {None, ""}, key=len, reverse=True):
+        prompt = prompt.replace(old.rstrip("/"), repo)
+    return prompt
+
 
 PARENT = """Call the Agent tool exactly once, with subagent_type "Explore", description "explore", \
 run_in_background false, and as prompt exactly the text between <task> and </task>, unchanged. When it \
@@ -294,9 +328,15 @@ def agent(run, model: str, judge: str, limit: int, repeats: int, workers: int, t
     jobs = [(c, r, arm, rep) for c, r in chosen for rep in range(repeats) for arm in ("without", "with")]
     results: dict[tuple, dict] = {}
 
+    # The rows each case's "with" arm may see, read here: the database belongs to this thread.
+    earlier = {
+        c["id"]: [dict(e) for e in con.execute("select * from explorations where created_at < ?", (c["start"] - GAP,))]
+        for c, _ in chosen
+    }
+
     def one(job):
         c, _, arm, rep = job
-        return (c["id"], arm, rep), _run_one(con, c, arm, rep, model, timeout, work)
+        return (c["id"], arm, rep), _run_one(earlier[c["id"]], c, arm, rep, model, timeout, work)
 
     with ThreadPoolExecutor(max_workers=max(1, min(workers, 2))) as pool:
         for key, res in pool.map(one, jobs):
@@ -318,8 +358,9 @@ def agent(run, model: str, judge: str, limit: int, repeats: int, workers: int, t
     return run.finish(_agent_summary(rows, model, judge, repeats), _agent_headline(rows), [("arm", "arm")])
 
 
-def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: str) -> dict:
-    """One headless Claude Code run in a fresh scratch clone at the original exploration's commit."""
+def _run_one(earlier: list[dict], c: dict, arm: str, rep: int, model: str, timeout: int, work: str) -> dict:
+    """One headless Claude Code run in a fresh scratch clone at the original exploration's commit.
+    earlier: the explorations the "with" arm's cache holds."""
     row = c["row"]
     folder = os.path.join(work, f"{re.sub(r'[^A-Za-z0-9]+', '-', c['id'])[:40]}-{arm}-{rep}")
     repo = os.path.join(folder, os.path.basename(row["root"]))
@@ -334,13 +375,17 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
     if arm == "with":
         # Only the explorations that had begun 10 minutes before this one.
         db = explore.connect(os.path.join(home, "recall.db"))
-        cols = [d[1] for d in con.execute("pragma table_info(explorations)")]
-        for e in con.execute("select * from explorations where created_at < ?", (c["start"] - GAP,)):
-            db.execute(f"insert into explorations values ({','.join('?' * len(cols))})", tuple(e))
+        cols = explore.COLUMNS
+        for e in earlier:
+            db.execute(
+                f"insert into explorations ({','.join(cols)}) values ({','.join('?' * len(cols))})",
+                [e[k] for k in cols],
+            )
             db.execute(
                 "insert into explorations_fts values (?,?,?,?)", (e["id"], e["session_id"], e["prompt"], e["report"])
             )
         db.commit()
+        db.close()
         # This checkout's code answers the hook, with its own data folder.
         src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         hook = " ".join(
@@ -372,8 +417,13 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
         # recall among them) would serve the "without" arm too, or the "with" arm twice.
         "--setting-sources",
         "project,local",
+        # Read-only: anything not on READ_ONLY is denied, as headless runs cannot ask.
         "--permission-mode",
-        "bypassPermissions",  # Explore searches with Bash; the copy is scratch
+        "default",
+        "--permission-prompts",
+        "none",
+        "--allowedTools",
+        *READ_ONLY,
         "--strict-mcp-config",  # no MCP servers: the runs stay off the owner's live connectors
         "--mcp-config",
         '{"mcpServers": {}}',
@@ -382,7 +432,7 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
     try:
         proc = subprocess.run(
             cmd,  # the prompt goes on stdin: --mcp-config would take it for another config
-            input=PARENT.format(prompt=row["prompt"]),
+            input=PARENT.format(prompt=local_prompt(row, repo)),
             cwd=repo,
             env=env,
             capture_output=True,
@@ -394,7 +444,7 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
     except subprocess.TimeoutExpired as e:
         out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
         status, detail = "timeout", ""
-    res = _measure(out) | {"wall_s": round(time.time() - started, 1)}
+    res = _measure(out, repo) | {"wall_s": round(time.time() - started, 1)}
     if status == h.OK and not res.get("report"):
         status = "no_report"
         res["detail"] = detail
@@ -408,9 +458,10 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
     return res
 
 
-def _measure(stream: str) -> dict:
-    """The Explore subagent's own numbers, from Claude Code's stream-json events."""
-    usage, tools, report, meta, cost = {}, 0, None, {}, None
+def _measure(stream: str, repo: str = "") -> dict:
+    """The Explore subagent's own numbers, from Claude Code's stream-json events, and any
+    absolute path its tool calls named outside the copy at `repo` (there should be none)."""
+    usage, tools, report, meta, cost, outside = {}, 0, None, {}, None, set()
     for line in stream.splitlines():
         try:
             d = json.loads(line)
@@ -418,7 +469,15 @@ def _measure(stream: str) -> dict:
             continue
         if d.get("type") == "assistant" and d.get("parent_tool_use_id"):
             msg = d.get("message") or {}
-            tools += sum(1 for b in msg.get("content") or [] if b.get("type") == "tool_use")
+            calls = [b for b in msg.get("content") or [] if b.get("type") == "tool_use"]
+            tools += len(calls)
+            for b in calls:
+                for path in re.findall(r"(?:/Users|/home|/private|~)/[^\s\"'`]+", json.dumps(b.get("input"))):
+                    real = os.path.realpath(os.path.expanduser(path))
+                    if "/.claude/projects/" in real and "/tool-results/" in real:
+                        continue  # Claude Code's own copy of a long tool result
+                    if repo and not real.startswith(os.path.realpath(repo)):
+                        outside.add(path)
             usage[msg.get("id")] = msg.get("usage") or {}  # one event per content block; the last has the totals
         elif d.get("type") == "user" and not d.get("parent_tool_use_id") and isinstance(d.get("tool_use_result"), dict):
             r = d["tool_use_result"]
@@ -439,6 +498,7 @@ def _measure(stream: str) -> dict:
         "cost_usd": cost,
         "report": report,
         "report_chars": len(report or ""),
+        "outside_paths": sorted(outside)[:10],
     }
 
 
@@ -547,8 +607,9 @@ def from_args(a) -> None:
         settings = {"model": model, "repeats": a.repeats, "limit": a.limit or 10, "workers": min(a.workers, 2)}
         settings["flags"] = (
             "claude -p --model M --output-format stream-json --verbose --no-session-persistence "
-            "--setting-sources project,local --permission-mode bypassPermissions "
-            "--strict-mcp-config --mcp-config '{\"mcpServers\": {}}' (prompt on stdin)"
+            "--setting-sources project,local --permission-mode default --permission-prompts none "
+            f"--allowedTools {' '.join(READ_ONLY)} --strict-mcp-config --mcp-config '{{\"mcpServers\": {{}}}}' "
+            "(prompt on stdin, its paths rewritten to the copy)"
         )
         run = h.Run("explore_agent", "test", settings, a.who, a.runs_dir)
         agent(run, model, a.judge or h.JUDGE, a.limit or 10, max(1, a.repeats), a.workers, timeout)
