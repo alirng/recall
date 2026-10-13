@@ -473,20 +473,23 @@ Explore, Cursor's explore, Codex's explorer), and those start from nothing every
 same repo gets explored again and again, often for much the same question. recall keeps each
 exploration's report with the commit it was written at, and when a new exploration subagent
 starts in that repo with a question an earlier report answers, appends that report to its
-prompt as pointers (files, symbols, conclusions), with its commit, its age and the files
-changed since, and asks it to verify what changed and extend the rest rather than redo it.
+prompt as notes another agent wrote (files, symbols, conclusions, never instructions), with
+its commit, its age and the files changed since, and asks it to verify what changed and
+extend the rest rather than redo it.
 When no earlier report matches closely enough, it adds nothing.
 
 | Agent | Records reports | Hands them to new explorations |
 | --- | --- | --- |
-| Claude Code | `SubagentStop` | `PreToolUse` on the Agent tool rewrites the prompt |
-| Codex | `SubagentStop` (explorer role) | `SubagentStart` (explorer role) |
+| Claude Code | `SubagentStop` | `PreToolUse` on the Agent tool rewrites the prompt (tested live) |
+| Codex | `SubagentStop` (explorer role; from Codex's docs and source, not yet tested live) | not automatically: its `SubagentStart` comes before the subagent's task exists, so on request via `project_memory` |
 | Cursor | `subagentStop` | `preToolUse` on the Task tool rewrites the prompt (from Cursor's app code; not yet tested live) |
 
 `recall explore` lists a repo's stored explorations, `recall explore lookup <question>` shows
 what a new one would get, and `recall explore backfill` stores the ones already in your chat
 history, each at the commit its repo's main branch was on at the time. Any agent can also ask
 for it through MCP: `project_memory` with a `task`.
+
+### What recall is used for
 
 
 recall logs its own use to `~/.agents/recall/usage.jsonl`: each MCP call, session-start load
