@@ -7,6 +7,21 @@ All notable changes to recall are listed here. The format follows
 
 ### Added
 
+- **Batch APIs for the nightly run.** With an Anthropic or OpenAI key, `recall dream` sends its
+  calls through the provider's batch API, at half the price: extraction as one batch, then
+  consolidation in rounds, every project side by side. A batch that overruns 20 minutes is
+  cancelled and the night carries on synchronously; one still running at the time budget is
+  collected by the next run. `batch = "off"` in `[model]`, or `recall dream --no-batch`, turns
+  it off. Plans (ChatGPT, Claude) and local models keep their usual path.
+- **A dollar budget.** `[dream] max_usd` (default $1.00, or `--max-usd`) caps what a run may
+  spend on an API key, in place of the call cap. `recall dream` reports each night's cost, and
+  `llm_calls` records each call's.
+- **When API credits run out**, a run carries on with `[model] fallback` (e.g. `"claude:haiku"`,
+  your plan through Claude Code) or stops cleanly and continues the next night. `recall setup`
+  mentions that Claude Max and Team plans include monthly API credits.
+- **A second model for consolidation**: `[model] consolidate = "anthropic:claude-sonnet-5-5"`,
+  or `--model extract-spec+consolidate-spec` for one run. A `--model` spec can name an effort
+  after `@` for ChatGPT and Anthropic models.
 - **recall never loses a chat it has indexed**, except one you forget and one past a retention
   period your organisation sets. Every chat is kept compressed in its own
   table, one copy per file it came from, which a rebuild never drops. When the parser changes,
