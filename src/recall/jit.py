@@ -58,6 +58,10 @@ WINDOW_FIRES = 10
 MIN_WORDS = 3  # content words a prompt needs before it is matched at all
 DENSE = ("cos_first", "cos_best", "has_vec")  # features that need the prompt's embedding
 EMBED_WAIT = 0.25  # seconds a hook waits for the prompt's embedding before going without
+# Matching failures against the index's tool errors (tool-errors branch) stays off for now: in
+# a time-ordered replay on a copy of that index, a judge found 54 of 90 matches relevant (0.60);
+# the same error line often recurs with a different cause. A stricter rule comes with it.
+TOOL_ERRORS = False
 LOCK_WAIT = 0.2  # seconds a hook waits for its session's state before staying out
 LIVE_SECONDS = 15 * 60  # a chat this fresh may still be running: the edit hooks cover it
 STATE = os.path.join(paths.HOME, "cache", "jit")
@@ -933,7 +937,7 @@ def failure_items(
     if project is False:
         project = _project(con, cwd)
     keys = project["keys"] if project else []
-    if _has_table(con, "tool_errors"):
+    if TOOL_ERRORS and _has_table(con, "tool_errors"):
         return _tool_error_items(con, words, keys, own, until, command)
     # Every word within a short span, as in a pasted copy of the same error line.
     q = f"NEAR({' '.join(chr(34) + w + chr(34) for w in words)}, {len(words) + 6})"
