@@ -466,7 +466,27 @@ In the menu bar, **Resolve** on a shared file sends every chat involved a note a
 agree with the others who goes first. Each chat reads it at the next of those moments, so
 nothing is interrupted; the row shows when it was sent and clears once the overlap does.
 
-### What recall is used for
+### Exploration subagents start from the last answer
+
+Coding agents hand questions about a codebase to exploration subagents (Claude Code's
+Explore, Cursor's explore, Codex's explorer), and those start from nothing every time: the
+same repo gets explored again and again, often for much the same question. recall keeps each
+exploration's report with the commit it was written at, and when a new exploration subagent
+starts in that repo with a question an earlier report answers, appends that report to its
+prompt as pointers (files, symbols, conclusions), with its commit, its age and the files
+changed since, and asks it to verify what changed and extend the rest rather than redo it.
+When no earlier report matches closely enough, it adds nothing.
+
+| Agent | Records reports | Hands them to new explorations |
+| --- | --- | --- |
+| Claude Code | `SubagentStop` | `PreToolUse` on the Agent tool rewrites the prompt |
+| Codex | `SubagentStop` (explorer role) | `SubagentStart` (explorer role) |
+| Cursor | `subagentStop` | on request: `project_memory` with a `task` |
+
+`recall explore` lists a repo's stored explorations, `recall explore lookup <question>` shows
+what a new one would get, and `recall explore backfill` stores the ones already in your chat
+history, each at the commit its repo's main branch was on at the time.
+
 
 recall logs its own use to `~/.agents/recall/usage.jsonl`: each MCP call, session-start load
 and search, with the agent that made it, the words asked and the ids that came back, never
@@ -560,9 +580,10 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
 | `recall resolve --repo <repo> --file <file>` | message every chat in an overlap to agree who goes first (the menu bar's Resolve) |
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
+| `recall explore [lookup <question> \| backfill] [--cwd DIR]` | earlier exploration reports for this repo, and what a new exploration would get |
 | `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first) |
 | `recall schedule enable \| disable \| status` | the nightly run |
-| `recall eval search \| agent \| memory \| swe-contextbench \| memorycode \| amb \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
+| `recall eval search \| agent \| memory \| swe-contextbench \| memorycode \| amb \| explore \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
 
 Environment: `RECALL_HOME` moves the index, config and logs (default `~/.agents/recall`);
 `RECALL_MEMORY` moves the notes (default `~/.agents/memory`).
