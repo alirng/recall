@@ -42,15 +42,77 @@ def index(con, only=None, force=False, max_age=None, log=None) -> dict:
         return result  # the lock is released when the file closes
 
 
-def _index(con, only, force, max_age, log) -> dict:
+def index_paths(con, files: list[str], wait: float = 5.0) -> int:
+    """Index these chat files now: a session-end hook passes the transcript it just closed,
+    so the chat is in the archive before any cleanup can delete the file. Waits up to
+    `wait` seconds for an index run already under way. Returns how many were indexed."""
     from .. import config
+
+    wanted = {os.path.realpath(f) for f in files}
+    os.makedirs(paths.HOME, exist_ok=True)
+    with open(os.path.join(paths.HOME, "index.lock"), "w") as lock:
+        deadline = time.time() + wait
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.time() > deadline:
+                    return 0
+                time.sleep(0.2)
+        keep = _keeper(con)
+        done = 0
+        for name, items in all_sources(config.load()["sources"]).items():
+            if name in OUT_OF_PROCESS:
+                continue
+            for item in items():
+                if os.path.realpath(item.key) in wanted:
+                    done += _read(con, item, keep)
+        con.commit()
+        return done
+
+
+def _index(con, only, force, max_age, log) -> dict:
+    from .. import config, retention
 
     selected = config.load()["sources"]
     result = _scan(con, selected, only, force, max_age, log)
+    retention.apply(con)  # before restoring, so nothing past an organisation's period comes back
     restored = store.restore(con, _read_since_rebuild(con, selected))
     if restored:
         result["archive"] = {"indexed": 0, "unchanged": 0, "restored": restored}
     return result
+
+
+def _keeper(con):
+    """Whether a parsed chat may be indexed: not forgotten, and not older than a retention
+    period an organisation sets for its agent."""
+    from .. import forget, retention
+
+    gone, cutoffs = forget.forgotten(con), retention.cutoffs()
+
+    def keep(session) -> bool:
+        cutoff = cutoffs.get(session.agent)
+        return session.id not in gone and (cutoff is None or (session.updated_at or 0) >= cutoff)
+
+    return keep
+
+
+def _read(con, item, keep) -> bool:
+    """Parse one chat and index it. False when there was nothing to index."""
+    try:
+        session = item.load()
+    except Exception as e:  # one unreadable chat must not stop the run
+        print(f"recall: skipped {item.key}: {e!r}", file=sys.stderr)
+        session = None
+    indexed = bool(session and session.messages and keep(session))
+    if indexed:
+        store.upsert(con, session)
+    con.execute(
+        "insert or replace into seen values (?,?,?)",
+        (item.key, item.fingerprint, session.id if session else None),
+    )
+    return indexed
 
 
 def _read_since_rebuild(con, selected) -> list[str]:
@@ -88,23 +150,13 @@ def _scan(con, selected, only, force, max_age, log) -> dict:
             threading.Thread(target=child.wait, daemon=True).start()  # reap it, so no zombie lingers
             continue
         seen = dict(con.execute("select key, fingerprint from seen"))
+        keep = _keeper(con)
         done = skipped = 0
         for item in items():
             if not force and seen.get(item.key) == item.fingerprint:
                 skipped += 1
                 continue
-            try:
-                session = item.load()
-            except Exception as e:  # one unreadable chat must not stop the run
-                print(f"recall: skipped {item.key}: {e!r}", file=sys.stderr)
-                session = None
-            if session and session.messages:
-                store.upsert(con, session)
-                done += 1
-            con.execute(
-                "insert or replace into seen values (?,?,?)",
-                (item.key, item.fingerprint, session.id if session else None),
-            )
+            done += _read(con, item, keep)
             if done and done % 50 == 0:
                 con.commit()
                 if log:
