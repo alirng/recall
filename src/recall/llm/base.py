@@ -5,6 +5,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from . import prices
+
 
 class LLMError(Exception):
     """A call failed in a way that may succeed on retry: timeout, rate limit, bad output."""
@@ -12,6 +14,15 @@ class LLMError(Exception):
 
 class FatalError(LLMError):
     """A call cannot succeed as configured: bad key, unknown model, missing CLI."""
+
+
+class CreditsExhausted(FatalError):
+    """The API account has no credits left. Not a fault: the run falls back to the
+    configured subscription CLI, or stops cleanly and carries on next night."""
+
+
+# The low-balance replies of the metered APIs, as their docs give them.
+CREDIT_ERRORS = ("credit balance is too low", "insufficient_quota", "billing_error")
 
 
 @dataclass(frozen=True)
@@ -34,6 +45,17 @@ class Result:
     input_tokens: int = 0
     output_tokens: int = 0
     seconds: float = 0.0
+    batch: bool = False  # answered through a batch API, at the batch price
+
+
+@dataclass(frozen=True)
+class Request:
+    """One call in a batch. id is unique within the batch (letters, digits, - and _)."""
+
+    id: str
+    system: str
+    prompt: str
+    schema: dict
 
 
 class Provider:
@@ -63,6 +85,78 @@ class Provider:
         """One call: return JSON matching `schema`. Validation happens in the client."""
         raise NotImplementedError
 
+    def for_purpose(self, purpose: str) -> "Provider":
+        """The provider that serves calls made for `purpose` ("extract", "consolidate", ...)."""
+        return self
+
+    # --- cost: metered providers only -----------------------------------------------------
+
+    price_override: list | None = None  # [input, output] USD per million tokens, from config
+
+    def cost(self, result: Result) -> float | None:
+        """USD for one answered call; None for plans, local models and unpriced models."""
+        if not self.metered:
+            return None
+        return prices.cost(self.model, result.input_tokens, result.output_tokens, result.batch, self.price_override)
+
+    @property
+    def metered(self) -> bool:
+        """Billed per token to an API key (as opposed to a plan or this machine)."""
+        return False
+
+    @property
+    def priced(self) -> bool:
+        return self.metered and prices.lookup(self.model, self.price_override) is not None
+
+    # --- batch API: providers that have one override these ----------------------------------
+
+    supports_batch = False  # True when this provider, as configured, can send batches
+
+    def submit(self, requests: list[Request]) -> str:
+        """Send requests as one batch; returns the batch id."""
+        raise NotImplementedError
+
+    def poll(self, batch_id: str) -> tuple[bool, str]:
+        """(ended, progress in words) for a batch."""
+        raise NotImplementedError
+
+    def results(self, batch_id: str) -> dict[str, "Result | LLMError"]:
+        """An ended batch's answers by request id; a request missing here was never answered."""
+        raise NotImplementedError
+
+    def cancel(self, batch_id: str) -> None:
+        raise NotImplementedError
+
+
+class Split(Provider):
+    """One model reads chats and another folds memories into notes: a cheap model for the
+    many extraction calls, a stronger one for consolidation's judgement calls."""
+
+    def __init__(self, extract: Provider, consolidate: Provider):
+        super().__init__(extract.model)
+        self.extract, self.consolidate = extract, consolidate
+        self.id, self.title, self.profile = extract.id, extract.title, extract.profile
+        self.private = extract.private and consolidate.private
+        self.destination = extract.destination
+        if consolidate.destination != extract.destination:
+            self.destination += f" and {consolidate.destination}"
+
+    @property
+    def label(self) -> str:
+        return f"{self.extract.label}+{self.consolidate.label}"
+
+    def for_purpose(self, purpose: str) -> Provider:
+        return self.consolidate if purpose.startswith("consolidate") else self.extract
+
+    def check(self) -> str | None:
+        return self.extract.check() or self.consolidate.check()
+
+    def models(self) -> list[str]:
+        return self.extract.models()
+
+    def complete(self, system: str, prompt: str, schema: dict) -> Result:
+        return self.extract.complete(system, prompt, schema)
+
 
 def parse_json(text: str) -> dict:
     """The JSON object in a model reply, tolerating code fences and stray prose."""
@@ -87,6 +181,8 @@ def http_json(url: str, payload: dict | None = None, headers: dict | None = None
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")[:300]
+        if any(m in body for m in CREDIT_ERRORS):
+            raise CreditsExhausted(f"HTTP {e.code} from {url}: {body}") from e
         if 400 <= e.code < 500 and e.code not in (408, 429):
             raise FatalError(f"HTTP {e.code} from {url}: {body}") from e
         raise LLMError(f"HTTP {e.code} from {url}: {body}") from e
