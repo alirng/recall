@@ -79,7 +79,7 @@ def run(assume_yes: bool = False, model: str | None = None, embeddings: str | No
 
     print()
     if ask.yes("5. Connect recall to your agents (MCP tools, /recall skill, session-start and edit hooks)?"):
-        for line in integrations.install():
+        for line in integrations.install() + integrations.retention(ask.yes):
             print("   " + line)
 
     dream = cfg["dream"]
