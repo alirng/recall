@@ -12,8 +12,8 @@ Every chat the user has had with Claude Code, Codex or Cursor on this machine is
 1. Search with the distinctive words the user would have used, plus the agent and project when they name them. A project name from `list_projects` (CLI: `recall projects`) covers every folder and worktree the project spans:
    - MCP: `search_chats(query, agent?, project?, since?)`
    - CLI: `recall search <words> [--agent cursor|codex|claude] [--project NAME] [--since 2w]`
-2. A miss on the first query is normal. Retry with synonyms, the project name, or a wider `since` (three attempts) before reporting it as not found. When the user gives a time ("last week", "early September"), work out the dates and pass `since` and `until`. On a retry, pass the chat ids you have already read as `exclude`.
-3. Read the best match around its matching passage, paging forward with the offset when the answer continues. Each result lists its best matching messages as `hits`; a hit's `seq` is an offset:
+2. A miss on the first query is normal. Retry with synonyms, the project name, or a wider `since` (three attempts) before reporting it as not found. Over MCP, pass synonyms in the same call as `alternatives`: the best chats across all of them come back once each. When the user gives a time ("last week", "early September"), work out the dates and pass `since` and `until`. On a retry, pass the chat ids you have already read as `exclude`.
+3. Read the best match around its matching passage, paging forward with the offset when the answer continues. Each result lists its best matching messages (`hits`, or `[seq] snippet` lines in text results); a hit's `seq` is an offset:
    - MCP: `read_chat(chat_id, query=<words>)` or `read_chat(chat_id, offset=<hit seq minus a few>)`
    - CLI: `recall show <chat_id> --query "<words>"`
 

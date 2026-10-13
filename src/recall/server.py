@@ -5,10 +5,12 @@ can tell which of its tools agents actually use.
 """
 
 import os
+import re
 import time
+from typing import Annotated
 
 from mcp.server.mcpserver import Context, MCPServer
-from mcp_types import ToolAnnotations
+from mcp_types import CallToolResult, TextContent, ToolAnnotations
 
 from . import projects, usage
 from .chats import indexer, store
@@ -17,7 +19,29 @@ from .memory.notes import NoteStore
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 
-mcp = MCPServer(
+
+class _Server(MCPServer):
+    async def list_tools(self):
+        """Tool definitions ride along in every request an agent makes, so publish input
+        schemas without pydantic's "title" keys, which only repeat each property's name.
+        Calls are still checked against the full schemas."""
+        return [t.model_copy(update={"input_schema": _untitled(t.input_schema)}) for t in await super().list_tools()]
+
+
+def _untitled(schema):
+    """A JSON schema without "title" keywords; a property that is itself named title stays."""
+    if isinstance(schema, list):
+        return [_untitled(x) for x in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {k: _untitled(v) for k, v in schema.items() if k not in ("title", "properties", "$defs")}
+    for k in ("properties", "$defs"):
+        if isinstance(schema.get(k), dict):
+            out[k] = {name: _untitled(v) for name, v in schema[k].items()}
+    return out
+
+
+mcp = _Server(
     "recall",
     instructions=(
         "Searchable history of the user's past coding-agent chats (Claude Code, Codex, Cursor) on this "
@@ -69,12 +93,16 @@ def search_chats(
     until: str | None = None,
     exclude: list[str] | None = None,
     limit: int = 8,
+    alternatives: list[str] | None = None,
     ctx: Context = None,
-) -> list[dict]:
+) -> Annotated[CallToolResult, list[dict]]:
     """Find past chats from Claude Code, Codex or Cursor by topic.
 
     query: words for what was discussed (e.g. "pen test", "dark mode tab bar"). If the first
       search misses, try other words for the same thing before giving up.
+    alternatives: other phrasings to search at the same time (synonyms, function or file
+      names, error text). Returns the `limit` chats that rank best across all phrasings, each
+      once, so this costs less than separate searches.
     agent: "claude", "codex" or "cursor" when the user names the tool the chat happened in.
     project: a project's name (see list_projects), or part of the folder or chat title.
     since / until: a date window, e.g. since="2w", or since="2026-09-01" until="2026-09-30"
@@ -83,31 +111,134 @@ def search_chats(
     Returns chats ranked by relevance, each with its best matching messages (hits: seq and
     snippet); pass chat_id and a hit's seq as offset to read_chat.
     """
+    queries = [q for q in dict.fromkeys([query, *(alternatives or [])][:MAX_PHRASINGS]) if q.strip()] or [query]
     args = {"query": query, "agent": agent, "project": project, "since": since, "until": until}
-    return _logged(
-        ctx,
-        "search_chats",
-        args,
-        lambda: store.search(_db(), query, agent, project, since, max(1, min(limit, 25)), until, exclude),
-    )
+    if len(queries) > 1:
+        args["alternatives"] = queries[1:]
+
+    def run():
+        con, n = _db(), max(1, min(limit, 25))
+        depth = n if len(queries) == 1 else max(n, 20)  # deeper lists fuse into a better top n
+        return _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])[:n]
+
+    rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
+    # Claude Code shows the model structuredContent; clients that read content instead (Codex,
+    # Cursor) would get one indented JSON block per chat, so content is the same results as text.
+    text = "\n".join(_result_block(r) for r in rows) or "No chats match. Try other words, or fewer filters."
+    return CallToolResult(content=[TextContent(type="text", text=text)], structured_content={"result": rows})
+
+
+MAX_PHRASINGS = 6
+
+
+def _merge(lists: list[list[dict]]) -> list[dict]:
+    """Every chat any phrasing found, listed once: ranked by reciprocal rank fusion of the
+    phrasings' rankings (a chat several of them rank well comes first), keeping the best hits
+    from all of them. A single phrasing passes through unchanged. The caller keeps the top
+    `limit`: an agent that sends more phrasings gets better-ranked chats, not more of them."""
+    if len(lists) == 1:
+        return lists[0]
+    score: dict[str, float] = {}
+    rows: dict[str, dict] = {}
+    for found in lists:
+        for rank, r in enumerate(found):
+            cid = r["chat_id"]
+            score[cid] = score.get(cid, 0) + 1 / (store.FUSION_K + rank + 1)
+            if cid not in rows:
+                rows[cid] = dict(r, hits=list(r.get("hits") or []))
+                continue
+            have = {h["seq"] for h in rows[cid]["hits"]}
+            rows[cid]["hits"] += [h for h in r.get("hits") or [] if h["seq"] not in have]
+            rows[cid]["matches"] = max(rows[cid].get("matches") or 0, r.get("matches") or 0)
+    for r in rows.values():
+        r["hits"] = r["hits"][: store.TOP_HITS]
+    return [rows[c] for c in sorted(score, key=score.get, reverse=True)]
+
+
+def _brief(row: dict) -> dict:
+    """A search result without the fields that repeat others, since agents pay for every
+    token: the agent is chat_id's prefix, and snippet and match_at repeat the first hit.
+    A chat with no matching message (found by its title or meaning) keeps its opening
+    message as snippet."""
+    out = {k: v for k, v in row.items() if k not in ("agent", "snippet", "match_at")}
+    if not row.get("hits"):
+        out["snippet"] = row.get("snippet")
+    return out
+
+
+def _result_block(row: dict) -> str:
+    """One search result as plain text: a line with chat_id · title · project (branch) · last
+    active · size, then each hit as "[seq] snippet" on one line. Far fewer tokens than JSON:
+    no field names, quotes or escapes."""
+    where = (row.get("project") or "") + (f" ({row['branch']})" if row.get("branch") else "")
+    size = f"{row['messages']} messages" + (f", {row['matches']} matching" if row.get("matches") else "")
+    head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
+    lines = [f"[{h['seq']}] {' '.join(h['snippet'].split())}" for h in row.get("hits") or []]
+    if not lines and row.get("snippet"):
+        lines = [f"opening message: {' '.join(row['snippet'].split())}"]
+    return head + "".join(f"\n  {line}" for line in lines) + "\n"
 
 
 @mcp.tool(annotations=READ_ONLY)
 def read_chat(
-    chat_id: str, query: str | None = None, offset: int | None = None, limit: int = 30, ctx: Context = None
+    chat_id: str,
+    query: str | None = None,
+    offset: int | None = None,
+    limit: int = 30,
+    ctx: Context = None,
 ) -> dict:
-    """Read a past chat (user and agent turns; tool output omitted).
+    """Read a past chat (user and agent turns; tool output omitted). Long messages show their
+    start, the passage that best matches query, and their end; limit=1 shows one in full.
 
     chat_id: from search_chats or recent_chats.
     query: jump to the part of the chat that best matches these words.
-    offset: message index to start from (match_at or next_offset); default is the start.
+    offset: message index to start from (a search hit's seq, or next_offset); default is the start.
     """
 
     def run():
-        result = store.read(_db(), chat_id, query, offset, max(1, min(limit, 80)))
-        return result or {"error": f"no chat with id {chat_id!r}; use search_chats first"}
+        result = store.read(_db(), chat_id, query, offset, max(1, min(limit, 80)), max_chars=store.MAX_MESSAGE_CHARS)
+        if not result:
+            return {"error": f"no chat with id {chat_id!r}; use search_chats first"}
+        budget = store.MAX_MESSAGE_CHARS if limit == 1 else CLIP_CHARS
+        terms = _terms(query)
+        for m in result["transcript"]:
+            m["text"] = _clip(m["text"], budget, terms)
+        return result
 
     return _logged(ctx, "read_chat", {"chat_id": chat_id, "query": query, "offset": offset}, run)
+
+
+CLIP_CHARS = 1200  # per message in a multi-message read
+
+
+def _terms(query: str | None) -> list[str]:
+    words = re.findall(r"\w+", (query or "").lower())
+    return [w for w in dict.fromkeys(words) if len(w) > 2 and w not in store.STOPWORDS]
+
+
+def _clip(text: str, budget: int, terms: list[str]) -> str:
+    """A long message cut to its start and its end, where agents put the request and the
+    summary, plus the passage that best matches the query when it lies between them."""
+    if len(text) <= budget:
+        return text
+    head, tail = budget * 3 // 10, budget * 3 // 10
+    lower = text.lower()
+    spots = [m.start() for t in terms for m in re.finditer(re.escape(t), lower)][:200]
+    middle = [p for p in spots if head < p < len(text) - tail]
+    if not middle:
+        head, tail = budget * 2 // 5, budget * 3 // 5
+        return f"{text[:head]}… [{len(text) - head - tail} chars cut] …{text[-tail:]}"
+    width = budget - head - tail
+    best = max(middle, key=lambda p: (len({t for t in terms if t in lower[p - width // 2 : p + width // 2]}), -p))
+    start = max(head, min(best - width // 3, len(text) - tail - width))
+    end = start + width
+    parts = [text[:head]]
+    if start > head:
+        parts.append(f"… [{start - head} chars cut] …")
+    parts.append(text[start:end])
+    if len(text) - tail > end:
+        parts.append(f"… [{len(text) - tail - end} chars cut] …")
+    return "".join(parts) + text[-tail:]
 
 
 @mcp.tool(annotations=READ_ONLY)
