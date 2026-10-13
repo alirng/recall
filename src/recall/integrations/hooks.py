@@ -62,9 +62,12 @@ EDIT_TOOLS = {
 # Handlers per kind, as "module:function"; each gets the Event and returns a Reply or None.
 HANDLERS: dict[str, list[str]] = {
     "session_start": ["recall.memory.context:on_session_start"],
-    "compact": ["recall.memory.context:on_session_start"],
+    "compact": ["recall.memory.context:on_session_start", "recall.jit:on_compact"],
     "edit": ["recall.status:on_edit", "recall.mail:on_edit"],
-    "prompt": ["recall.mail:on_turn"],
+    # mail first: a message sent to this chat comes before what recall remembers
+    "prompt": ["recall.mail:on_turn", "recall.jit:on_prompt"],
+    "read": ["recall.jit:on_read"],
+    "tool_failure": ["recall.jit:on_tool_failure"],
     "stop": ["recall.mail:on_turn"],
     "subagent_start": ["recall.explore:on_start"],
     "subagent_stop": ["recall.explore:on_stop"],
@@ -80,12 +83,15 @@ EXPLORE = {
 }
 
 # The entries `recall install` writes: (event, matcher) per agent, all answered by one command,
-# with an optional third element of settings for that entry.
+# with an optional third element of settings for that entry. One entry per (event, matcher):
+# two would run the command twice. UserPromptSubmit serves mail and jit alike.
 INSTALL: dict[str, list[tuple]] = {
     "claude": [
         ("SessionStart", None),
         ("PreToolUse", EDIT_TOOLS["claude"]),
-        ("UserPromptSubmit", None),
+        ("UserPromptSubmit", None),  # mail; jit: notes and chats the prompt matches
+        ("PostToolUse", "Read"),  # jit: what is anchored to the file
+        ("PostToolUseFailure", "Bash"),  # jit: past chats with the same error
         ("Stop", None),
         *EXPLORE["claude"],
     ],
@@ -93,12 +99,18 @@ INSTALL: dict[str, list[tuple]] = {
         ("SessionStart", None),
         ("PreToolUse", EDIT_TOOLS["codex"]),
         ("UserPromptSubmit", None),
+        ("PostToolUse", "^Bash$"),  # jit: reads are shell commands; every one costs a hook call
         ("Stop", None),
         *EXPLORE["codex"],
     ],
     "cursor": [
         ("preToolUse", EDIT_TOOLS["cursor"]),
         ("postToolUse", EDIT_TOOLS["cursor"]),
+        ("beforeSubmitPrompt", None),  # jit: noted, delivered at the next read or failure
+        ("postToolUse", "Read"),
+        ("postToolUse", "Shell"),  # jit: a failed command (non-streaming shell)
+        ("postToolUseFailure", "Shell"),  # jit: a failed command (streaming shell)
+        ("preCompact", None),
         ("stop", None, {"loop_limit": 3}),  # a follow-up at most three times in a row
         *EXPLORE["cursor"],
     ],
