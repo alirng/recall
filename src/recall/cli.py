@@ -875,6 +875,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     mc.add_argument("--notes", metavar="RUN_DIR", help="memorycode --arm notes: the extraction run whose notes to use")
     mc.add_argument("--queries", type=int, default=3, help="memorycode --agent: requests per history (0: all)")
+    sp.add_argument("--episodes", action="store_true", help="links: judge failure-then-fix episodes instead")
     return p
 
 
