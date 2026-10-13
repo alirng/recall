@@ -296,6 +296,63 @@ def cmd_usage(a) -> None:
         )
 
 
+def cmd_status(a) -> None:
+    from . import status
+
+    since = store.parse_since(a.since)
+    if a.hook:
+        return _status_hook(a, since)
+    s = status.status(since)
+    if a.json:
+        print(json.dumps(s, indent=2))
+        return
+    names = {x["id"]: f"{status.AGENTS.get(x['agent'], x['agent'])} · {x['title'][:40]}" for x in s["sessions"]}
+    for o in s["overlaps"]:
+        verdict = {True: "will conflict", False: "merges clean", None: "same working copy"}[o["conflict"]]
+        print(f"{o['file']} {verdict}  ({o['repo']} · {' ↔ '.join(o['branches'])})")
+        for sid in o["sessions"]:
+            print(f"    {names[sid]}")
+    if not s["overlaps"]:
+        print("Nothing needs you.")
+    live = [x for x in s["sessions"] if x["live"]]
+    print(f"\n{len(live)} live, {len(s['sessions'])} since {a.since}")
+    repos: dict[str, list] = {}
+    for x in live:
+        repos.setdefault(x["repo"] or "no folder", []).append(x)
+    for repo, xs in repos.items():
+        print(f"  {repo:14} {', '.join(dict.fromkeys(x['branch'] or '?' for x in xs))}")
+
+
+def _status_hook(a, since: float) -> None:
+    """Around an edit: apply the person's rules if another chat has open changes to the same
+    file. Never breaks the session, whatever goes wrong: an agent that blocks the edit on a
+    bad reply still gets its "go ahead"."""
+    from .integrations import hooks
+
+    try:
+        from . import status, usage
+
+        event = json.load(sys.stdin)
+        edit = hooks.parse(a.agent, event)
+        found = edit and [
+            d for f in edit.files if (d := status.check_edit(a.agent, edit.session, f, edit.cwd, since, edit.acts))
+        ]
+        if not found:
+            if quiet := hooks.silent(a.agent):
+                print(quiet)
+            return
+        action = min((d.action for d in found), key=status.ACTIONS.index)
+        message = "\n".join(dict.fromkeys(d.message for d in found))
+        out, code = hooks.render(a.agent, event, action, message, found[0].notice)
+        print(out)
+        usage.record("hook", "check_edit", {"files": edit.files, "action": action}, message, client=a.agent)
+        sys.exit(code)
+    except Exception as e:
+        if quiet := hooks.silent(a.agent):
+            print(quiet)
+        print(f"recall status: {e}", file=sys.stderr)
+
+
 # --- setup and integrations ---------------------------------------------------
 
 
@@ -520,6 +577,11 @@ def _parser() -> argparse.ArgumentParser:
     sp = command("rules", cmd_rules, "what each agent is told about a repo, and closing the gaps")
     sp.add_argument("target", nargs="*", help="a project's name or a folder (default: the current folder)")
     sp.add_argument("--write", action="store_true", help="make the changes shown in the diff")
+    sp = command("status", cmd_status, "what your agents are working on now, and files two of them both changed")
+    sp.add_argument("--since", default="12h", help="how far back, e.g. 2h, 12h or 1d")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--hook", action="store_true", help="run as an agent's before-edit hook, reading its JSON input")
+    sp.add_argument("--agent", default="claude", help="--hook: which agent is editing (claude, codex, cursor, …)")
     sp = command("usage", cmd_usage, "how recall itself gets used, from its local log")
     sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
     sp.add_argument("--json", action="store_true")

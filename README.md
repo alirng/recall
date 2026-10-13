@@ -333,17 +333,24 @@ top five from 87% to 91%; on my chats it found the intended chat in the top five
 
 ## How agents use it
 
-| Agent | History import | MCP tools | `/recall` skill | Memory at session start |
-| --- | --- | --- | --- | --- |
-| Claude Code | yes | yes | yes | automatic, via a session-start hook |
-| Codex | yes | yes | yes | automatic, via a session-start hook you trust once in `/hooks` |
-| Cursor | yes, including older chats | yes | yes | on request, via the `project_memory` tool |
+| Agent | History import | MCP tools | `/recall` skill | Memory at session start | Edit rules |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | yes | yes | yes | automatic, via a session-start hook | edit hook |
+| Codex | yes | yes | yes | automatic, via a session-start hook you trust once in `/hooks` | edit hook, trusted once in `/hooks` |
+| Cursor | yes, including older chats | yes | yes | on request, via the `project_memory` tool | edit hooks |
+| T3 Code | through the agent it runs | through that agent | through that agent | through that agent | the agent's own hooks |
+| OpenCode | no | add it yourself | no | via `project_memory` | edit plugin |
+| Gemini CLI | no | add it yourself | no | via `project_memory` | edit hooks |
+
+Agents whose hooks recall does not set up yet (Antigravity, Devin, Copilot, Cline, Kiro) can
+call the `open_elsewhere` MCP tool before editing, but their own edits stay invisible to the
+other chats until recall reads their history or hooks into them.
 
 - **Automatic:** the session-start hook loads your working preferences, a line for each
   always-on rule the repo gives another agent but not this one (a Cursor rule, say, in a
   Claude Code session), and the current project's notes, capped at 6,000 characters.
-- **On demand:** seven read-only MCP tools: `search_chats`, `read_chat`, `recent_chats`,
-  `memory_search`, `read_note`, `project_memory` and `list_projects`.
+- **On demand:** eight read-only MCP tools: `search_chats`, `read_chat`, `recent_chats`,
+  `memory_search`, `read_note`, `project_memory`, `list_projects` and `open_elsewhere`.
 - **Explicit:** type `/recall what did we decide about auth` in any agent with skills.
 
 Agents treat notes and transcripts as background, not instructions: the current request and
@@ -401,6 +408,39 @@ it. It shows the diff first and writes nothing without `--write`; run it again a
 change a rule. Gitignored rules are personal, so they never go into a committed file;
 instead the session-start hook gives Claude Code and Codex one line for each, with the
 file to read. MCP servers and skills are reported per agent and left alone.
+
+### Several chats, one repo
+
+Run agents side by side and two of them will sooner or later change the same file. `recall
+status` shows what each chat is working on now, on which branch, and which files two chats
+both have open changes to: whether the two would conflict if merged now, or share one working
+copy.
+
+```text
+$ recall status
+src/auth/session.py will conflict  (harbor · main ↔ new-login)
+    Claude Code · Fix the login redirect
+    Codex · Restyle the sign-in page
+
+2 live, 5 since 12h
+  harbor         main, new-login
+```
+
+The edit hook acts on it as it happens. Before an agent edits a file another chat has open
+changes to, recall applies your rule for the situation, set in `config.toml` (`recall setup`
+offers presets; these are the recommended ones):
+
+```toml
+[coordination]
+same_copy = "ask"    # another live chat is editing this same working copy
+conflict = "tell"    # the two branches would conflict on this file if merged now
+overlap = "off"      # open in both, but merges cleanly (or the other chat has gone quiet)
+```
+
+`ask` stops the agent once so it checks with you; `worktree` stops it once and has it move
+its work into its own git worktree; `tell` lets the edit through and tells the agent, which
+mentions it to you; `off` does nothing. Each other chat is raised once, with every file the
+two share, and again only if things get worse.
 
 ### What recall is used for
 
@@ -492,6 +532,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall projects [suggest \| show <name>] [--months N] [--all]` | your projects as lanes; `suggest` drafts projects.yaml |
 | `recall rules [project \| folder] [--write]` | which agent reads which instructions; `--write` closes the gaps |
 | `recall usage [--since 7d]` | how recall itself gets used, from its local log |
+| `recall status [--since 12h] [--json]` | what each agent is working on now, and files two chats both have open changes to |
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
 | `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first) |
 | `recall schedule enable \| disable \| status` | the nightly run |

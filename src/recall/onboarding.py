@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from . import config, keys, paths
+from . import config, keys, paths, status
 from .chats import indexer, store
 from .chats.sources import agents
 from .integrations import agents as integrations
@@ -71,19 +71,25 @@ def run(assume_yes: bool = False, model: str | None = None, embeddings: str | No
     result = indexer.index(store.connect(), log=lambda _: None)
     print("   " + ", ".join(f"{name}: {r['indexed']} new" for name, r in result.items()))
 
+    print("\n4. When an agent edits a file another chat has open changes to\n")
+    presets = list(status.PRESETS)
+    pick = ask.choose("Which rules?", [(name, status.PRESETS[name][1]) for name in presets])
+    cfg["coordination"] = dict(status.PRESETS[presets[pick]][0])
+    config.save(cfg)
+
     print()
-    if ask.yes("4. Connect recall to your agents (MCP tools, /recall skill, session-start hooks)?"):
+    if ask.yes("5. Connect recall to your agents (MCP tools, /recall skill, session-start and edit hooks)?"):
         for line in integrations.install():
             print("   " + line)
 
     dream = cfg["dream"]
-    if ask.yes("\n5. Update memory every night at 03:30?"):
+    if ask.yes("\n6. Update memory every night at 03:30?"):
         print("   " + scheduler.enable(3, 30, dream["max_minutes"], dream["max_calls"]))
 
-    if ask.yes("\n6. Start the first memory run now, in the background (newest chats first)?"):
+    if ask.yes("\n7. Start the first memory run now, in the background (newest chats first)?"):
         _start_first_run(dream)
     if embeddings:
-        print("\n7. Embedding your chats for semantic search, in the background…")
+        print("\n8. Embedding your chats for semantic search, in the background…")
         _start_background("embed")
     print(f"\nDone. Your memory lives in {paths.MEMORY}; start at MEMORY.md.")
 

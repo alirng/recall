@@ -302,6 +302,18 @@ def project_memory(path: str, ctx: Context = None) -> str:
 
 
 @mcp.tool(annotations=READ_ONLY)
+def open_elsewhere(path: str, ctx: Context = None) -> str:
+    """Which coding-agent chats have open (uncommitted or unmerged) changes in the git repo at
+    `path`, to which files, on which branch, and which would conflict with this checkout.
+    Agents without recall's edit hook should call it before editing in a repo other chats
+    may be working in."""
+    from . import status
+    from .chats.store import parse_since
+
+    return _logged(ctx, "open_elsewhere", {"cwd": path}, lambda: status.elsewhere(path, parse_since("12h")))
+
+
+@mcp.tool(annotations=READ_ONLY)
 def list_projects(months: int = 3, ctx: Context = None) -> list[dict]:
     """The developer's projects, work and personal, from their projects file: status, which
     agents worked on each, chat and note counts, last activity, and chats per month. Use it

@@ -5,8 +5,8 @@
 #   - Packaging: the sdist and wheel build, and the wheel installs into a fresh venv.
 #   - Smoke test, run from outside the checkout so only the installed wheel is tested:
 #     every module imports, both memory prompts load, and the core commands
-#     (index, stats, search, memory, projects, rules, usage, context) succeed with no
-#     agent history, using fresh RECALL_HOME and RECALL_MEMORY folders.
+#     (index, stats, search, memory, projects, rules, usage, context, status and its edit
+#     hook) succeed with no agent history, using fresh RECALL_HOME and RECALL_MEMORY folders.
 #
 # Why there are no unit tests: the project deliberately has none. The smoke test
 # drives the real `recall` entry point end to end, which catches the regressions
@@ -88,3 +88,10 @@ jobs:
           recall rules . || true  # the runner's temp folder is not a repo
           recall usage
           recall context --cwd "$GITHUB_WORKSPACE" --agent codex
+          recall status
+          recall status --json > /dev/null
+          readme="$GITHUB_WORKSPACE/README.md"
+          echo "{\"session_id\":\"ci\",\"tool_input\":{\"file_path\":\"$readme\"}}" | recall status --hook --agent claude
+          # Cursor blocks the edit unless its hook answers, so the quiet answer must be "allow".
+          echo "{\"conversation_id\":\"ci\",\"hook_event_name\":\"preToolUse\",\"tool_input\":{\"file_path\":\"$readme\"}}" \
+            | recall status --hook --agent cursor | grep -q '"permission": "allow"'
