@@ -1,5 +1,439 @@
 {
-  "_about": "Numbers behind docs/benchmarks/*.svg and the README's Benchmarks section. recall's own rows come from `recall eval`; every other row is the system's published figure (see source). Regenerate the charts with: python docs/benchmarks/make_charts.py",
+  "_about": "Numbers behind docs/benchmarks/*.svg and the README's Benchmarks section. recall's own rows come from `recall eval`; token counts come from the runs' transcripts via docs/benchmarks/agent_tokens.py. Every other row is the system's published figure (see source). Regenerate the charts with: uv run --with fonttools --with brotli python docs/benchmarks/make_charts.py",
+  "swecb_vs_products": {
+    "title": "SWE-ContextBench Lite: the past fix among the first results",
+    "subtitle": "99 issues, all 300 Claude Code sessions searched. Products: the paper's runs at their own cutoff. recall: hybrid.",
+    "source": "https://arxiv.org/html/2602.08316v3",
+    "rows": [
+      {
+        "group": "In the top 3",
+        "name": "recall 0.3.0",
+        "value": 76.8,
+        "ours": true,
+        "note": "no LLM calls"
+      },
+      {
+        "group": "In the top 3",
+        "name": "recall 0.2.1",
+        "value": 44.4,
+        "cls": "past",
+        "note": "no LLM calls"
+      },
+      {
+        "group": "In the top 3",
+        "name": "OpenViking",
+        "value": 51.5,
+        "note": "ingest $18.96, 9.5 h",
+        "source": "https://arxiv.org/html/2602.08316v3"
+      },
+      {
+        "group": "In the top 3",
+        "name": "Mem0",
+        "value": 39.4,
+        "note": "ingest $0.24, 21 min",
+        "source": "https://arxiv.org/html/2602.08316v3"
+      },
+      {
+        "group": "In the top 10",
+        "name": "recall 0.3.0",
+        "value": 92.9,
+        "ours": true,
+        "note": "no LLM calls"
+      },
+      {
+        "group": "In the top 10",
+        "name": "recall 0.2.1",
+        "value": 73.7,
+        "cls": "past",
+        "note": "no LLM calls"
+      },
+      {
+        "group": "In the top 10",
+        "name": "LangMem",
+        "value": 73.3,
+        "note": "memories; ingest $0.98",
+        "source": "https://arxiv.org/html/2602.08316v3"
+      },
+      {
+        "group": "In the top 15",
+        "name": "recall 0.3.0",
+        "value": 97.0,
+        "ours": true,
+        "note": "no LLM calls"
+      },
+      {
+        "group": "In the top 15",
+        "name": "recall 0.2.1",
+        "value": 86.9,
+        "cls": "past",
+        "note": "no LLM calls"
+      },
+      {
+        "group": "In the top 15",
+        "name": "Supermemory",
+        "value": 59.6,
+        "note": "ingest 370k tokens",
+        "source": "https://arxiv.org/html/2602.08316v3"
+      }
+    ]
+  },
+  "tokens_per_question": {
+    "title": "Context added to an agent per question",
+    "subtitle": "Estimated Claude tokens on held-out cases, with ~2.5k of recall's tool definitions.",
+    "unit": "k",
+    "max": 20,
+    "ticks": [
+      0,
+      5,
+      10,
+      15,
+      20
+    ],
+    "rows": [
+      {
+        "group": "SWE-ContextBench Lite, 40 held-out issues",
+        "name": "recall 0.2.1",
+        "value": 14.4,
+        "cls": "past",
+        "note": "5 runs"
+      },
+      {
+        "group": "SWE-ContextBench Lite, 40 held-out issues",
+        "name": "recall 0.3.0",
+        "value": 9.0,
+        "ours": true,
+        "note": "1 run; same hit rate"
+      },
+      {
+        "group": "My questions about past work, 47 held out",
+        "name": "recall 0.2.1",
+        "value": 19.1,
+        "cls": "past",
+        "note": "3 runs"
+      },
+      {
+        "group": "My questions about past work, 47 held out",
+        "name": "recall 0.3.0",
+        "value": 16.0,
+        "ours": true,
+        "note": "3 runs; same accuracy"
+      }
+    ],
+    "reported_elsewhere": [
+      {
+        "group": "Other systems, as reported on chat benchmarks (cited in the README text, not drawn)",
+        "name": "Mem0",
+        "value": 6.956,
+        "label": "6,956",
+        "note": "LoCoMo, vendor",
+        "source": "https://mem0.ai/research"
+      },
+      {
+        "group": "Other systems, as reported on chat benchmarks",
+        "name": "EverMemOS",
+        "value": 2.8,
+        "note": "LongMemEval",
+        "source": "https://arxiv.org/html/2601.02163v2"
+      },
+      {
+        "group": "Other systems, as reported on chat benchmarks",
+        "name": "Zep",
+        "value": 1.6,
+        "note": "LongMemEval",
+        "source": "https://arxiv.org/abs/2501.13956"
+      }
+    ]
+  },
+  "notes_quality": {
+    "title": "Notes that keep up with your conventions",
+    "subtitle": "MemoryCode: 40 held-out histories, 3 runs each. Mine: a fresh holdout of my chats, 6 runs. Notes by gpt-6-luna.",
+    "labels": true,
+    "bar_width": 34,
+    "categories": [
+      "Conventions in notes,\nlatest form (MemoryCode)",
+      "Changed conventions\nrecorded (MemoryCode)",
+      "Expected memories\nfound (my chats)",
+      "Memories worth\nkeeping (my chats)"
+    ],
+    "series": [
+      {
+        "name": "recall 0.2.1",
+        "cls": "past",
+        "values": [
+          9.1,
+          4.6,
+          48.2,
+          83.2
+        ]
+      },
+      {
+        "name": "recall 0.3.0",
+        "cls": "ours",
+        "values": [
+          61.6,
+          53.6,
+          61.0,
+          88.1
+        ]
+      }
+    ]
+  },
+  "swecb_lite": {
+    "title": "SWE-ContextBench Lite, past-fix retrieval (recall eval swe-contextbench)",
+    "about": "Query: the related issue's full text. Hit: a gold experience session in the top k. 'all' searches all 300 sessions, as the products did; 'repo' only the issue's own repo, as an agent in that project would. Hybrid adds nomic-embed-text through Ollama. Deterministic, one run each. n = 99 (59 train, 40 test); each score carries about +-10 points.",
+    "source": "https://arxiv.org/html/2602.08316v3",
+    "rows": [
+      {
+        "release": "0.2.1",
+        "scope": "repo",
+        "search": "hybrid",
+        "hit@1": 0.354,
+        "hit@3": 0.465,
+        "hit@5": 0.505,
+        "hit@10": 0.646,
+        "mrr": 0.428
+      },
+      {
+        "release": "0.2.1",
+        "scope": "repo",
+        "search": "keyword",
+        "hit@1": 0.343,
+        "hit@3": 0.455,
+        "hit@5": 0.495,
+        "hit@10": 0.556,
+        "mrr": 0.406
+      },
+      {
+        "release": "0.2.1",
+        "scope": "all",
+        "search": "hybrid",
+        "hit@1": 0.354,
+        "hit@3": 0.444,
+        "hit@5": 0.465,
+        "hit@10": 0.737,
+        "mrr": 0.437,
+        "hit@15": 0.869
+      },
+      {
+        "release": "0.2.1",
+        "scope": "all",
+        "search": "keyword",
+        "hit@1": 0.273,
+        "hit@3": 0.424,
+        "hit@5": 0.434,
+        "hit@10": 0.465,
+        "mrr": 0.346
+      },
+      {
+        "release": "0.3.0",
+        "scope": "repo",
+        "search": "hybrid",
+        "hit@1": 0.586,
+        "hit@3": 0.758,
+        "hit@5": 0.828,
+        "hit@10": 0.939,
+        "hit@15": 0.98,
+        "mrr": 0.698
+      },
+      {
+        "release": "0.3.0",
+        "scope": "repo",
+        "search": "keyword",
+        "hit@1": 0.515,
+        "hit@3": 0.697,
+        "hit@5": 0.768,
+        "hit@10": 0.889,
+        "hit@15": 0.939,
+        "mrr": 0.63
+      },
+      {
+        "release": "0.3.0",
+        "scope": "all",
+        "search": "hybrid",
+        "hit@1": 0.586,
+        "hit@3": 0.768,
+        "hit@5": 0.798,
+        "hit@10": 0.929,
+        "hit@15": 0.97,
+        "mrr": 0.693
+      },
+      {
+        "release": "0.3.0",
+        "scope": "all",
+        "search": "keyword",
+        "hit@1": 0.535,
+        "hit@3": 0.687,
+        "hit@5": 0.778,
+        "hit@10": 0.869,
+        "hit@15": 0.909,
+        "mrr": 0.637
+      }
+    ],
+    "by_split": {
+      "about": "repo scope, hybrid, hit@5. The ranking change was chosen on train; test was scored once per round.",
+      "train": {
+        "0.2.1": 0.508,
+        "0.3.0": 0.763,
+        "n": 59
+      },
+      "test": {
+        "0.2.1": 0.5,
+        "0.3.0": 0.925,
+        "n": 40
+      }
+    },
+    "products": {
+      "about": "The paper's Table 5, 'Overall Matched (%)', on the same 99 tasks and 300 transcripts, at each product's own top k. The paper does not define the metric, and describes the query for Mem0 and Supermemory but not for OpenViking and LangMem. Ingest figures from its Appendix A.2.",
+      "rows": [
+        {
+          "name": "Mem0",
+          "k": 3,
+          "value": 39.39,
+          "ingest": "$0.24, 21 min"
+        },
+        {
+          "name": "OpenViking",
+          "k": 3,
+          "value": 51.52,
+          "ingest": "$18.96, 570 min"
+        },
+        {
+          "name": "LangMem",
+          "k": 10,
+          "value": 73.34,
+          "ingest": "$0.98, 58 min",
+          "note": "10 extracted memories, which may span fewer than 10 sessions"
+        },
+        {
+          "name": "Supermemory",
+          "k": 15,
+          "value": 59.6,
+          "ingest": "369.6k tokens, under an hour"
+        },
+        {
+          "name": "Agent choosing among summaries",
+          "k": null,
+          "value": 36.36
+        },
+        {
+          "name": "Agent choosing among full transcripts",
+          "k": null,
+          "value": 18.18
+        }
+      ]
+    }
+  },
+  "agent_tokens": {
+    "title": "Tokens of recall output an agent takes in per question, held-out cases (docs/benchmarks/agent_tokens.py)",
+    "about": "Estimated Claude tokens: tool-result text from each run's transcripts, converted with a factor fitted on the same transcripts, plus recall's tool definitions measured directly (2,591 tokens in 0.2.1, 2,480 in 0.3.0); means per question. Claude Code with Claude Haiku 5.5 and only recall's MCP tools. SWE-ContextBench 0.2.1: five runs of 0.2.1's tools, measured with 0.3.0's search ranking, which does not change the short queries agents send; 0.3.0: the release run.",
+    "rows": [
+      {
+        "eval": "SWE-ContextBench Lite agent",
+        "split": "test",
+        "n": 40,
+        "release": "0.2.1",
+        "runs": 5,
+        "tokens": 14400,
+        "hit": 0.9
+      },
+      {
+        "eval": "SWE-ContextBench Lite agent",
+        "split": "test",
+        "n": 40,
+        "release": "0.3.0",
+        "runs": 1,
+        "tokens": 9000,
+        "hit": 0.9,
+        "change": -0.37
+      },
+      {
+        "eval": "my questions about past work (private cases)",
+        "split": "test",
+        "n": 47,
+        "release": "0.2.1",
+        "runs": 3,
+        "tokens": 19100,
+        "accuracy": 0.851
+      },
+      {
+        "eval": "my questions about past work (private cases)",
+        "split": "test",
+        "n": 47,
+        "release": "0.3.0",
+        "runs": 3,
+        "tokens": 16000,
+        "accuracy": 0.851,
+        "change": -0.17
+      }
+    ]
+  },
+  "memorycode_notes": {
+    "title": "MemoryCode, notes after each history (recall eval memorycode)",
+    "about": "40 held-out histories (25 short, 15 long), 3 fresh runs each, notes written by chatgpt:gpt-6-luna, judged by Claude Sonnet 5.5 where a convention has no exact token. recall: each convention in its latest form is stated by an active note. updates: a changed convention has its latest form and no replaced form. stale: a replaced form still stated as current. filler: notes learned only from filler sessions. calls and tokens: all three runs.",
+    "source": "https://arxiv.org/html/2502.13791v2",
+    "rows": [
+      {
+        "release": "0.2.1",
+        "recall": 0.091,
+        "updates": 0.046,
+        "stale": 0.027,
+        "filler_notes": 0.45,
+        "model_calls": 780,
+        "input_tokens": 14300000,
+        "output_tokens": 135000
+      },
+      {
+        "release": "0.3.0",
+        "recall": 0.616,
+        "updates": 0.536,
+        "stale": 0.084,
+        "filler_notes": 0.295,
+        "model_calls": 1927,
+        "input_tokens": 34000000,
+        "output_tokens": 608000
+      }
+    ]
+  },
+  "memorycode_agent": {
+    "title": "MemoryCode, an agent writing code that follows the latest conventions (recall eval memorycode --agent)",
+    "about": "Claude Haiku 5.5 in Claude Code, 3 requests per history, graded by the benchmark's own checks. long = 20 to 100 sessions, short = 1 to 15. Both recall arms are 0.3.0, on the 40 held-out histories; 0.2.1 with its notes at session start was not measured. 'notes at session start' (--arm hook): 0.3.0's notes in the session-start block, plus recall's tools. The no-memory and whole-history rows are training histories, for reference.",
+    "rows": [
+      {
+        "arm": "no memory",
+        "split": "train",
+        "runs": 1,
+        "overall": 0.021,
+        "long": 0.025,
+        "short": 0.019
+      },
+      {
+        "arm": "0.3.0 tools only",
+        "split": "test",
+        "runs": 3,
+        "overall": 0.758,
+        "long": 0.453,
+        "short": 0.942,
+        "input_tokens_median": 55785
+      },
+      {
+        "arm": "0.3.0 notes at session start + tools",
+        "split": "test",
+        "runs": 1,
+        "overall": 0.797,
+        "long": 0.648,
+        "short": 0.886,
+        "input_tokens_median": 37474
+      },
+      {
+        "arm": "whole history in the prompt",
+        "split": "train",
+        "runs": 1,
+        "overall": 0.898,
+        "long": 0.802,
+        "short": 0.956
+      }
+    ]
+  },
   "retrieval_user_turns_all5": {
     "title": "LongMemEval_S: every answer session in the top 5",
     "subtitle": "Session retrieval, user turns indexed (recall_all@5). recall: the benchmark's official 419 questions; engram: its 343-question test split.",
@@ -129,9 +563,11 @@
         "ours": true
       },
       {
-        "name": "Mem0",
-        "tokens": 7000,
-        "value": 94.4
+        "name": "Mem0 (tokens: LoCoMo)",
+        "tokens": 6956,
+        "value": 94.4,
+        "anchor": "end",
+        "label_dx": -10
       },
       {
         "name": "Mastra",
@@ -140,10 +576,8 @@
       },
       {
         "name": "EverMemOS",
-        "tokens": 6700,
-        "value": 83.0,
-        "anchor": "end",
-        "label_dx": -10
+        "tokens": 2800,
+        "value": 83.0
       },
       {
         "name": "ICM folders",
