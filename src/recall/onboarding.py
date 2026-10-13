@@ -205,7 +205,7 @@ def _test(provider: Provider) -> None:
     data = Client(provider).json("setup-check", extract.SYSTEM, sample, extract.SCHEMA)
     print("ok")
     where = "nothing leaves this machine" if provider.private else f"chat excerpts go to {provider.destination}"
-    print(f"   {where}. Learned from the test chat: {[m['title'] for m in data['memories']]}")
+    print(f"   {where}. Learned from the test chat: {[m['title'] for m in extract.memories(data, 1)[1]]}")
 
 
 def _detect_agents() -> dict[str, int]:

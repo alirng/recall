@@ -16,28 +16,36 @@ from . import digest, prompts
 SYSTEM, PROMPT_VERSION = prompts.load("extract")
 MAX_PER_CHUNK = 6
 
+MEMORY = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["temporal", "type", "scope", "title", "body", "why", "evidence", "speaker", "confidence"],
+    "properties": {
+        "temporal": {"enum": ["permanent", "this_task", "unknown"]},  # first: decided before it is written
+        "type": {"enum": ["preference", "fact", "decision", "lesson", "open"]},
+        "scope": {"enum": ["global", "project"]},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+        "why": {"type": "string"},
+        "evidence": {"type": "string"},
+        "speaker": {"enum": ["user", "assistant"]},
+        "confidence": {"enum": ["high", "medium", "low"]},
+    },
+}
+# One entry per chat, not one list for the batch: given a flat list, models answer for the
+# batch as a whole and read the first few chats of a dozen.
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["memories"],
+    "required": ["chats"],
     "properties": {
-        "memories": {
+        "chats": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["chat", "type", "scope", "title", "body", "why", "evidence", "speaker", "confidence"],
-                "properties": {
-                    "chat": {"type": "integer"},
-                    "type": {"enum": ["preference", "fact", "decision", "lesson", "open"]},
-                    "scope": {"enum": ["global", "project"]},
-                    "title": {"type": "string"},
-                    "body": {"type": "string"},
-                    "why": {"type": "string"},
-                    "evidence": {"type": "string"},
-                    "speaker": {"enum": ["user", "assistant"]},
-                    "confidence": {"enum": ["high", "medium", "low"]},
-                },
+                "required": ["chat", "memories"],
+                "properties": {"chat": {"type": "integer"}, "memories": {"type": "array", "items": MEMORY}},
             },
         }
     },
@@ -99,12 +107,17 @@ def plan(items, profile: Profile) -> tuple[list[list[Unit]], list]:
 def run_batch(client: Client, batch: list[Unit]) -> list[tuple[Unit, list[dict]]]:
     """One model call over a batch; returns each chunk with its candidate memories."""
     text = "\n\n".join(f"=== CHAT {i}\n{_scrub(u.chunk)}" for i, u in enumerate(batch, 1))
-    data = client.json("extract", SYSTEM, text, SCHEMA)
-    per_chat: dict[int, list[dict]] = {i: [] for i in range(1, len(batch) + 1)}
-    for m in data["memories"]:
-        if m["chat"] in per_chat:
-            per_chat[m["chat"]].append(m)
+    per_chat = memories(client.json("extract", SYSTEM, text, SCHEMA), len(batch))
     return [(u, _clean(per_chat[i], u)) for i, u in enumerate(batch, 1)]
+
+
+def memories(data: dict, n: int) -> dict[int, list[dict]]:
+    """An extraction answer as {chat number: memories} for chats 1..n."""
+    per_chat: dict[int, list[dict]] = {i: [] for i in range(1, n + 1)}
+    for entry in data["chats"]:
+        if entry["chat"] in per_chat:
+            per_chat[entry["chat"]] += entry["memories"]
+    return per_chat
 
 
 def grounded(evidence: str, source: str) -> bool:
@@ -189,8 +202,9 @@ def _norm(text: str) -> str:
 
 def _clean(memories: list[dict], unit: Unit) -> list[dict]:
     out = []
-    for m in memories[:MAX_PER_CHUNK]:
-        m = {k: (v.strip() if isinstance(v, str) else v) for k, v in m.items() if k != "chat"}
+    lasting = [m for m in memories if m["temporal"] != "this_task"]  # a request for the work at hand
+    for m in lasting[:MAX_PER_CHUNK]:
+        m = {k: (v.strip() if isinstance(v, str) else v) for k, v in m.items()}
         text = " ".join((m["title"], m["body"], m["why"]))
         if redact(text) != text or "[REDACTED]" in text:
             continue  # a credential must never become a memory
