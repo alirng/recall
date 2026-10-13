@@ -113,6 +113,23 @@ class Note:
     footer: str = field(default="", repr=False)  # the related-notes footer as last written
     path: str = ""
 
+    @property
+    def active_rules(self) -> list[Rule]:
+        """The rules in force, in the order the body shows them, each with said_by and evidence."""
+        return [r for r in self.rules if r.active]
+
+    @property
+    def said_by(self) -> str | None:
+        """Who stated the rules in force: "developer" when the developer stated every one,
+        "agent" when only the agent did, "mixed" otherwise; None when no rule says (notes
+        written before rules recorded it)."""
+        said = [r.said_by for r in self.active_rules]
+        if not any(said):
+            return None
+        if all(s == "developer" for s in said):
+            return "developer"
+        return "agent" if all(s == "agent" for s in said) else "mixed"
+
     def score(self, now: float) -> float:
         """Rank for the indexes: confidence, corroboration across chats, and recency."""
         try:
