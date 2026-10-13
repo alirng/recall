@@ -604,7 +604,16 @@ def _eval_v2(a) -> None:
         con = harness.corpus()
         run = harness.Run(kinds[a.kind], a.split, settings, a.who, a.runs_dir)
         evals_memory.run(
-            con, cases, run, a.model, a.judge or harness.JUDGE, a.fresh, a.repeats, a.consistency, a.against
+            con,
+            cases,
+            run,
+            a.model,
+            a.judge or harness.JUDGE,
+            a.fresh,
+            a.repeats,
+            a.consistency,
+            a.against,
+            a.from_candidates,
         )
     else:
         from . import evals_search
@@ -781,6 +790,11 @@ def _parser() -> argparse.ArgumentParser:
     v2.add_argument("--who", help="name in the run folder and ledger (default $RECALL_EVAL_WHO or harness)")
     v2.add_argument("--note", help="a note for the ledger line")
     v2.add_argument("--runs-dir", help="where run folders go; the ledger is LEDGER.md beside it")
+    v2.add_argument(
+        "--from-candidates",
+        metavar="RUN_DIR",
+        help="memorycode, memory --v2: reuse that run's extracted candidates and rerun only consolidation",
+    )
     scb = sp.add_argument_group("swe-contextbench (also --hybrid, --split, --case, --limit, --against, --who, --note)")
     scb.add_argument("--data", help="the benchmark folder, holding repo/ (GitHub) and hf/ (Hugging Face)")
     scb.add_argument("--subset", choices=["lite", "full"], default="lite", help="related tasks (default lite)")
@@ -792,7 +806,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     mc = sp.add_argument_group("memorycode, amb (also --data, --agent, --model, --hybrid, --split, --limit, --repeats)")
     mc.add_argument(
-        "--arm", choices=["none", "tools", "notes", "hook", "full"], default="tools", help="memorycode --agent"
+        "--arm",
+        default="tools",
+        help="memorycode --agent: none, tools, notes, hook, placebo or full (evals_memorycode.ARMS)",
     )
     mc.add_argument("--notes", metavar="RUN_DIR", help="memorycode --arm notes: the extraction run whose notes to use")
     mc.add_argument("--queries", type=int, default=3, help="memorycode --agent: requests per history (0: all)")

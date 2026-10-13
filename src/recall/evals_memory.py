@@ -12,6 +12,10 @@ with supersedes are then folded into notes one chat at a time, as successive nig
 (dream._fold_notes), into a temporary copy of the notes folder. The copy leaves out notes
 already learned from the item's own chats, which would give the answer away.
 
+--from-candidates RUN_DIR replays an earlier run's extracted memories instead of extracting, so a
+folding (consolidation) change is measured without extraction noise: recall and precision then
+repeat the earlier run's, and the note metrics (note_recall, updates, note_leaks) are what moves.
+
 A Claude Sonnet judge, which also reads the chats, scores:
   recall       each expected claim is stated by some extracted memory
   precision    each extracted memory is right about the chat, durable and not forbidden
@@ -54,7 +58,10 @@ def run(
     repeats: int = 1,
     consistency: int = 8,
     against: str | None = None,
+    from_candidates: str | None = None,
 ) -> dict:
+    """from_candidates: an earlier memory_v2 run whose extracted memories replace extraction, so
+    only folding (consolidation) and grading run again; repeat r replays its repeat r."""
     provider = from_spec(model, config.load()["model"])
     if problem := provider.check():
         sys.exit(problem)
@@ -63,6 +70,10 @@ def run(
     if repeats > 1 and not fresh:
         print("--repeats implies --fresh: cached answers would repeat the first run", file=sys.stderr)
         fresh = True
+    source = _source(from_candidates) if from_candidates else None
+    if source:
+        fresh = True  # a cached answer would replay the earlier run's folding, not sample a new one
+        run.meta["from_candidates"] = source["dir"]
     client = Client(provider, cache=not fresh)
     grader = h.judge_client(judge)
     run.meta.update(model=provider.label, judge=judge, judge_version=JUDGE_VERSION, fresh=fresh)
@@ -83,8 +94,11 @@ def run(
 
     results = []
     for repeat in range(1, repeats + 1):
-        print(f"extracting from {len(sessions)} chats with {provider.label}", file=sys.stderr)
-        found, failed = read(client, list(sessions.values()), messages)
+        if source:
+            found, failed = _replay(source, repeat, items)
+        else:
+            print(f"extracting from {len(sessions)} chats with {provider.label}", file=sys.stderr)
+            found, failed = read(client, list(sessions.values()), messages)
 
         def one(item, repeat=repeat, found=found, failed=failed):
             return _score_item(
@@ -185,6 +199,57 @@ def read(client: Client, sessions: list, messages: dict) -> tuple[dict, dict]:
                     if (session := collector.fail(unit)) is not None:
                         failed[session["id"]] = str(e)[:300]
     return found, failed
+
+
+def _source(run_dir: str) -> dict:
+    """An earlier memory_v2 run's rows, with where each transcript is."""
+    folder = os.path.abspath(os.path.expanduser(run_dir))
+    if not os.path.exists(os.path.join(folder, "meta.json")):  # a run wrapper folder: follow its output
+        from .evals_compare import resolve
+
+        folder = resolve(folder)
+    with open(os.path.join(folder, "meta.json")) as f:
+        meta = json.load(f)
+    if meta.get("eval") != "memory_v2":
+        sys.exit(f"--from-candidates needs a memory_v2 run; {folder} is {meta.get('eval')}")
+    rows: dict[tuple[str, int], dict] = {}
+    for part in ("", "test"):
+        path = os.path.join(folder, part, "cases.jsonl")
+        if os.path.exists(path):
+            with open(path) as f:
+                for line in f:
+                    r = json.loads(line)
+                    r["path"] = os.path.join(folder, part, r["transcript"].removesuffix(".html") + ".json")
+                    rows[(r["id"], r.get("repeat") or 1)] = r
+    if not rows:
+        sys.exit(f"{folder} has no case rows")
+    return {"dir": folder, "rows": rows, "repeats": max(k[1] for k in rows)}
+
+
+def _replay(source: dict, repeat: int, items: list[dict]) -> tuple[dict, dict]:
+    """read()'s result rebuilt from the memories an earlier run extracted for the same chats."""
+    k = (repeat - 1) % source["repeats"] + 1
+    found: dict[str, tuple] = {}
+    failed: dict[str, str] = {}
+    for item in items:
+        r = source["rows"].get((item["id"], k))
+        if r is None or "memories" not in (t := _load(r["path"])):
+            for c in item["chats"]:
+                failed.setdefault(c, f"no memories for {item['id']} in the source run's repeat {k}")
+            continue
+        for c in item["chats"]:
+            mine = [{key: v for key, v in m.items() if key != "chat"} for m in t["memories"] if m.get("chat") == c]
+            found.setdefault(c, (mine, None))
+            failed.pop(c, None)
+    return found, {c: e for c, e in failed.items() if c not in found}
+
+
+def _load(path: str) -> dict:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def fold(chats: list[str], sessions: dict, found: dict, client: Client) -> dict:
