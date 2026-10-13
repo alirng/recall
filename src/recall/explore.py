@@ -84,7 +84,7 @@ def connect(path: str | None = None) -> sqlite3.Connection:
 def _git(folder: str, *args: str, timeout: float = GIT_TIMEOUT) -> str | None:
     try:
         r = subprocess.run(
-            ["git", "-c", "core.quotePath=false", "-C", folder, *args],
+            ["git", "--no-optional-locks", "-c", "core.quotePath=false", "-C", folder, *args],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -200,7 +200,7 @@ _BOILER = frozenset(
 
 def _tokens(text: str) -> list[str]:
     """Content words, with identifiers also split into their parts (NoteStore -> note,
-    table), lower-cased and crudely stemmed so plurals meet."""
+    store), lower-cased and crudely stemmed so plurals meet."""
     from .chats.store import STOPWORDS
 
     out = []
@@ -386,7 +386,7 @@ def _git_all(folder: str, *commands: tuple[str, ...]) -> list[str | None]:
         try:
             procs.append(
                 subprocess.Popen(
-                    ["git", "-c", "core.quotePath=false", "-C", folder, *args],
+                    ["git", "--no-optional-locks", "-c", "core.quotePath=false", "-C", folder, *args],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     text=True,
@@ -405,12 +405,13 @@ def _git_all(folder: str, *commands: tuple[str, ...]) -> list[str | None]:
     return out
 
 
-def changes_since(top: str, sha: str | None, max_files: int = DIFF_FILES) -> Changes:
+def changes_since(top: str, sha: str | None, max_files: int = DIFF_FILES, to: str | None = None) -> Changes:
     """What changed in this checkout since sha: commits on top of it and the diff from it to
-    the working tree (so uncommitted edits count too)."""
+    the working tree (so uncommitted edits count too), or to commit `to` when replaying."""
     if not sha:
         return Changes(False)
-    count, numstat = _git_all(top, ("rev-list", "--count", f"{sha}..HEAD"), ("diff", "--numstat", "--no-renames", sha))
+    diff = ("diff", "--numstat", "--no-renames", sha, *([to] if to else []))
+    count, numstat = _git_all(top, ("rev-list", "--count", f"{sha}..{to or 'HEAD'}"), diff)
     if count is None or numstat is None:  # the commit is not in this checkout
         return Changes(False)
     rows = []
@@ -432,7 +433,7 @@ INSTRUCTION = (
 )
 
 
-def block(row, here: Checkout, now: float | None = None) -> str:
+def block(row, here: Checkout, now: float | None = None, to: str | None = None) -> str:
     """The block an exploration subagent gets: the earlier question, the report as pointers,
     its commit and age, what changed since, and how to use it."""
     now = now or time.time()
@@ -447,14 +448,15 @@ def block(row, here: Checkout, now: float | None = None) -> str:
         + ") answered a similar question:\n> "
         + " ".join(_BLOCK.sub(" ", row["prompt"]).split())[:300]
     )
-    ch = changes_since(here.top, sha)
+    ch = changes_since(here.top, sha, to=to)
     cited = {_relative(p, roots) for p in cited_files(row["report"])}
     dirty_then = set(json.loads(row["dirty"] or "[]"))
     if ch.known:
         touched = sorted(p for p in cited if p in ch.files or any(f.endswith("/" + p) for f in ch.files))
         touched = [p for p in touched if not any(q != p and q.endswith("/" + p) for q in touched)]
         changed = ch.summary or "no file changes"
-        lines = [f"Since then: {ch.commits} commits; {changed} (diff from {sha[:9]} to the working tree)."]
+        target = to[:9] if to else "the working tree"
+        lines = [f"Since then: {ch.commits} commits; {changed} (diff from {sha[:9]} to {target})."]
         lines += ch.stat
         if len(ch.files) > len(ch.stat):
             lines.append(f"  … {len(ch.files) - len(ch.stat)} more files")
