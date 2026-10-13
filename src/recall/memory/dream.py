@@ -103,7 +103,8 @@ def run(opts: Options, log=print) -> dict:
             record.update(batches=batcher.batches, batched_calls=batcher.requests)
         if cost is not None:
             record["cost_usd"] = cost
-            log(f"cost: ${cost:.4f}" + (f" ({batcher.requests} calls batched at half price)" if batcher else ""))
+            batched = batcher.requests if batcher else 0
+            log(f"cost: ${cost:.4f}" + (f" ({batched} calls batched at half price)" if batched else ""))
         con.execute(
             "insert into dream_runs(started, finished, backend, chats, candidates, stats, tokens_in, tokens_out,"
             " llm_calls, error) values (?,?,?,?,?,?,?,?,?,?)",
