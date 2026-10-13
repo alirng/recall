@@ -14,7 +14,11 @@ from .llm.agent_cli import ChatGPT, Claude
 from .llm.base import http_json
 
 SMALL_MODEL_HINTS = ("luna", "mini", "nano", "haiku", "flash", "small", "lite", "4b", "3b")
-API_KEY_ENV = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+API_KEY_ENV = keys.ENV
+API_CREDITS = (
+    "   Claude Max and Team plans also include monthly API credits, enough for recall's nightly run\n"
+    "   through the Batch API at half price. Give recall its own Console workspace with a spend limit."
+)
 
 
 class Prompter:
@@ -197,6 +201,7 @@ def _claude_settings(ask: Prompter, _servers) -> dict:
     problem = Claude().check()
     if problem:
         raise ValueError(problem)
+    print(API_CREDITS + ' To use them, choose "API key", then Anthropic.')
     return {"provider": "claude", "name": ask.ask("Model (haiku, sonnet or opus)", "haiku")}
 
 
@@ -209,6 +214,8 @@ def _api_settings(ask: Prompter, _servers) -> dict:
     ]
     kind = ["openai", "anthropic", "openrouter", "custom"][ask.choose("Which service?", services)]
     settings = {"provider": kind}
+    if kind == "anthropic":
+        print(API_CREDITS)
     if kind == "custom":
         settings["base_url"] = ask.ask("Base URL (e.g. http://my-server:8000/v1)")
     settings["api_key"] = _store_key(ask, kind)
@@ -218,6 +225,12 @@ def _api_settings(ask: Prompter, _servers) -> dict:
     except (FatalError, LLMError):
         models = []
     settings["name"] = ask.ask("Model", _small_first(models))
+    if provider.supports_batch:
+        print("   The nightly run sends its calls through the Batch API, at half the price.")
+    # A signed-in plan can take over when the key's credits run out.
+    plan = {"anthropic": ("claude:haiku", Claude()), "openai": ("chatgpt", ChatGPT(""))}.get(kind)
+    if plan and plan[1].check() is None and ask.yes(f"When the key's credits run out, carry on with {plan[1].title}?"):
+        settings["fallback"] = plan[0]
     return settings
 
 
