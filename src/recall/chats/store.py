@@ -201,6 +201,13 @@ FUSION_K = 20
 WEIGHTS = {"best": 0.5, "sum": 1.0, "title": 2.0, "all": 1.0, "dense": 1.0}
 TOP_HITS = 3  # messages per chat summed, and returned as hits
 POOL = 2000  # matching messages considered per query
+# A title is strong evidence for a query about as long as a title, and weak evidence for a
+# long one, such as a pasted issue or error: nearly every title shares a word with it, so the
+# title ranking would mostly reward chats for having a title. Past this many query words its
+# weight falls with the fourth power of the length, so it is mostly gone by twice a title's
+# length (on SWE-ContextBench's issue texts, a full title weight cost more than 20 points of
+# hit@5).
+TITLE_WORDS = 12
 
 
 def search(
@@ -265,11 +272,12 @@ def search(
         from .. import embeddings
 
         by_dense = embeddings.ranking(con, vector, fsql, fargs, msql, margs, 200)
+    weights = dict(WEIGHTS, title=WEIGHTS["title"] * min(1.0, TITLE_WORDS / (q.count(" OR ") + 1)) ** 4)
     scores: dict[str, float] = {}
     rankings = (("best", by_best), ("sum", by_sum), ("title", by_title), ("all", by_all), ("dense", by_dense))
     for name, ranking in rankings:
         for rank, sid in enumerate(ranking):
-            scores[sid] = scores.get(sid, 0) + WEIGHTS[name] / (FUSION_K + rank + 1)
+            scores[sid] = scores.get(sid, 0) + weights[name] / (FUSION_K + rank + 1)
     top = sorted(scores, key=scores.get, reverse=True)[:limit]
     if not top:
         return []
