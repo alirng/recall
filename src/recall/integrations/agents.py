@@ -1,5 +1,6 @@
-"""Connect recall to coding agents: its MCP server, the /recall skill, and the
-session-start hooks that load memory in Claude Code and Codex.
+"""Connect recall to coding agents: its MCP server, the /recall skill, the session-start
+hooks that load memory in Claude Code and Codex, and the edit hooks that apply your
+coordination rules when another chat has open changes to a file an agent is about to edit.
 
 Every config file is backed up beside itself (<file>.recall-backup) before it
 changes, and `recall uninstall` reverses each step.
@@ -12,6 +13,8 @@ import shutil
 import subprocess
 import sys
 
+from . import hooks as edit_hooks
+
 NAME = "recall"
 COMPONENTS = ("mcp", "skill", "hook")
 
@@ -22,6 +25,10 @@ CLAUDE_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 CODEX_CONFIG = os.path.expanduser("~/.codex/config.toml")
 CODEX_HOOKS = os.path.expanduser("~/.codex/hooks.json")
 CURSOR_MCP = os.path.expanduser("~/.cursor/mcp.json")
+CURSOR_HOOKS = os.path.expanduser("~/.cursor/hooks.json")
+GEMINI_SETTINGS = os.path.expanduser("~/.gemini/settings.json")
+OPENCODE_PLUGIN = os.path.expanduser("~/.config/opencode/plugins/recall.js")
+OPENCODE_SOURCE = os.path.join(os.path.dirname(__file__), "opencode", "recall.js")
 _CODEX_BLOCK = re.compile(rf"\n?\[mcp_servers\.{NAME}\]\n(?:(?!\[).*\n?)*")
 
 
@@ -39,6 +46,9 @@ def install(components=COMPONENTS, dry_run: bool = False) -> list[str]:
     if "hook" in components:
         report.append(f"Claude Code  {_hook_claude(cmd, dry_run)}")
         report.append(f"Codex        {_hook_codex(cmd, dry_run)}")
+        report.append(f"Cursor       {_hook_cursor(cmd, dry_run)}")
+        report.append(f"Gemini CLI   {_hook_gemini(cmd, dry_run)}")
+        report.append(f"OpenCode     {_hook_opencode(cmd, dry_run)}")
     return report
 
 
@@ -55,6 +65,9 @@ def uninstall(components=COMPONENTS) -> list[str]:
     if "hook" in components:
         report.append(f"Claude Code  {_hook_claude('', remove=True)}")
         report.append(f"Codex        {_hook_codex('', remove=True)}")
+        report.append(f"Cursor       {_hook_cursor('', remove=True)}")
+        report.append(f"Gemini CLI   {_hook_gemini('', remove=True)}")
+        report.append(f"OpenCode     {_hook_opencode('', remove=True)}")
     return report
 
 
@@ -143,72 +156,113 @@ def _skill(dry_run: bool = False, remove: bool = False) -> list[str]:
     return report
 
 
-# --- session-start hook -------------------------------------------------------
+# --- hooks ----------------------------------------------------------------------
 
 
 def _hook_claude(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
-    """Claude Code adds a SessionStart hook's output to the session's context, so new,
-    resumed and compacted sessions all start with the memory block."""
+    """SessionStart output joins the session's context, so new, resumed and compacted
+    sessions all start with the memory block. The PreToolUse hook applies the coordination
+    rules before each edit (hooks.py)."""
     if not os.path.isdir(os.path.dirname(CLAUDE_SETTINGS)):
         return "Claude Code not found, skipped"
-    try:
-        settings = json.loads(_read(CLAUDE_SETTINGS) or "{}")
-    except json.JSONDecodeError:
-        return f"{CLAUDE_SETTINGS} is not valid JSON, skipped"
-    groups = settings.setdefault("hooks", {}).setdefault("SessionStart", [])
-    ours = _our_hooks(settings)
-    if remove:
-        if ours and not dry_run:
-            settings["hooks"]["SessionStart"] = [g for g in groups if g not in ours]
-            if not settings["hooks"]["SessionStart"]:
-                del settings["hooks"]["SessionStart"]
-            _write(CLAUDE_SETTINGS, json.dumps(settings, indent=2))
-        return "session-start hook removed" if ours else "no session-start hook installed"
-    if ours:
-        return "session-start hook already installed"
-    if not dry_run:
-        groups.append({"hooks": [{"type": "command", "command": f"{cmd} context --hook", "timeout": 10}]})
-        _write(CLAUDE_SETTINGS, json.dumps(settings, indent=2))
-    return f"session-start hook added to {CLAUDE_SETTINGS}"
+    wanted = {
+        "SessionStart": {"hooks": [{"type": "command", "command": f"{cmd} context --hook", "timeout": 10}]},
+        "PreToolUse": {
+            "matcher": edit_hooks.EDIT_TOOLS["claude"],
+            "hooks": [{"type": "command", "command": f"{cmd} status --hook --agent claude", "timeout": 10}],
+        },
+    }
+    return _hook_file(CLAUDE_SETTINGS, wanted, dry_run, remove)
 
 
 def _hook_codex(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
-    """Codex runs SessionStart hooks from ~/.codex/hooks.json and adds their output to the
-    session as developer context, once you have trusted the hook in Codex's /hooks."""
+    """Codex adds SessionStart output to the session as developer context, and runs the
+    PreToolUse hook before each apply_patch, once you have trusted them in Codex's /hooks."""
     if not os.path.isdir(os.path.dirname(CODEX_HOOKS)):
         return "Codex not found, skipped"
-    try:
-        config = json.loads(_read(CODEX_HOOKS) or "{}")
-    except json.JSONDecodeError:
-        return f"{CODEX_HOOKS} is not valid JSON, skipped"
-    groups = config.setdefault("hooks", {}).setdefault("SessionStart", [])
-    ours = _our_hooks(config)
+    start = {"type": "command", "command": f"{cmd} context --hook --agent codex", "timeout": 10}
+    edit = {"type": "command", "command": f"{cmd} status --hook --agent codex", "timeout": 10}
+    wanted = {
+        "SessionStart": {"hooks": [start | {"statusMessage": "Loading memory from recall"}]},
+        "PreToolUse": {"matcher": edit_hooks.EDIT_TOOLS["codex"], "hooks": [edit]},
+    }
+    report = _hook_file(CODEX_HOOKS, wanted, dry_run, remove)
+    return report + ("; trust them once with /hooks in Codex" if " added " in report else "")
+
+
+def _hook_cursor(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
+    """Cursor's preToolUse can refuse an edit and its postToolUse can add context, so the edit
+    hook goes in both (hooks.py). Cursor reloads the file on save."""
+    if not os.path.isdir(os.path.dirname(CURSOR_HOOKS)):
+        return "Cursor not found, skipped"
+    edit = {"command": f"{cmd} status --hook --agent cursor", "matcher": edit_hooks.EDIT_TOOLS["cursor"], "timeout": 10}
+    return _hook_file(CURSOR_HOOKS, {"preToolUse": edit, "postToolUse": edit}, dry_run, remove, flat=True)
+
+
+def _hook_gemini(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
+    """Gemini CLI's BeforeTool can refuse an edit and AfterTool can add context; its timeouts
+    are in milliseconds."""
+    if not (shutil.which("gemini") or os.path.exists(GEMINI_SETTINGS)):
+        return "Gemini CLI not found, skipped"
+    edit = {
+        "type": "command",
+        "name": "recall-edit",
+        "command": f"{cmd} status --hook --agent gemini",
+        "timeout": 10000,
+    }
+    group = {"matcher": edit_hooks.EDIT_TOOLS["gemini"], "hooks": [edit]}
+    return _hook_file(GEMINI_SETTINGS, {"BeforeTool": group, "AfterTool": group}, dry_run, remove)
+
+
+def _hook_opencode(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
+    """OpenCode takes hooks as plugins: recall's is one file in its global plugins folder."""
+    if not os.path.isdir(os.path.dirname(os.path.dirname(OPENCODE_PLUGIN))):
+        return "OpenCode not found, skipped"
+    installed = os.path.exists(OPENCODE_PLUGIN)
     if remove:
-        if ours and not dry_run:
-            config["hooks"]["SessionStart"] = [g for g in groups if g not in ours]
-            if not config["hooks"]["SessionStart"]:
-                del config["hooks"]["SessionStart"]
-            _write(CODEX_HOOKS, json.dumps(config, indent=2))
-        return "session-start hook removed" if ours else "no session-start hook installed"
-    if ours:
-        return "session-start hook already installed"
+        if installed and not dry_run:
+            os.remove(OPENCODE_PLUGIN)
+        return "edit plugin removed" if installed else "no edit plugin installed"
+    with open(OPENCODE_SOURCE) as f:
+        plugin = f.read().replace("__RECALL__", cmd)
+    if installed and _read(OPENCODE_PLUGIN) == plugin:
+        return "edit plugin already installed"
     if not dry_run:
-        hook = {
-            "type": "command",
-            "command": f"{cmd} context --hook --agent codex",
-            "timeout": 10,
-            "statusMessage": "Loading memory from recall",
-        }
-        groups.append({"hooks": [hook]})
-        _write(CODEX_HOOKS, json.dumps(config, indent=2))
-    return f"session-start hook added to {CODEX_HOOKS}; trust it once with /hooks in Codex"
+        os.makedirs(os.path.dirname(OPENCODE_PLUGIN), exist_ok=True)
+        _write(OPENCODE_PLUGIN, plugin)
+    return f"edit plugin added at {OPENCODE_PLUGIN}"
 
 
-def _our_hooks(settings: dict | None = None) -> list[dict]:
-    if settings is None:
-        settings = _json(CLAUDE_SETTINGS)
-    groups = settings.get("hooks", {}).get("SessionStart", [])
-    return [g for g in groups if any(_is_ours(h) for h in g.get("hooks", []))]
+def _hook_file(path: str, wanted: dict, dry_run: bool, remove: bool, flat: bool = False) -> str:
+    """Add or remove recall's entries in one agent's hooks file, in one write so the backup
+    holds the file as it was. Claude Code and Codex wrap commands in groups under each event;
+    Cursor lists them directly (flat)."""
+    try:
+        config = json.loads(_read(path) or "{}")
+    except json.JSONDecodeError:
+        return f"{path} is not valid JSON, skipped"
+    hooks = config.setdefault("hooks", {})
+    changed = []
+    for event, entry in wanted.items():
+        entries = hooks.get(event, [])
+        ours = [e for e in entries if (_is_ours(e) if flat else any(_is_ours(h) for h in e.get("hooks", [])))]
+        if remove and ours:
+            hooks[event] = [e for e in entries if e not in ours]
+            if not hooks[event]:
+                del hooks[event]
+            changed.append(event)
+        elif not remove and not ours:
+            hooks.setdefault(event, []).append(entry)
+            changed.append(event)
+    if flat:
+        config.setdefault("version", 1)
+    if changed and not dry_run:
+        _write(path, json.dumps(config, indent=2))
+    kinds = list(dict.fromkeys("session-start" if e == "SessionStart" else "edit" for e in changed))
+    what = " and ".join(kinds) + (" hooks" if len(changed) > 1 else " hook")
+    if remove:
+        return f"{what} removed" if changed else "no hooks installed"
+    return f"{what} added to {path}" if changed else "hooks already installed"
 
 
 def _claude_registered() -> bool:
@@ -217,7 +271,7 @@ def _claude_registered() -> bool:
 
 def _is_ours(hook: dict) -> bool:
     command = hook.get("command", "")
-    return NAME in command and " context" in command
+    return NAME in command and (" context" in command or " status --hook" in command)
 
 
 # --- helpers ------------------------------------------------------------------
@@ -229,13 +283,6 @@ def _read(path: str) -> str:
             return f.read()
     except OSError:
         return ""
-
-
-def _json(path: str) -> dict:
-    try:
-        return json.loads(_read(path) or "{}")
-    except json.JSONDecodeError:
-        return {}
 
 
 def _write(path: str, text: str) -> None:

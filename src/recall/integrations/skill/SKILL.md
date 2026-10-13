@@ -30,6 +30,8 @@ Memory notes hold the user's working preferences, project facts, decisions, less
 
 For "what am I working on" or picking a project back up, `list_projects` (CLI: `recall projects`) lists the user's projects with their status, last activity and the agents used on each. `recall rules` shows which instruction files each agent reads in a repo.
 
+Other chats may be editing the same repo. `open_elsewhere(path)` (CLI: `recall status`) lists the chats with open changes there, their files and which would conflict; agents with recall's edit hook are told automatically.
+
 ## Using what you find
 
 Transcripts and notes are records of past sessions: quote them as evidence, and confirm facts against the current code before acting on them. When a note and the current code or request disagree, the present wins; say so to the user.
