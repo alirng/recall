@@ -625,6 +625,11 @@ def cmd_eval(a) -> None:
 
         evals_links.from_args(a)
         return
+    if a.kind == "jit":
+        from . import evals_jit
+
+        evals_jit.from_args(a)
+        return
     if a.kind == "agent" or a.v2:
         _eval_v2(a)
     elif a.kind in ("longmemeval", "locomo"):
@@ -871,6 +876,7 @@ def _parser() -> argparse.ArgumentParser:
         "amb",
         "explore",
         "links",
+        "jit",
     ]
     sp.add_argument("kind", nargs="?", choices=kinds, default="search")
     sp.add_argument(
@@ -949,6 +955,13 @@ def _parser() -> argparse.ArgumentParser:
     mc.add_argument("--notes", metavar="RUN_DIR", help="memorycode --arm notes: the extraction run whose notes to use")
     mc.add_argument("--queries", type=int, default=3, help="memorycode --agent: requests per history (0: all)")
     sp.add_argument("--episodes", action="store_true", help="links: judge failure-then-fix episodes instead")
+    jg = sp.add_argument_group(
+        "jit (also --cases: the pairs file, --judge, --workers, --keyword: fit without embeddings)"
+    )
+    jg.add_argument("--build", type=int, metavar="N", help="replay N prompts from your history into pairs to label")
+    jg.add_argument("--label", action="store_true", help="label the unlabelled pairs with the judge")
+    jg.add_argument("--refresh", action="store_true", help="recompute the pairs' features, keeping their labels")
+    jg.add_argument("--write", action="store_true", help="install the fitted gate for this machine's hooks")
     return p
 
 
