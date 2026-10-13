@@ -538,7 +538,9 @@ searches found nothing, and how many led to opening a result. It stays on your m
    output and text the tools inject (system reminders, plan-mode boilerplate) are dropped,
    and secrets are redacted before anything is stored. Headless runs and subagents stay
    searchable but are never mined for memory. Clones and worktrees of one repo share a
-   project, keyed on the git remote.
+   project, keyed on the git remote. recall keeps its own compressed copy of every chat it
+   indexes, so a chat stays searchable after its agent deletes or rewrites the file (see the
+   FAQ on how long agents keep chats).
 2. **Digest.** Each chat shrinks to your words plus the start and end of each agent reply,
    which is where agents say what they will do and what they did.
 3. **Extract.** The model reads each chat on its own and proposes candidate memories
@@ -599,6 +601,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall setup [--yes] [--model SPEC] [--embeddings NAME]` | the guided first run; the flags answer its questions up front |
 | `recall model [--show]` | choose, or show, the model that writes memories |
 | `recall search <words>` · `show <id>` · `recent` | chat history |
+| `recall forget <id> \| --project NAME [--yes]` | remove chats from the index, archive, vectors and cached answers; lists notes that cite them |
 | `recall embed` | embed messages for semantic search (needs `[embeddings]` in config.toml) |
 | `recall dream [--max-minutes N] [--max-calls N]` | update memory now |
 | `recall memory [search <words> \| show <id> \| link]` | browse notes; `link` recomputes links now |
@@ -610,7 +613,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall resolve --repo <repo> --file <file>` | message every chat in an overlap to agree who goes first (the menu bar's Resolve) |
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall explore [lookup <question> \| backfill] [--cwd DIR]` | earlier exploration reports for this repo, and what a new exploration would get |
-| `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first) |
+| `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first); install also offers to keep Claude Code chats for ten years (`--only retention`) |
 | `recall schedule enable \| disable \| status` | the nightly run |
 | `recall eval search \| agent \| memory \| swe-contextbench \| memorycode \| amb \| explore \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
 
@@ -648,6 +651,16 @@ Yes. Search and memory work with any one of Claude Code, Codex or Cursor.
 **Windows?**
 Not yet. The chat parsers are portable, but file locking, the nightly scheduler and key
 storage need Windows equivalents. Contributions welcome.
+
+**How long do my chats stay searchable?**
+As long as you keep recall's index. Claude Code deletes transcripts after 30 days unless you
+raise `cleanupPeriodDays`, and Codex compaction has been seen rewriting a long session file
+to a fraction of its size. recall keeps a compressed copy of every chat it has indexed (about
+16 MB for 2,900 chats), and when a file loses messages it already indexed, it keeps them.
+`recall install` offers to raise Claude Code's period to ten years. When your organisation
+sets that period through managed settings, recall keeps those chats no longer than the policy
+allows. `recall forget <chat id>` (or `--project NAME`) removes a chat from everything recall
+holds, and lists the notes that cite it.
 
 **Will memory pick up something wrong?**
 Sometimes. Every note carries its sources and a confidence level, newer chats supersede
