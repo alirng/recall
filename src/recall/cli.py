@@ -950,7 +950,7 @@ def _parser() -> argparse.ArgumentParser:
     mc.add_argument(
         "--arm",
         default="tools",
-        help="memorycode --agent: none, tools, notes, hook, placebo or full (evals_memorycode.ARMS)",
+        help="memorycode --agent: none, tools, notes, hook, placebo, full, hook@3000, jit, jit+hook@3000 or jit-notes",
     )
     mc.add_argument("--notes", metavar="RUN_DIR", help="memorycode --arm notes: the extraction run whose notes to use")
     mc.add_argument("--queries", type=int, default=3, help="memorycode --agent: requests per history (0: all)")

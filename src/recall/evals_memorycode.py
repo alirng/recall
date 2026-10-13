@@ -14,7 +14,7 @@ day ending yesterday, in a project folder named after the mentor's company.
   recall eval memorycode --data <download> [--split train|test|all] [--limit N] [--case ID]
       [--model PROVIDER:NAME] [--repeats N] [--fresh]          extraction (M4)
       [--from-candidates RUN_DIR]                              consolidation only (see below)
-  recall eval memorycode --data <download> --agent [MODEL] --arm none|tools|notes|hook|placebo|full
+  recall eval memorycode --data <download> --agent [MODEL] --arm none|tools|notes|hook|placebo|full|jit|…
       [--notes RUN_DIR] [--queries N] [--hybrid]               agent (M2, M3)
 
 --data is a folder holding the dataset's parquet file (huggingface.co/datasets/
@@ -67,6 +67,11 @@ the code contains, averaged per history. Arms:
          was only a tie-break, so such a placebo is not a priming control
   full   the whole history in the prompt and no tools, as the paper's history setting; every
          history fits (the longest is about 72k tokens)
+  hook@3000  as hook, with the session-start block capped at 3,000 characters (this process only)
+  jit    as hook, and Claude Code also runs recall's prompt hook (`recall hook`, jit.py) on each
+         request against this history's home: notes or chats its gate is sure of join the prompt
+  jit+hook@3000  jit with the 3,000-character block
+  jit-notes  as jit, with the gate open for notes only: the two best-matching notes join each request
 Arms are classes in ARMS (see Arm): a new arm subclasses one and registers itself there.
 The paper asks every request of a history; --queries samples N of them per history (seeded), so
 a run takes minutes. Every request's code is checked against every convention, as in the paper.
@@ -91,6 +96,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import NamedTuple
@@ -995,7 +1001,9 @@ def run_agent(
         prompt, extra = arm.request(x, query, info)
         if extra:
             context += "\n\n" + extra
-        attempt = evals_agent.run_agent(prompt, model, f"{system}\n\n{context}", info["mcp"], timeout)
+        attempt = evals_agent.run_agent(
+            prompt, model, f"{system}\n\n{context}", info["mcp"], timeout, settings=info.get("settings")
+        )
         answer, transcript = attempt["answer"], attempt["transcript"]
         row.update(attempt["row"])
         if not arm.tools and row["status"] == "mcp_error" and row.get("detail") == "[]":
@@ -1272,7 +1280,101 @@ class Full(Arm):
         return FULL.format(mentor=x.mentor, history=info["history"], query=query), ""
 
 
-ARMS: dict[str, Arm] = {a.name: a for a in (NoMemory(), Tools(), Notes(), Hook(), Placebo(), Full())}
+@contextmanager
+def _block_cap(chars: int | None):
+    """The session-start block's size limit, changed in this process only, for budget arms. The
+    preference and rule shares shrink with it, in whole characters: 3,000 against the default
+    4,500 sets PREFS_CHARS 1,000 and RULES_CHARS 400."""
+    from .memory import context
+
+    names = ("MAX_CHARS", "PREFS_CHARS", "RULES_CHARS")
+    saved = {n: getattr(context, n) for n in names}
+    try:
+        if chars:
+            for n in names:
+                setattr(context, n, saved[n] * chars // saved["MAX_CHARS"])
+        yield
+    finally:
+        for n, v in saved.items():
+            setattr(context, n, v)
+
+
+class HookCap(Hook):
+    """hook with a smaller session-start block (e.g. 3,000 characters against the default
+    4,500): the preference and rule shares shrink in proportion (see _block_cap)."""
+
+    def __init__(self, cap: int):
+        self.cap, self.name = cap, f"hook@{cap}"
+        self.help = f"as hook, with the session-start block capped at {cap:,} characters"
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        with _block_cap(self.cap):
+            return super().setup(x, ctx)
+
+
+class Jit(Hook):
+    """hook, plus recall's prompt hook running for real: on UserPromptSubmit Claude Code runs
+    `recall hook` against this history's home, and jit.py's gate decides whether notes or
+    earlier chats join the prompt. Fires land in the home's usage log (usage.jsonl)."""
+
+    # The session runs in an empty scratch folder; the hook should see the history's project.
+    REWRITE = "import json,sys; d=json.load(sys.stdin); d['cwd']=sys.argv[1]; print(json.dumps(d))"
+
+    def __init__(self, cap: int | None = None):
+        self.cap = cap
+        self.name = "jit" if cap is None else f"jit+hook@{cap}"
+        self.help = "as hook" + (f"@{cap}" if cap else "") + ", and the prompt hook adds notes or chats it is sure of"
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        import shlex
+
+        with _block_cap(self.cap):
+            info = super().setup(x, ctx)
+        if info.get("skip"):
+            return info
+        from .memory import context
+        from .memory.notes import NoteStore
+
+        con = store.connect(os.path.join(ctx.home, "recall.db"))
+        context.index_notes(con, NoteStore(ctx.memory).load())  # what the hook's note search reads
+        con.close()
+        env = {"RECALL_HOME": ctx.home, "RECALL_MEMORY": ctx.memory}
+        if os.environ.get("PYTHONPATH"):
+            env["PYTHONPATH"] = os.environ["PYTHONPATH"]
+        py = shlex.quote(sys.executable)
+        command = (
+            f"{py} -c {shlex.quote(self.REWRITE)} {shlex.quote(x.folder)} | "
+            + " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+            + f" {py} -m recall hook --agent claude"
+        )
+        hook = {"type": "command", "command": command, "timeout": 30}
+        info["settings"] = json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [hook]}]}})
+        return info
+
+
+class JitNotes(Jit):
+    """The mechanism behind jit, without its gate: the prompt hook re-presents the two notes
+    that best match each request (at most 1,200 characters) next to it, whatever their score.
+    On MemoryCode the shipped gate never fires, so this is what tests whether notes at the
+    moment of the request help beyond the same notes at session start."""
+
+    def __init__(self):
+        super().__init__()
+        self.name = "jit-notes"
+        self.help = "as jit, with the gate open for notes and shut for chats: the 2 best notes join each request"
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        info = super().setup(x, ctx)
+        if not info.get("skip"):  # P = logistic(4) for a note, logistic(0) for a chat
+            with open(os.path.join(ctx.home, "jit_gate.json"), "w") as f:
+                json.dump({"bias": 0.0, "weights": {"note": 4.0}, "threshold": 0.9}, f)
+        return info
+
+
+ARMS: dict[str, Arm] = {
+    a.name: a
+    for a in (NoMemory(), Tools(), Notes(), Hook(), Placebo(), Full(), HookCap(3000), Jit(), Jit(3000), JitNotes())
+}
 
 
 def _agent_setup(x: History, arm: Arm, ctx: ArmContext) -> dict:
