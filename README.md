@@ -544,7 +544,7 @@ not seen.
 
 The links never leave your machine. They live only in recall's index, and recall uses git
 read-only (`rev-parse`, `rev-list`, `log`, `show`, `blame`, with optional locks, lazy fetching
-and textconv caches off): nothing goes into a repo. That rules out commit messages,
+and textconv off): nothing goes into a repo. That rules out commit messages,
 trailers, git notes, refs, branches, hooks and objects, and nothing is pushed or fetched, so
 no chat id reaches a project or its collaborators. Agents are told to use what `recent_chats`
 returns to answer you, never to copy it into commits, PRs or files. Links are worked out

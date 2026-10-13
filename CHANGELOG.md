@@ -83,7 +83,7 @@ All notable changes to recall are listed here. The format follows
   takes `file` or `commit`. Each chat's edits are matched with the lines later commits add,
   so worktrees, clones, rebases and squash merges are covered, and a chat that ran
   `git commit` (or revert, or cherry-pick) is matched by the sha git printed. The links stay
-  in recall's index on your machine: git is only read, with lazy fetching and textconv caches
+  in recall's index on your machine: git is only read, with lazy fetching and textconv
   off, and nothing is written to any repo. They are worked out without a model, in the
   nightly run and on each `recall why`; `[links] enabled = false` turns them off and deletes
   them. `recall links --episodes` lists commits that fixed something that had failed.
