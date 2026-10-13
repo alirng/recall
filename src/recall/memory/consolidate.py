@@ -17,7 +17,7 @@ import copy
 import re
 import time
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
 from ..chats.redact import redact
@@ -185,8 +185,7 @@ class _Batch:
 
     def rule(self, note_id: str, rid: str) -> tuple[Note, Rule] | None:
         """A rule by note and id; failing that, by its id alone when only one note in scope has it."""
-        rid = rid.strip().strip("[]")
-        note = self.note(note_id.strip().strip("[]"))
+        note = self.note(note_id)
         hit = next((r for r in note.rules if r.id == rid and r.active), None) if note else None
         if hit:
             return note, hit
@@ -212,6 +211,7 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
         if not candidates:
             continue
         kind, texts = op["op"], _texts(op["rules"])
+        op = {**op, "note_id": op["note_id"].strip().strip("[]"), "rule_id": op["rule_id"].strip().strip("[]")}
         if kind == "discard":
             for c in candidates:
                 b.discarded.setdefault(c["id"], redact(op["reason"])[:300] or "discarded")
@@ -294,6 +294,8 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
         sync(note)
         if len(note.sources) >= 3:
             note.confidence = "high"  # corroborated across several chats
+        if note.id in b.work and _state(note) == _state(b.notes[note.id]):
+            continue  # looked at, not changed
         note.updated = today()
         store.write(note)  # also renders the body, and archives a note with no rule left
         if note.status == "active":
@@ -313,6 +315,12 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
         "update candidates set status='discarded', reason='never assigned' where status='new' and attempts>=?",
         (MAX_ATTEMPTS,),
     )
+
+
+def _state(note: Note) -> tuple:
+    before = copy.deepcopy(note)
+    sync(before)
+    return before.title, before.confidence, before.status, [asdict(r) for r in before.rules]
 
 
 def _create(b: _Batch, op: dict, texts: list[str], candidates) -> Note:
