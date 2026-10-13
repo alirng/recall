@@ -217,8 +217,85 @@ def score(rows: list[dict], agent: str | None = None, how: str | None = None) ->
     return {"precision": h.ratio_ci(prec), "recall": h.ratio_ci(rec)}
 
 
+EPISODE_SYSTEM = """You check examples for a regression gym built from a developer's own coding-agent chats.
+
+Each example claims: while an agent worked on a task, something failed (a check or command
+exited non-zero, the person said the work was wrong or still broken, or a commit was
+reverted), and then a commit fixed it. You get the request, the failure and the commit.
+
+Answer "yes" if the failure is a real problem with the code under work and this commit
+plausibly fixes it, so "start from the parent commit, give the request, see whether the fix
+is reproduced" is a fair task. Answer "no" if the failure has nothing to do with the code
+(a shell typo, a missing tool, a network or permission problem, a question rather than a
+complaint), or this commit does not address it. Answer "unsure" only when the evidence
+cannot decide it."""
+
+
+def episode_cases(con, limit: int, seed: int = h.SEED) -> list[dict]:
+    """A sample of failure-then-fix episodes, spread over the kinds of failure."""
+    rng = random.Random(seed)
+    found = commits.episodes(con)
+    kinds = sorted({e["failure"]["kind"] for e in found})
+    picked = []
+    for kind in kinds:
+        mine = [e for e in found if e["failure"]["kind"] == kind]
+        rng.shuffle(mine)
+        picked += mine[: max(1, limit // len(kinds))]
+    for e in picked:
+        e.update(id=f"{e['repo'].split('/')[-1]}@{e['fix_commit'][:10]}", split="all", tags=[e["failure"]["kind"]])
+    return picked
+
+
+def run_episodes(a, con) -> None:
+    cases = episode_cases(con, a.limit or 30)
+    judge = a.judge or h.JUDGE
+    run = h.Run("links-episodes", "all", {"cases": len(cases), "judge": judge, "note": a.note or ""}, a.who, a.runs_dir)
+    grader = h.judge_client(judge)
+
+    def one(e):
+        gitdir = con.execute(
+            "select gitdir from link_commits where repo=? and sha=?", (e["repo"], e["fix_commit"])
+        ).fetchone()[0]
+        f = e["failure"]
+        failure = f"{f['kind']}: {f['text']}" + (f"\noutput: {f['detail']}" if f.get("detail") else "")
+        prompt = (
+            f"REQUEST\n{e['prompt']}\n\nFAILURE (at {store.fmt_time(f['at'])})\n{failure[:3000]}\n\n"
+            f"COMMIT\n{_commit_text(gitdir, e['fix_commit'], set(e['files']))}\n\n"
+            "Is this a fair failure-then-fix example?"
+        )
+        try:
+            v, status = grader.json("links-episode-judge", EPISODE_SYSTEM, prompt, SCHEMA), h.OK
+        except Exception as err:
+            v, status = {"verdict": "error", "reason": repr(err)[:300]}, "judge_error"
+        row = {"status": status, "verdict": v["verdict"], "kind": f["kind"], "same_chat": e["same_chat"]}
+        return run.record(e, row, {"prompt": prompt, "judge": v})
+
+    with ThreadPoolExecutor(max(1, min(a.workers, 4))) as pool:
+        rows = list(pool.map(one, cases))
+    ok = [r for r in rows if r["status"] == h.OK and r["verdict"] in ("yes", "no")]
+    summary = {
+        "precision": h.ci([r["verdict"] == "yes" for r in ok]),
+        "by_kind": {
+            k: h.ci([r["verdict"] == "yes" for r in ok if r["kind"] == k]) for k in sorted({r["kind"] for r in ok})
+        },
+        "episodes_found": len(commits.episodes(con)),
+        "unsure": sum(r["verdict"] == "unsure" for r in rows),
+        "plumbing": h.plumbing(rows),
+    }
+    p = summary["precision"]
+    run.finish(
+        summary,
+        f"episode precision={p['mean']} [{p['lo']}, {p['hi']}] n={p['n']}",
+        [("verdict", "verdict"), ("kind", "kind")],
+    )
+
+
 def from_args(a) -> None:
     con = store.connect()
+    if getattr(a, "episodes", False):
+        commits.update(con)
+        run_episodes(a, con)
+        return
     started = time.time()
     built = commits.update(con)
     build_s = time.time() - started
