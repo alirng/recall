@@ -234,13 +234,13 @@ different answer models and judges, so these are context, not a ranking):
 
 | System | Accuracy | Answer model / judge | Context tokens a query | LLM calls at ingest |
 | --- | --- | --- | --- | --- |
-| Mem0 platform | 94.4 | GPT-5 / GPT-5 | ~7,000 (LoCoMo) | 1 extraction call per add |
+| Mem0 platform | 94.4 | GPT-5 / GPT-5 | 6,956 on LoCoMo (vendor) [mem0-research] | 1 extraction call per add |
 | Mastra observational memory | 94.9 | gpt-5-mini | ~30,000 | observer and reflector |
 | Hindsight | 91.4 | Gemini-3 Pro / GPT-OSS-120B | token budget | extraction per message |
 | Honcho | 90.4 | Haiku 4.5 / GPT-4o | median ~5% of history | deriver per message batch |
 | **recall (this run)** | **87.4** | **Haiku 5.5 / Haiku 5.5** | **~44,100** | **none** |
 | Supermemory | 81.6-85.2 | GPT-4o to Gemini-3 / GPT-4o | not reported | extraction |
-| EverMemOS | 83.0 | GPT-4.1-mini | ~6,700 | extraction, plus a verifier at query time |
+| EverMemOS | 83.0 | GPT-4.1-mini | ~2,800 (its paper's token column, undefined) | extraction, plus a verifier at query time |
 | ICM folders, "Cost of Remembering" (n=39) | 74.4 | Sonnet 5 | 5,314 | none |
 | Zep | 71.2 | GPT-4o / GPT-4o | ~1,600 | several |
 | Full context, Haiku 4.5 (Honcho's baseline) | 62.6 | Haiku 4.5 / GPT-4o | ~115,000 | none |
@@ -255,7 +255,8 @@ the published retrieval-only projects; the end-to-end number sits a few points u
 leaders, of which a part is the judge and sample and a part is reading, not finding. recall
 spends no model calls at ingest (the others extract facts from every message with an LLM) and
 none at query time; the calling agent is the reader. The cost of that is context: an agent
-reading recall's top 10 chats reads ~44k tokens where Mem0's reader gets ~7k of distilled facts.
+reading recall's top 10 chats reads ~44k tokens, where Mem0 reports ~7k of distilled facts a
+query on LoCoMo.
 Reading matched windows instead cuts that to ~17k for 5 points of accuracy.
 
 ### 5.3 Which embedding model
@@ -321,6 +322,7 @@ file, which `recall rules` is placed to do.
 - [mastra]: https://mastra.ai/research/observational-memory
 - [mem0-notices]: https://github.com/mem0ai/mem0/blob/b7ad69afda6b6ed030347c66d48a13e4de9dec08/mem0/memory/notices.py
 - [mem0-readme]: https://github.com/mem0ai/mem0/blob/b7ad69afda6b6ed030347c66d48a13e4de9dec08/README.md
+- [mem0-research]: https://mem0.ai/research
 - [mem0-results]: https://github.com/mem0ai/memory-benchmarks/tree/4b61c5d31b9c668a12b4f5e78064248a02c82d2b
 - [mem0-search]: https://github.com/mem0ai/mem0/blob/b7ad69afda6b6ed030347c66d48a13e4de9dec08/mem0/memory/main.py
 - [memini]: https://pkg.go.dev/github.com/eleboucher/memini/bench

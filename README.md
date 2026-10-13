@@ -1,11 +1,16 @@
-# recall
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/recall-dark.svg">
+    <img src="docs/brand/recall-light.svg" alt="recall" width="271" height="41">
+  </picture>
+</h1>
 
-**One memory for all your coding agents.**
+One memory for all your coding agents.
 
-[![CI](https://github.com/alirng/recall/actions/workflows/ci.yml/badge.svg)](https://github.com/alirng/recall/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
-![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
+[![CI](https://img.shields.io/github/actions/workflow/status/alirng/recall/ci.yml?branch=main&label=CI&style=flat-square&labelColor=2b2b2e)](https://github.com/alirng/recall/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-58585d?style=flat-square&labelColor=2b2b2e)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-58585d?style=flat-square&labelColor=2b2b2e)
+![Status: alpha](https://img.shields.io/badge/status-alpha-58585d?style=flat-square&labelColor=2b2b2e)
 
 Your coding agents forget everything between sessions, and none of them knows what you told
 the others. recall reads the chat history that Claude Code, Codex and Cursor already keep on
@@ -32,60 +37,160 @@ agent › Searching your past chats… In "Payment webhook retries" (Codex, 2 Oc
 
 ## Benchmarks
 
-recall is measured on the two public benchmarks memory products report, LongMemEval and
-LoCoMo, with each benchmark's own metrics and prompts. Every number here is reproducible with
-`recall eval`.
+A coding agent needs three things from memory: to find the session where a problem was solved
+before, to bring back only what it needs from it, and to start each session knowing the
+conventions you set, in their latest form. recall is measured on public benchmarks built from
+coding work for each of the three. Every number here is reproducible with `recall eval`; token
+counts come from the runs' transcripts via
+[docs/benchmarks/agent_tokens.py](docs/benchmarks/agent_tokens.py)
+([commands](#reproducing-the-numbers)).
+
+- **Finds the past fix for a new bug report in its top five results 80% of the time**, up
+  from 47% in 0.2.1, and in its top ten 93% of the time (SWE-ContextBench Lite: 99 real GitHub
+  issues searched against all 300 real Claude Code sessions; hybrid search, deterministic, one
+  run). The memory products the benchmark's authors tested found it 39–73% of the time, each at
+  its own cutoff, after running an LLM over every session; at each of those cutoffs 0.3.0 is
+  ahead. recall runs no LLM to index.
+- **37% fewer tokens added to an agent's context per question than 0.2.1**: about 9.0k
+  estimated Claude tokens against 14.4k on the 40 held-out SWE-ContextBench issues, counting
+  recall's ~2.5k of tool definitions, with the same share of past fixes found (90%).
+- **Notes hold 62% of the coding conventions you set, in their latest form**, up from 9%, and
+  record 54% of changed conventions correctly, up from 5% (MemoryCode, 40 held-out histories,
+  three runs each).
+- **The notes reach the agent.** With 0.3.0's notes loaded at session start, Claude Haiku 5.5
+  follows the latest conventions on long MemoryCode histories (20 to 100 sessions) 65% of the
+  time, against 45% with 0.3.0's search alone (held-out histories; one run with notes, three
+  without). Rereading the whole history gets 80% on the training histories.
+- **No LLM calls to index or to search.** recall indexes on your machine (SQLite, plus an
+  optional local embedding model). On my ~2,800 chats a search takes about 15–25 ms with
+  keywords, or 50–60 ms with embeddings, including embedding the query (median, on a laptop).
+  Only the nightly notes need a language model, and you choose which.
+
+### Finding past work
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.3.0 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.3.0 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.3.0 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
+
+SWE-ContextBench pairs GitHub issues with an earlier issue in the same repo whose fix helps, and
+its Lite set ships the 300 Claude Code sessions in which those earlier fixes were made. recall
+indexes the sessions as it would your own chats, and searches all 300 sessions, as the products
+did, with the new issue's full text.
+
+| SWE-ContextBench Lite, all 300 sessions: past fix in the top k | Top 1 | Top 3 | Top 5 | Top 10 | Top 15 | To take in the 300 sessions |
+| --- | --- | --- | --- | --- | --- | --- |
+| **recall 0.3.0** | **58.6%** | **76.8%** | **79.8%** | **92.9%** | **97.0%** | **no LLM calls** |
+| recall 0.3.0, keywords only | 53.5% | 68.7% | 77.8% | 86.9% | 90.9% | no LLM calls |
+| recall 0.2.1 | 35.4% | 44.4% | 46.5% | 73.7% | 86.9% | no LLM calls |
+| LangMem | | | | 73.3% | | LLM calls: $0.98, 58 minutes |
+| Supermemory | | | | | 59.6% | LLM calls: 370k tokens, under an hour |
+| OpenViking | | 51.5% | | | | LLM calls: $18.96, 570 minutes |
+| Mem0 | | 39.4% | | | | LLM calls: $0.24, 21 minutes |
+
+**How to read this.** recall's rows use hybrid search unless marked, over all 99 issues; search
+is deterministic, so each is one run. The products' figures are the benchmark paper's own runs
+("Overall Matched", its Table 5), each at the cutoff the paper reports. The paper does not define
+that metric, and it describes the query for Mem0 and Supermemory but not for OpenViking and
+LangMem; LangMem's ten results are extracted memories, not sessions. So compare loosely: 0.2.1
+already matched LangMem at top 10 and beat Supermemory at top 15, and 0.3.0 leads at every
+cutoff. Searching only the issue's own repo, as an agent working in that project would, puts
+the past fix in 0.3.0's top five 82.8% of the time (0.2.1: 50.5%). The ranking change behind
+the gain was chosen on 59 of the 99 issues; on the other 40, held out, the repo-scoped top-five
+rate rose from 50.0% to 92.5%. With 99 issues, each figure carries about ±10 points. Method and
+the benchmark's quirks:
+[docs/research/coding-memory-hillclimb.md](docs/research/coding-memory-hillclimb.md) and
+[docs/research/coding-memory-benchmarks.md](docs/research/coding-memory-benchmarks.md).
+
+### Tokens per answer
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/agent-tokens-dark.svg"><img src="docs/benchmarks/agent-tokens-light.svg" alt="Bar chart of the context added to an agent per question, in Claude tokens including recall's tool definitions. SWE-ContextBench Lite, 40 held-out issues: recall 0.2.1 14.4k (5 runs), recall 0.3.0 9.0k (1 run). My questions about past work, 47 held out: recall 0.2.1 19.1k, recall 0.3.0 16.0k (3 runs each)" width="760"></picture></p>
+
+recall does not hand an agent a fixed block of context: the agent searches and reads what it
+needs, and what matters is how much that adds. Claude Haiku 5.5, running in Claude Code with
+only recall's tools, took in about 9.0k Claude tokens per held-out SWE-ContextBench issue with 0.3.0
+(the release run) against 14.4k with 0.2.1 (five runs), and named the past fix for 90% of them
+both times. The 0.2.1 runs used 0.2.1's tools with the first version of the new title fade,
+which almost never touches the short queries agents send (1 of 157 searches on
+SWE-ContextBench and 5 of 282 on my questions were over 12 words), so the difference is what
+the tools return. On 47 held-out questions about my own past work (three runs each), it took in
+16.0k tokens a question against 19.1k, and answered 85.1% correctly both times. The counts are
+estimates in Claude tokens (word pieces of tool output times a factor fitted to Claude's own
+per-call counts, R² of 0.98 or better) and include recall's tool definitions, measured directly
+(2,591 tokens in 0.2.1, 2,480 in 0.3.0). Search results now leave out fields that
+repeat others, one search can try several phrasings at once, and `read_chat` clips a long
+message to its start, the passage that matches, and its end.
+
+Memory products report the context they give their answer model on chat benchmarks: Mem0 6,956
+tokens a query on LoCoMo (its own figure), EverMemOS 2.8k (its paper's token column, which it
+does not define) and Zep 1.6k on LongMemEval. Those are other benchmarks and setups, so they
+place recall's figure rather than rank it.
+
+### Notes that keep up
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/notes-dark.svg"><img src="docs/benchmarks/notes-light.svg" alt="Grouped bar chart of note quality, recall 0.2.1 against recall 0.3.0. MemoryCode, 40 held-out histories, 3 runs: conventions in notes in their latest form 9% to 62%, changed conventions recorded 5% to 54%. A fresh holdout of my chats, 6 runs: expected memories found 48% to 61%, memories worth keeping 83% to 88%" width="760"></picture></p>
+
+MemoryCode gives a model long histories in which a mentor sets coding conventions ("start
+function names with `y_`"), changes some of them later, and talks about other things in
+between. After each history, recall's notes are checked against the benchmark's labels: is
+every convention there in its latest form, and is a replaced form still stated as current? On
+40 held-out histories, three runs each, with notes written by gpt-6-luna through a ChatGPT plan:
+
+| MemoryCode: notes after each history | recall 0.2.1 | recall 0.3.0 |
+| --- | --- | --- |
+| Conventions held in their latest form | 9.1% | **61.6%** |
+| Changed conventions recorded correctly | 4.6% | **53.6%** |
+| A replaced form still stated as current (lower is better) | 2.7% | 8.4% |
+| Notes learned only from unrelated talk (lower is better) | 45% | 30% |
+| Model calls, three runs | 780 | 1,927 |
+
+The extractor now answers chat by chat (handed a dozen chats and one list to fill, a model reads
+the first few), and decides first whether a memory outlasts the task at hand. More notes means
+more to keep current: a replaced form now lingers for 8% of changed conventions.
+
+I also checked it on my own chats, labelled by hand. The change was first judged on a test set
+of my chats that by then had informed several decisions, and there it did not help: recall was
+flat (44% to 45%) and precision fell (98% to 92%). So the decision was made once, on a fresh
+holdout of my chats (six runs: expected memories found 48% to 61%, and 88% of what the notes
+store worth keeping, against 83%) together with MemoryCode's held-out histories above.
+
+More candidates also mean more consolidation calls. On MemoryCode, where nearly every session
+sets a rule, the three runs took 1,927 model calls instead of 780 (input 34.0M tokens instead of
+14.3M, output 608k instead of 135k); on my holdout chats, three runs took 40 calls instead of 37,
+with 1.4 times the output. The new extraction prompt (v4) makes the nightly run read past chats
+again with it, newest first, within the nightly call budget (80 by default), so a large history
+takes several nights.
+
+**Do the notes reach the agent?** The same benchmark ends each history with coding requests, and
+checks the code against the latest conventions. Claude Haiku 5.5 wrote it in Claude Code with
+0.3.0's search alone, or with 0.3.0's notes loaded at session start the way recall's hook loads
+them, plus search:
+
+| MemoryCode: code that follows the latest conventions | All histories | 20 to 100 sessions | 1 to 15 sessions |
+| --- | --- | --- | --- |
+| No memory (training histories, one run) | 2% | 3% | 2% |
+| 0.3.0's search alone (held out, three runs) | 75.8% | 45.3% | 94.2% |
+| **0.3.0's notes at session start, plus search (held out, one run)** | **79.7%** | **64.8%** | 88.6% |
+| The whole history in the prompt (training histories, one run) | 90% | 80% | 96% |
+
+With the notes, the agent took in about a third fewer input tokens (median, one run). On short
+histories it did worse, 88.6% against 94.2%: with the notes in hand, the agent reads fewer
+chats. 0.2.1's notes at session start were not measured.
+
+### Chat-memory benchmarks
+
+LongMemEval and LoCoMo are the benchmarks memory products usually report. They are built from
+synthetic personal-assistant chats rather than coding work, so recall runs them as a check that
+its search stays sound, with each benchmark's own metrics and prompts. In the 0.3.0 release run
+their keyword retrieval was identical to 0.2.1's, and the title change cannot reach them: their
+chats have no titles. Retrieval is deterministic (one run); each answer-accuracy figure is one
+run.
 
 - **Finds a conversation that answers the question 98.7% of the time, and every one that does
   90.6% of the time** (top five, LongMemEval_S, 470 questions): the highest session-retrieval
   scores published for the benchmark.
-- **87.4% of answers correct with Claude Haiku 5.5** across all 500 questions, a small and
-  inexpensive model; handed exactly the right sessions, the same model scores 92.0%.
-- **Haiku 5.5 with recall beats Sonnet 5.5 with recall at a quarter of the cost**: reading
-  recall's top 20 chats, Haiku answers 90.5% for $0.009 a question, against 89.0% for $0.037
-  from Sonnet reading matched excerpts.
-- **No model calls to index or to search.** Memory services run an LLM over every message
-  they store. recall indexes on your machine (SQLite, plus an optional local embedding model)
-  and searches in 6–20 ms.
+- **87.4% of answers correct with Claude Haiku 5.5** across all 500 questions; handed exactly
+  the right sessions, the same model scores 92.0%. Reading recall's top 20 chats, it reaches
+  90.5% for under a cent a question (200-question sample).
 
-<p align="center"><img src="docs/benchmarks/accuracy.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 87.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></p>
-
-| LongMemEval_S, end to end | Accuracy | Answer model / judge | Read per question | LLM calls to store a message |
-| --- | --- | --- | --- | --- |
-| Mastra | 94.9% | gpt-5-mini | ~30k tokens | observer and reflector |
-| Mem0 (platform) | 94.4% | GPT-5 / GPT-5 | ~7k tokens | 1 |
-| Hindsight | 91.4% | Gemini-3 Pro / GPT-OSS-120B | token budget | 1+ |
-| Honcho | 90.4% | Claude Haiku 4.5 / GPT-4o | ~5% of history | 1+ |
-| **recall** | **87.4%** | **Claude Haiku 5.5 / Claude Haiku 5.5** | **~44k tokens** | **0** |
-| Supermemory | 85.2% | Gemini-3 / GPT-4o | not reported | 1+ |
-| EverMemOS | 83.0% | GPT-4.1-mini | ~6.7k tokens | 1+ |
-| Zep | 71.2% | GPT-4o / GPT-4o | ~1.6k tokens | several |
-| Full history, no memory | 62.6% | Claude Haiku 4.5 / GPT-4o | ~115k tokens | 0 |
-
-<p align="center"><img src="docs/benchmarks/cost.svg" alt="Line chart of LongMemEval_S accuracy against cost per question on a log scale. recall with Haiku 5.5: matched windows 83.0% at $0.0022, top 5 chats 87.5% at $0.0028, top 10 87.0% at $0.0049, top 20 90.5% at $0.0088. recall with Sonnet 5.5, matched windows: 89.0% at $0.037. References: Haiku 5.5 with only the answer sessions 91.0% at $0.0015; full history with Sonnet 5, 87.2% at $0.37; ICM folders with Sonnet 5, 74.4% at $0.018" width="760"></p>
-
-| How much recall hands the model (200-question sample) | Haiku 5.5 | Cost a question | Sonnet 5.5 | Cost a question |
-| --- | --- | --- | --- | --- |
-| Matched excerpts from the top 5 chats | 83.0% | $0.0022 | 89.0% | $0.037 |
-| Top 5 chats in full | 87.5% | $0.0028 | | |
-| Top 10 chats in full | 87.0% | $0.0049 | | |
-| Top 20 chats in full | 90.5% | $0.0088 | | |
-| Only the sessions holding the answer (ceiling) | 91.0% | $0.0015 | | |
-
-<p align="center"><img src="docs/benchmarks/by-type.svg" alt="Grouped bar chart of LongMemEval_S accuracy by question type for recall's matched windows, recall's top 10 chats, and the answer sessions only" width="760"></p>
-
-| By question type (all 500, Haiku 5.5) | Matched windows | Top 10 chats | Answer sessions only |
-| --- | --- | --- | --- |
-| Single session, user | 90.6% | 93.8% | 95.3% |
-| Single session, assistant | 96.4% | 98.2% | 98.2% |
-| Preference | 66.7% | 60.0% | 73.3% |
-| Multi-session | 67.8% | 80.2% | 87.6% |
-| Knowledge update | 91.7% | 95.8% | 95.8% |
-| Temporal | 83.5% | 90.6% | 97.6% |
-| Abstention | 86.7% | 76.7% | 76.7% |
-| **All** | **82.4%** | **87.4%** | **92.0%** |
-
-<p align="center"><img src="docs/benchmarks/retrieval.svg" alt="Bar chart of LongMemEval_S session retrieval, every answer session in the top five with user turns indexed: recall with embeddings 88.3%, recall keywords only 82.8%, engram dense 81.3%, engram hybrid 80.2%, engram BM25 67.3%, the benchmark's reference BM25 51.3%" width="760"></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/accuracy-dark.svg"><img src="docs/benchmarks/accuracy-light.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 87.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></picture></p>
 
 | Session retrieval | Answer session in top 5 | Every answer session in top 5 |
 | --- | --- | --- |
@@ -97,16 +202,32 @@ LoCoMo, with each benchmark's own metrics and prompts. Every number here is repr
 | AgentIR, LoCoMo (BM25 / hybrid) | 87.5% / 79.7% | |
 | memini, LongMemEval (BM25 / hybrid) | 97.6% / 98.4% | |
 
-<p align="center"><img src="docs/benchmarks/tokens.svg" alt="Scatter chart of LongMemEval_S accuracy against tokens of history read per question, log scale" width="760"></p>
-
-**How to read these numbers.** The other systems' figures are their own, measured with
-their own answer models and judges; a one-harness rerun of several memory products moved
-their scores by +3 to −28 points. recall's runs use Claude Haiku 5.5 as the judge, with the
-benchmark's prompts. Retrieval is where recall leads. End to end it hands the model more than
-the leaders do (about 44k tokens of whole chats a question, against Mem0's ~7k of distilled
-facts), and closing that gap is the next piece of work. Costs are list prices for answering.
-Method, sources and confidence intervals:
+The other systems' figures are their own, measured with their own answer models and judges; a
+one-harness rerun of several memory products moved their scores by +3 to −28 points. recall's
+runs use Claude Haiku 5.5 as the judge, with the benchmark's prompts. Answer models, context
+read per question, costs, question types and confidence intervals:
 [docs/research/retrieval-benchmarks.md](docs/research/retrieval-benchmarks.md).
+
+### Reproducing the numbers
+
+Run these from a clone of this repo. The benchmark readers need `pyarrow`, which recall does not
+install; `--hybrid` needs an `[embeddings]` table in config.toml; and the agent evals run Claude
+Code headless with only recall's tools. Where to get each dataset:
+[docs/research/coding-memory-hillclimb.md](docs/research/coding-memory-hillclimb.md#reproducing-it).
+
+```bash
+uv run --with pyarrow recall eval swe-contextbench --data DIR --scope all --hybrid --split all   # past fixes found
+uv run --with pyarrow recall eval swe-contextbench --data DIR --hybrid --agent --split test      # an agent finding them
+uv run --with pyarrow recall eval memorycode --data DIR --split test --limit 40 --repeats 3 --fresh
+uv run --with pyarrow recall eval memorycode --data DIR --agent --arm hook --notes RUN_DIR --hybrid --split test
+uv run recall eval amb --data DIR                                                                 # agent-memory-bench retrieval
+uv run recall eval longmemeval --cases longmemeval_s_cleaned.json --hybrid [--qa claude:claude-haiku-5-5]
+uv run recall eval locomo --cases locomo10.json --hybrid
+python docs/benchmarks/agent_tokens.py DEFS_BEFORE DEFS_AFTER before:RUN_DIR ... after:RUN_DIR ...   # Claude tokens per question
+```
+
+Each run writes a folder with every case's transcript, the scores with bootstrap confidence
+intervals, and a results page; `--against RUN` adds a paired comparison with an earlier run.
 
 ## Contents
 
@@ -207,8 +328,8 @@ name = "nomic-embed-text"
 Then run `recall embed` once (about seven minutes per 20,000 messages on a laptop). New chats
 are embedded as they are indexed, and search falls back to words alone whenever the model is
 not running. On LongMemEval it raises the share of questions with every answer session in the
-top five from 87% to 91%; on one developer's chats it found the intended chat in the top five
-for 88% of paraphrased questions, against 83% with words alone.
+top five from 87% to 91%; on my chats it found the intended chat in the top five for 88% of
+100 paraphrased questions, against 83% with words alone (one run each).
 
 ## How agents use it
 
@@ -307,9 +428,10 @@ searches found nothing, and how many led to opening a result. It stays on your m
    project, keyed on the git remote.
 2. **Digest.** Each chat shrinks to your words plus the start and end of each agent reply,
    which is where agents say what they will do and what they did.
-3. **Extract.** The model proposes candidate memories (`preference`, `fact`, `decision`,
-   `lesson`, `open`), each with a supporting quote. A quote that can't be found in the chat
-   demotes the candidate to low confidence.
+3. **Extract.** The model reads each chat on its own and proposes candidate memories
+   (`preference`, `fact`, `decision`, `lesson`, `open`), each with a supporting quote. It
+   decides first whether each one holds beyond the task at hand, and drops those that don't.
+   A quote that can't be found in the chat demotes the candidate to low confidence.
 4. **Consolidate.** Per project, oldest first, candidates are folded into notes: create,
    update, supersede (newer facts win) or discard. Every operation is validated before a
    file changes. Open threads expire after 14 days.
@@ -373,7 +495,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
 | `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first) |
 | `recall schedule enable \| disable \| status` | the nightly run |
-| `recall eval search \| longmemeval \| locomo \| memory` | quality checks |
+| `recall eval search \| agent \| memory \| swe-contextbench \| memorycode \| amb \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
 
 Environment: `RECALL_HOME` moves the index, config and logs (default `~/.agents/recall`);
 `RECALL_MEMORY` moves the notes (default `~/.agents/memory`).
@@ -418,20 +540,29 @@ notes, not as ground truth.
 ## Quality
 
 There are no unit tests by design. recall is checked with evals that drive the real
-pipeline, plus an end-to-end smoke test in CI:
+pipeline, plus an end-to-end smoke test in CI. The public benchmarks and the commands that
+reproduce them are in [Benchmarks](#benchmarks). These run on your own chats:
 
 ```bash
-recall eval search                 # hand-written and auto-generated "find that chat" queries
-recall eval longmemeval --cases longmemeval_s_cleaned.json [--hybrid] [--qa claude:claude-haiku-5-5]
-recall eval locomo --cases locomo10.json [--hybrid]          # the other public benchmark
+recall eval search                 # "find that chat" queries generated from your chats
 recall eval memory --fresh         # extraction against hand-labelled chats; average several runs
+recall eval search --v2            # your questions, and the chats that answer them
+recall eval agent                  # an agent answers your questions about past work with recall's tools
+recall eval memory --v2            # your chats, and the memories they should and should not yield
 ```
 
-Public benchmark results are in [Benchmarks](#benchmarks). On one
-developer's 2,800 chats, search finds the intended chat in the top five 95–100% of the time
-when asked with words from the chat. Memory extraction quality depends on the model. Small
-hosted models find roughly half to three quarters of hand-labelled memories, with very little
-junk. Single runs vary by ±12 points, so compare averages.
+The `--v2` evals and `recall eval agent` read cases you write, from `~/.agents/recall/evals/v2/`
+(or `RECALL_EVAL_CASES`), split into train and test (`--split`) so that what you tune on is not
+what you judge by. recall ships no cases, since they name your chats. Answers and memories are
+graded against checkable claims by Claude Sonnet 5.5, which must differ from the model under
+test.
+
+On my ~2,800 chats with 0.3.0: search finds the intended chat in the top five for 86.7% of 60
+held-out hand-written questions (hybrid, one deterministic run; 92.2% of the 90 training
+questions); Claude Haiku 5.5 with recall's tools answers 85.1% of 47 held-out questions about
+past work correctly (three runs); and notes written by gpt-6-luna find 61% of the memories in a
+fresh hand-labelled holdout, 88% of what they store worth keeping (six runs). Model-based evals
+vary from run to run, so compare averages of several.
 
 ## Contributing
 
@@ -443,9 +574,11 @@ and new model providers. See [CONTRIBUTING.md](CONTRIBUTING.md) to get set up, a
 chat content in issues or pull requests.
 
 **Roadmap:** more agents and chat-export imports, a "remember this" write path from any
-agent, usefulness evals that replay tasks with and without memory, and a Claude Code plugin
-package.
+agent, end-to-end task runs of SWE-ContextBench and agent-memory-bench (they need a Docker
+runner), and a Claude Code plugin package.
 
 ## License
 
 [MIT](LICENSE)
+
+<a href="https://rererecall.com"><img src="docs/brand/footer.jpg" alt="rererecall: one memory for all your coding agents" width="100%"></a>
