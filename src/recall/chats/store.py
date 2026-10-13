@@ -296,7 +296,16 @@ TITLE_WORDS = 12
 
 
 def search(
-    con, query: str, agent=None, project=None, since=None, limit=8, until=None, exclude=None, vector=None
+    con,
+    query: str,
+    agent=None,
+    project=None,
+    since=None,
+    limit=8,
+    until=None,
+    exclude=None,
+    vector=None,
+    explain: dict | None = None,
 ) -> list[dict]:
     """Rank chats for a query, each with its best few matching messages.
 
@@ -304,6 +313,8 @@ def search(
     exclude: chat ids to leave out, such as ones already read.
     vector: the query's embedding; by default recall embeds the query itself when embeddings
     are on (see embeddings.py). False searches by keywords only.
+    explain: a dict to fill with each chat's fused score, the separate rankings and their
+    weights, for callers that judge how sure the ranking is (jit.py).
     """
     q = fts_query(query, "or")
     if not q:
@@ -364,6 +375,13 @@ def search(
         for rank, sid in enumerate(ranking):
             scores[sid] = scores.get(sid, 0) + weights[name] / (FUSION_K + rank + 1)
     top = sorted(scores, key=scores.get, reverse=True)[:limit]
+    if explain is not None:
+        explain.update(
+            scores=scores,
+            rankings=dict(rankings),
+            weights=weights,
+            bm25={sid: h[0]["score"] for sid, h in hits.items()},
+        )
     if not top:
         return []
     sessions = {
