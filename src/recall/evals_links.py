@@ -115,10 +115,13 @@ def sample(pop: list[dict], split: str, limit: int, seed: int = h.SEED) -> list[
     return list(picked.values())
 
 
-def _commit_text(top_dir: str, sha: str, focus: set[str]) -> str:
-    head = commits._git(top_dir, "show", "-s", "--format=commit %H%nDate: %ci%nAuthor: %an%n%n%B", sha, gitdir=True)
-    stat = commits._git(top_dir, "show", "--stat=200", "--format=", sha, gitdir=True) or ""
-    diff = commits._git(top_dir, "show", "-U2", "--no-color", "--no-ext-diff", "--format=", sha, gitdir=True) or ""
+def _commit_text(gitdir: str | None, sha: str, focus: set[str]) -> str:
+    if not gitdir:
+        return f"commit {sha} (no clone of this repo is on disk any more)"
+    show = ("show", "--no-color", "--no-ext-diff", "--no-textconv")
+    head = commits.git(gitdir, *show, "-s", "--format=commit %H%nDate: %ci%nAuthor: %an%n%n%B", sha, gitdir=True)
+    stat = commits.git(gitdir, *show, "--stat=200", "--format=", sha, gitdir=True) or ""
+    diff = commits.git(gitdir, *show, "-U2", "--format=", sha, gitdir=True) or ""
     parts = diff.split("\ndiff --git ")
     parts = [parts[0], *("diff --git " + p for p in parts[1:])] if parts else []
     first = [p for p in parts if any(f" b/{f}\n" in p.split("\n", 1)[0] + "\n" for f in focus)]
@@ -183,7 +186,7 @@ def _judge_case(con_path: str, grader, case: dict) -> tuple[dict, dict]:
             for r in con.execute("select path from link_edits where session_id=? and repo=?", (sid, case["repo"]))
             if r[0] in files
         ]
-        commit_text = _commit_text(row["gitdir"], case["sha"], set(chat_files))
+        commit_text = _commit_text(commits.live_gitdir(con, case["repo"], row["gitdir"]), case["sha"], set(chat_files))
         transcript["commit"] = transcript["commit"] or commit_text
         chat_text = _chat_text(con, sid, files, row["at"])
         prompt = f"COMMIT\n{commit_text}\n\nCHAT\n{chat_text}\n\nDid this chat produce this commit?"
@@ -235,7 +238,7 @@ def episode_cases(con, limit: int, seed: int = h.SEED) -> list[dict]:
     """A sample of failure-then-fix episodes, spread over the kinds of failure."""
     rng = random.Random(seed)
     found = commits.episodes(con)
-    kinds = sorted({e["failure"]["kind"] for e in found})
+    kinds = sorted({e["failure"]["kind"] for e in found})  # the failure closest before the fix
     picked = []
     for kind in kinds:
         mine = [e for e in found if e["failure"]["kind"] == kind]
@@ -252,15 +255,27 @@ def run_episodes(a, con) -> None:
     run = h.Run("links-episodes", "all", {"cases": len(cases), "judge": judge, "note": a.note or ""}, a.who, a.runs_dir)
     grader = h.judge_client(judge)
 
+    gitdirs = {  # looked up here: the judge runs in threads, and a connection stays in its own
+        e["fix_commit"]: commits.live_gitdir(
+            con,
+            e["repo"],
+            con.execute(
+                "select gitdir from link_commits where repo=? and sha=?", (e["repo"], e["fix_commit"])
+            ).fetchone()[0],
+        )
+        for e in cases
+    }
+
     def one(e):
-        gitdir = con.execute(
-            "select gitdir from link_commits where repo=? and sha=?", (e["repo"], e["fix_commit"])
-        ).fetchone()[0]
         f = e["failure"]
-        failure = f"{f['kind']}: {f['text']}" + (f"\noutput: {f['detail']}" if f.get("detail") else "")
+        shown = "\n\n".join(
+            f"[{store.fmt_time(x['at'])}] {x['kind']}: {x['text']}"
+            + (f"\noutput: {x['detail']}" if x.get("detail") else "")
+            for x in e["failures"][-3:]
+        )
         prompt = (
-            f"REQUEST\n{e['prompt']}\n\nFAILURE (at {store.fmt_time(f['at'])})\n{failure[:3000]}\n\n"
-            f"COMMIT\n{_commit_text(gitdir, e['fix_commit'], set(e['files']))}\n\n"
+            f"REQUEST\n{e['prompt']}\n\nFAILURE(S), latest last\n{shown[-4000:]}\n\n"
+            f"COMMIT\n{_commit_text(gitdirs[e['fix_commit']], e['fix_commit'], set(e['files']))}\n\n"
             "Is this a fair failure-then-fix example?"
         )
         try:
@@ -278,7 +293,8 @@ def run_episodes(a, con) -> None:
         "by_kind": {
             k: h.ci([r["verdict"] == "yes" for r in ok if r["kind"] == k]) for k in sorted({r["kind"] for r in ok})
         },
-        "episodes_found": len(commits.episodes(con)),
+        "episodes_found": len(found := commits.episodes(con)),
+        "failures_behind_them": sum(e["failure_count"] for e in found),
         "unsure": sum(r["verdict"] == "unsure" for r in rows),
         "plumbing": h.plumbing(rows),
     }
@@ -292,6 +308,8 @@ def run_episodes(a, con) -> None:
 
 def from_args(a) -> None:
     con = store.connect()
+    if not commits.enabled():
+        raise SystemExit("commit links are off ([links] enabled = false in config.toml): nothing to evaluate")
     if getattr(a, "episodes", False):
         commits.update(con)
         run_episodes(a, con)
