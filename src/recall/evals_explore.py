@@ -391,7 +391,7 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
 
 def _measure(stream: str) -> dict:
     """The Explore subagent's own numbers, from Claude Code's stream-json events."""
-    seen, tokens_in, tokens_out, tools, report, meta, cost = set(), 0, 0, 0, None, {}, None
+    usage, tools, report, meta, cost = {}, 0, None, {}, None
     for line in stream.splitlines():
         try:
             d = json.loads(line)
@@ -400,15 +400,7 @@ def _measure(stream: str) -> dict:
         if d.get("type") == "assistant" and d.get("parent_tool_use_id"):
             msg = d.get("message") or {}
             tools += sum(1 for b in msg.get("content") or [] if b.get("type") == "tool_use")
-            if msg.get("id") not in seen:
-                seen.add(msg.get("id"))
-                u = msg.get("usage") or {}
-                tokens_in += (
-                    u.get("input_tokens", 0)
-                    + u.get("cache_creation_input_tokens", 0)
-                    + u.get("cache_read_input_tokens", 0)
-                )
-                tokens_out += u.get("output_tokens", 0)
+            usage[msg.get("id")] = msg.get("usage") or {}  # one event per content block; the last has the totals
         elif d.get("type") == "user" and not d.get("parent_tool_use_id") and isinstance(d.get("tool_use_result"), dict):
             r = d["tool_use_result"]
             if r.get("agentType"):
@@ -419,9 +411,10 @@ def _measure(stream: str) -> dict:
                 report = content if isinstance(content, str) else str(content)
         elif d.get("type") == "result":
             cost = d.get("total_cost_usd")
+    fields = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
     return {
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
+        "tokens_in": sum(u.get(k, 0) for u in usage.values() for k in fields),
+        "tokens_out": sum(u.get("output_tokens", 0) for u in usage.values()),
         "tool_calls": meta.get("totalToolUseCount", tools),
         "subagent_s": round((meta.get("totalDurationMs") or 0) / 1000, 1),
         "cost_usd": cost,
