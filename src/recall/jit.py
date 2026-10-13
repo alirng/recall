@@ -58,6 +58,7 @@ WINDOW_FIRES = 10
 MIN_WORDS = 3  # content words a prompt needs before it is matched at all
 DENSE = ("cos_first", "cos_best", "has_vec")  # features that need the prompt's embedding
 EMBED_WAIT = 0.25  # seconds a hook waits for the prompt's embedding before going without
+LOCK_WAIT = 0.2  # seconds a hook waits for its session's state before staying out
 LIVE_SECONDS = 15 * 60  # a chat this fresh may still be running: the edit hooks cover it
 STATE = os.path.join(paths.HOME, "cache", "jit")
 GATE_FILE = os.path.join(paths.HOME, "jit_gate.json")  # a gate fitted on this machine's history
@@ -153,8 +154,9 @@ class State:
     def __init__(self, agent: str, session: str, sub: str | None = None):
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", "-".join(x for x in (agent, session, sub) if x))[:150]
         self.path = os.path.join(STATE, safe + ".json")
-        self.d: dict = {}
+        self.d: dict = {"items": [], "files": [], "errors": [], "chars": 0, "fires": 0}
         self._lock = None
+        self.busy = False
 
     @classmethod
     def of(cls, e: "Event") -> "State":
@@ -162,11 +164,23 @@ class State:
         return cls(e.agent, e.session or "", (e.raw or {}).get("agent_id"))
 
     def __enter__(self) -> "State":
+        """Lock, then load. If another hook of this session holds the lock past LOCK_WAIT,
+        `busy` is set and this hook stays out (it injects nothing and saves nothing)."""
         import fcntl
 
         os.makedirs(STATE, exist_ok=True)
         self._lock = open(self.path + ".lock", "a")
-        fcntl.flock(self._lock, fcntl.LOCK_EX)
+        os.utime(self.path + ".lock")  # in use: the week-old sweep leaves it alone
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    self.busy = True
+                    return self
+                time.sleep(0.01)
         try:
             with open(self.path) as f:
                 self.d = json.load(f)
@@ -180,6 +194,9 @@ class State:
         return self
 
     def __exit__(self, *exc) -> None:
+        if self.busy:
+            self._lock.close()
+            return
         try:
             tmp = f"{self.path}.{os.getpid()}.tmp"
             with open(tmp, "w") as f:
@@ -193,6 +210,15 @@ class State:
     def new_window(self) -> None:
         """After compaction the earlier injections are summarised away: allow them again."""
         self.d.update(items=[], files=[], errors=[], chars=0, fires=0)
+
+
+def _repo_path(path: str, cwd: str | None) -> str:
+    """A file as the usage log names it: relative to its repo, never the whole path."""
+    from . import rules
+
+    full = os.path.abspath(os.path.join(cwd or "", path))
+    root = rules.repo_root(os.path.dirname(full)) or rules.repo_root(cwd)
+    return os.path.relpath(full, root) if root and full.startswith(root + os.sep) else os.path.basename(full)
 
 
 def _sweep(days: int = 7) -> None:
@@ -214,6 +240,8 @@ def on_prompt(e: "Event") -> "Reply | None":
     if not e.session or e.observe:
         return None
     with State.of(e) as state:
+        if state.busy:
+            return None
         return _reply(e, state, "prompt", _prompt_items(e, state, e.prompt or ""))
 
 
@@ -221,6 +249,8 @@ def on_read(e: "Event") -> "Reply | None":
     if not e.session or not e.files:
         return None
     with State.of(e) as state:
+        if state.busy:
+            return None
         items = _after_compaction(e, state)
         con = None
         for path in e.files[:3]:
@@ -230,13 +260,15 @@ def on_read(e: "Event") -> "Reply | None":
             state.d["files"].append(path)
             con = con or _connect()
             items += file_items(con, e.agent, path, e.cwd, _own(e), state, _project_of(con, e.cwd, state))
-        return _reply(e, state, "read", items, file=e.files[0])
+        return _reply(e, state, "read", items, file=_repo_path(e.files[0], e.cwd))
 
 
 def on_tool_failure(e: "Event") -> "Reply | None":
     if not e.session:
         return None
     with State.of(e) as state:
+        if state.busy:
+            return None
         items = _after_compaction(e, state)
         sig = error_signature(e.error or "")
         if sig and sig["key"] not in state.d["errors"]:
@@ -251,6 +283,8 @@ def on_compact(e: "Event") -> "Reply | None":
     if not e.session:
         return None
     with State.of(e) as state:
+        if state.busy:
+            return None
         if e.observe:
             # Cursor's preCompact cannot inform and no event follows compaction there: re-match
             # at its next read. Claude Code's PostCompact is followed by SessionStart (compact).
@@ -322,8 +356,8 @@ def _reply(e: "Event", state: State, event: str, items: list[Item], file: str | 
 
 def _log(e: "Event", event: str, picked: list[Item], text: str, considered: list[Item], file: str | None) -> None:
     """One usage-log line per prompt and compaction, and per read or failure that fired: ids,
-    sizes and the gate's top score, never text. A read names its file, so `recall eval jit
-    --live` can judge what was injected beside it."""
+    sizes and the gate's top score, never text. A read names its file relative to the repo, so
+    `recall eval jit --live` can judge what was injected beside it."""
     from . import usage
 
     top = max((i.p for i in considered if i.p is not None), default=None)
@@ -336,6 +370,7 @@ def _log(e: "Event", event: str, picked: list[Item], text: str, considered: list
         None,
         client=e.agent,
         session=e.session,
+        agent_id=(e.raw or {}).get("agent_id"),  # a subagent's, apart from its session's
         ids=[i.id for i in picked] or None,
         kinds=[i.kind for i in picked] or None,
         chars=len(text) if text else 0,
@@ -526,9 +561,10 @@ def vector_model() -> str:
 
 
 def embed_query(text: str, timeout: float = EMBED_WAIT) -> list[float] | None:
-    """The prompt's unit vector from the local embedding model in config.toml, or None. This
-    repeats embeddings.Embedder.embed for one query because importing that path pulls in numpy
-    and the llm package, about 100 ms each in a cold hook process."""
+    """The prompt's unit vector from the embedding model in config.toml, or None. Hooks call it
+    only when local_embeddings() says the model runs on this machine. This repeats
+    embeddings.Embedder.embed for one query because importing that path pulls in numpy and the
+    llm package, about 100 ms each in a cold hook process."""
     import http.client
     from urllib.parse import urlparse
 
