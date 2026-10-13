@@ -43,6 +43,7 @@ def run(opts: Options, log=print) -> dict:
         ensure_tables(con)
         started = time.time()
         indexer.index(con, max_age=0)
+        _link_commits(con, log)
         provider = from_spec(opts.model, config.load()["model"])
         problem = provider.check()
         if problem:
@@ -81,6 +82,18 @@ def run(opts: Options, log=print) -> dict:
             "tokens out": client.tokens_out,
             "minutes": round((time.time() - started) / 60, 1),
         }
+
+
+def _link_commits(con, log) -> None:
+    """Which chats produced which commits. Local, git read-only, no model calls."""
+    from .. import commits
+
+    try:
+        r = commits.update(con)
+        if r.get("links"):
+            log(f"commit links: {r['links']} in {r['repos']} repos ({r['seconds']}s)")
+    except Exception as e:  # never costs the night's memory run
+        log(f"commit links skipped: {e!r}")
 
 
 def ensure_tables(con) -> None:
