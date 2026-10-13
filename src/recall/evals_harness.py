@@ -1,7 +1,8 @@
 """What the v2 evals share: case files with a train/test split, one folder per run, scores
 with bootstrap confidence intervals, a static results page and the ledger.
 
-A run folder (RUNS/<YYYYMMDD-HHMM>-<who>-<eval>/) holds:
+A run folder (RUNS/<YYYYMMDD-HHMM>-<who>-<eval>/, or $RECALL_RUN_DIR when the shared run wrapper
+sets it) holds:
   meta.json      what ran: eval, split, code id, models, command line
   cases.jsonl    one line per case (and per repeat): status, outcome, numbers
   transcripts/   one JSON and one HTML file per case: everything the case did
@@ -273,10 +274,15 @@ class Run:
         self.who = who or os.environ.get("RECALL_EVAL_WHO") or "harness"
         self.runs = os.path.expanduser(runs_dir or RUNS)
         base = os.path.join(self.runs, f"{datetime.now():%Y%m%d-%H%M}-{self.who}-{name}")
+        given = os.environ.get("RECALL_RUN_DIR") if not runs_dir else None
+        if given:  # the run wrapper's folder: the run's cases and its output.txt stay together
+            given = os.path.abspath(os.path.expanduser(given))
+            self.runs = os.path.dirname(given)
+            base = given if not os.path.exists(os.path.join(given, "meta.json")) else os.path.join(given, name)
         self.dir, i = base, 2
-        while os.path.exists(self.dir):
+        while os.path.exists(os.path.join(self.dir, "meta.json")) or (os.path.exists(self.dir) and not given):
             self.dir, i = f"{base}-{i}", i + 1
-        os.makedirs(self.dir)
+        os.makedirs(self.dir, exist_ok=True)
         self.code = code_id()
         self.rows: list[dict] = []
         self._lock = threading.Lock()
