@@ -16,7 +16,7 @@ MAX_MESSAGE_CHARS = 20_000
 # Bumping this rebuilds the chat tables on next run: chats are re-read from their sources,
 # and the ones whose source is gone come back from the archive (archive.py), which a
 # rebuild never drops.
-CHAT_SCHEMA_VERSION = "2"
+CHAT_SCHEMA_VERSION = "3"
 CHAT_TABLES = ("sessions", "messages", "messages_fts", "sessions_fts", "seen", "chat_projects")
 
 SCHEMA = """
@@ -95,14 +95,14 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     for row in archive.copies(con, s.id):
         if row["source"] != s.source:
             if archive.kind(row["source"]) == archive.kind(s.source):
-                others.append(archive.unpack(row["data"]).messages)
+                others.append(archive.messages(row, CHAT_SCHEMA_VERSION))
             continue
         # A copy from another parser version may differ for reasons that have nothing to do
         # with the file, so only what it marked Kept carries over, unless the file shrank
         # since: a rewrite.
         shrank = (size or 0) < (row["source_size"] or 0)
         same = row["parser"] == CHAT_SCHEMA_VERSION or shrank
-        msgs = archive.merge(archive.unpack(row["data"]).messages, stored, only_kept=not same)
+        msgs = archive.merge(archive.messages(row, CHAT_SCHEMA_VERSION), stored, only_kept=not same)
         if (n := archive.kept(msgs)) > (row["kept"] or 0):
             archive.log(f"kept {n} messages of {s.id} that a re-read of {s.source} no longer has")
     archive.save(con, s, msgs, CHAT_SCHEMA_VERSION, size)
@@ -132,7 +132,8 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         latest = rows[-1]  # the copy a source yielded most recently
         s = archive.unpack(latest["data"])
         same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
-        shown = archive.union(s.messages, [archive.unpack(r["data"]).messages for r in same_kind])
+        mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
+        shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
         _write(con, s, shown, shown)
         con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
     if ids:
