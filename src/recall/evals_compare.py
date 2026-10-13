@@ -56,6 +56,7 @@ SPECS = [
             "recall": ("found", "conventions", "ratio", 1, None),
             "stale": ("stale", "replaced", "ratio", -1, None),
             "updates": ("updates_ok", "updated", "ratio", 1, None),
+            "lost": ("lost", "extracted_latest", "ratio", -1, None),
             "filler_notes": ("notes_filler", "notes", "ratio", -1, None),
             "notes": ("notes", None, "mean", 0, None),
         },
@@ -189,12 +190,54 @@ def read_run(path: str) -> dict:
                 rows += [json.loads(line) for line in f if line.strip()]
     if keep:
         rows = [r for r in rows if (r.get("repeat") or 1) in keep]
+    if spec_for(meta.get("eval") or "")[0] == "memorycode-extract":
+        _add_lost(folder, rows)
     if not rows:
         sys.exit(f"{folder}: no case rows" + (f" for repeat {picked}" if keep else ""))
     return {"dir": folder, "meta": meta, "eval": meta.get("eval") or "", "rows": rows}
 
 
+QUOTED = re.compile(r"'([^']+)'")
+
+
+def _states(text: str, tokens: list[str]) -> bool:
+    """evals_memorycode._states: every token appears as a token, not inside a longer word."""
+    low = text.lower()
+    for t in tokens:
+        t = t.lower().lstrip("@")
+        before = r"(?<![a-z0-9])" if t[:1].isalnum() else ""
+        after = r"(?![a-z0-9])" if t[-1:].isalnum() else ""
+        if not re.search(before + re.escape(t) + after, low):
+            return False
+    return True
+
+
+def _add_lost(folder: str, rows: list[dict]) -> None:
+    """MemoryCode runs from before evals_memorycode.score counted extracted_latest and lost:
+    the same counts from each case's transcript (conventions, candidates, active notes)."""
+    for r in rows:
+        if "lost" in r or r.get("status") != "ok" or not r.get("transcript"):
+            continue
+        part = "test" if r.get("split") == "test" else ""
+        path = os.path.join(folder, part, r["transcript"].removesuffix(".html") + ".json")
+        try:
+            with open(path) as f:
+                t = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        notes = [f"{n['title']}\n{n['body']}" for n in (t.get("notes") or {}).get("active", [])]
+        said = {int(k): [f"{m['title']} {m['body']}" for m in v] for k, v in (t.get("candidates") or {}).items()}
+        extracted = lost = 0
+        for c in t.get("conventions") or []:
+            tokens = QUOTED.findall(c["forms"][-1])
+            if tokens and any(_states(x, tokens) for x in said.get(c["sessions"][-1], [])):
+                extracted += 1
+                lost += not any(_states(n, tokens) for n in notes)
+        r["extracted_latest"], r["lost"] = extracted, lost
+
+
 def spec_for(name: str):
+    name = name.replace("memorycode-consolidate", "memorycode-extract")  # a replay scores the same way
     for prefix, unit, metrics in SPECS:
         if name.startswith(prefix):
             return prefix, unit, metrics
@@ -368,6 +411,8 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
             res["run_floor"] = Z80 * sd * math.sqrt(2 / len(full))
         res["same_arm"] = [y - x for x, y in itertools.combinations(full, 2)]
         res["decompose"] = dec
+        if dec:  # this arm against an identical one, k replicates a side: only run noise differs
+            res["null_detectable"] = {k: Z80 * math.sqrt(2 * dec["run_per_rep"] / (k * dec["n"])) for k in (1, 3, 5)}
         return res
     b = datas[1]
     pb = [pooled(b[u]) for u in units]
@@ -586,6 +631,11 @@ def show(report: dict, names: list[str], list_flips: bool, unit_key: str) -> Non
             else:
                 k = rep["repeats"]
                 bits.append(f"to detect {_f(rep['target'], True)}: {k} replicate{'' if k == 1 else 's'} per arm")
+        if m.get("null_detectable"):
+            k = m["null_detectable"]
+            bits.append(
+                "this arm vs an identical one detects " + ", ".join(f"±{_f(v)} at {n}v{n}" for n, v in k.items())
+            )
         if bits:
             print(f"  {m['metric']:14} " + "; ".join(bits))
     fl = report["metrics"][0].get("flips") or {}

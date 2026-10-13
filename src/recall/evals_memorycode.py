@@ -586,7 +586,7 @@ def extract_history(
         judge=verdict,
         notes_folder=keep,
     )
-    row.update(score(x, notes, verdict, index_of))
+    row.update(score(x, notes, verdict, index_of, candidates))
     row.update(
         candidates=sum(len(c) for c in candidates.values()),
         candidates_filler=sum(len(c) for i, c in candidates.items() if i in x.filler),
@@ -674,9 +674,16 @@ def source_candidates(source: dict, history: int, repeat: int) -> dict:
 # --- scoring the notes ---------------------------------------------------------------------
 
 
-def score(x: History, notes: dict, verdict: dict | None, index_of: dict[str, int]) -> dict:
+def score(
+    x: History, notes: dict, verdict: dict | None, index_of: dict[str, int], candidates: dict | None = None
+) -> dict:
+    """candidates: {session index: the candidates extracted from it}, for extracted_latest (token
+    conventions whose latest form a candidate on its last session states) and lost (of those,
+    the ones no active note states: dropped by consolidation)."""
     active = notes["active"]
     texts = [f"{n['title']}\n{n['body']}" for n in active]
+    said = {i: [f"{m['title']} {m['body']}" for m in c] for i, c in (candidates or {}).items()}
+    extracted_latest = lost = 0
     judged = {e["convention"]: e["note"] for e in (verdict or {}).get("conventions", [])}
     as_current = {e["replaced"]: e["as_current"] for e in (verdict or {}).get("replaced", [])}
     about = {e["note"]: e["conventions"] for e in (verdict or {}).get("notes", [])}
@@ -691,6 +698,9 @@ def score(x: History, notes: dict, verdict: dict | None, index_of: dict[str, int
             exact_hit = any(_states(t, tokens) for t in texts)
             exact_n += 1
             found_exact += exact_hit
+            if any(_states(t, tokens) for t in said.get(c.sessions[-1], [])):
+                extracted_latest += 1
+                lost += not exact_hit
             agree += exact_hit == judge_hit
             found += exact_hit
         else:
@@ -731,6 +741,8 @@ def score(x: History, notes: dict, verdict: dict | None, index_of: dict[str, int
         "notes": len(active),
         "notes_filler": sum(1 for s in sources if s and s <= x.filler),
         "notes_on_convention": sum(1 for i in range(1, len(active) + 1) if about.get(i)),
+        "extracted_latest": extracted_latest,
+        "lost": lost,
         "recall": round(found / n_conv, 3) if n_conv else None,
         "stale_rate": round(stale / n_replaced, 3) if n_replaced else None,
     }
