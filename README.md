@@ -355,17 +355,20 @@ other chats until recall reads their history or hooks into them.
   always-on rule the repo gives another agent but not this one (a Cursor rule, say, in a
   Claude Code session), and the current project's notes: a body of at most 4,500 characters
   (about 5,000 with its framing), in which the project's notes always get room.
-- **Mid-session:** the same hook command hands over memory at the moment it applies, and
-  stays quiet when recall is unsure. When your prompt closely matches an earlier chat, the
-  agent gets one or two lines saying when and where you worked on it and how that chat ended.
-  When it reads a file, it gets the rules scoped to that file that it would not load itself,
-  notes that name the file, and the last chat that talked about it. A failed command brings
-  past chats with the same error, and after compaction notes are matched again to the task in
-  hand. Each item comes at most once per session, at most 1,200 characters at a time.
-  Claude Code gets all four. Codex gets prompts, reads (shell commands such as `cat` and
-  `sed -n`) and compaction; it has no failure event. Cursor gets reads and failures, and a
-  prompt match waits for its next read, because Cursor cannot add context to a prompt.
-  `recall jit "<prompt>"` shows what would fire and why.
+- **Mid-session:** the same hook command can hand over memory at the moment it applies,
+  and stays quiet unless it is sure. When your prompt closely matches an earlier chat, the
+  agent gets a line saying when and where you worked on it and how that chat ended. When it
+  reads a file, it gets the rules scoped to that file that it would not load itself, notes
+  that name the file, and the last chat that talked about it. Each item comes at most once
+  per session, at most 1,200 characters at a time. The gate for prompts is fitted on one
+  developer's history and fires rarely (about one prompt in eight in a held-out test);
+  `recall eval jit --write` fits it to yours. It reads the prompt's meaning only with a local
+  embedding model, so a hosted one never receives your prompts from a hook. Claude Code and
+  Codex get prompts and reads (Codex reads are shell commands such as `cat` and `sed -n`);
+  Cursor gets them too, its prompt answer read from the 3.23 app rather than its docs. Past
+  errors and notes after compaction are wired but rarely fire yet: the index does not keep
+  tool errors, and notes seldom clear the gate. `recall jit "<prompt>"` shows what would fire
+  and why.
 - **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
   `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and
   `message_chat`, which leaves a message for another chat in recall's own mailbox.
