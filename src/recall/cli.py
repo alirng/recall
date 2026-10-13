@@ -478,18 +478,21 @@ def cmd_jit(a) -> None:
         print(f"signature: {sig['key'] if sig else '(too generic: stays silent)'}")
         items = jit.failure_items(con, sig, cwd, []) if sig else []
     else:
-        gate = jit.load_gate()
+        gates = jit.load_gates()
         items = jit.match_prompt(con, " ".join(a.prompt), cwd, keep_all=True)
         if not items:
             print("Nothing to match: the prompt is too short, a command, or matches no chat or note.")
             return
-        print(f"gate threshold {gate['threshold']:.3f}" + ("" if os.path.exists(jit.GATE_FILE) else " (default)"))
+        where = "fitted here" if os.path.exists(jit.GATE_FILE) else "shipped"
+        print(
+            f"gates ({where}): dense ≥ {gates['dense']['threshold']:.3f}, keyword ≥ {gates['keyword']['threshold']:.3f}"
+        )
         for i in items:
-            mark = "fires" if i.p >= gate["threshold"] else "     "
-            print(f"  {mark}  p={i.p:.3f}  {i.kind:4}  {i.id}")
+            gate = "dense" if i.features.get("has_vec") else "keyword"
+            print(f"  {'fires' if i.passed else '     '}  p={i.p:.3f} ({gate})  {i.kind:4}  {i.id}")
             if a.json:
                 print("         " + json.dumps({k: round(v, 3) for k, v in i.features.items()}))
-        items = [i for i in items if i.p >= gate["threshold"]]
+        items = [i for i in items if i.passed]
     block = jit.render(items[: jit.MAX_ITEMS])
     print("\n" + (block if block else "(nothing would be injected)"))
 
