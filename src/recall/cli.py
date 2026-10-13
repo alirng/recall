@@ -435,7 +435,7 @@ def cmd_usage(a) -> None:
         print(f"Nothing logged yet{' in that window' if a.since else ''} ({usage.LOG}).")
         return
     print(f"{s['calls']} calls since {s['since'][:16].replace('T', ' ')}\n")
-    kinds = ["search", "read", "recent", "load", "other"]
+    kinds = ["search", "read", "recent", "load", "jit", "other"]
     print("".ljust(10) + "".join(k.rjust(8) for k in kinds))
     for who, counts in s["by_agent"].items():
         print(who.ljust(10) + "".join(str(counts.get(k, 0) or "·").rjust(8) for k in kinds))
@@ -445,6 +445,14 @@ def cmd_usage(a) -> None:
     loads = s["loads"]
     if loads["total"]:
         print(f"Session starts: {loads['total']}, {loads['with_project']} in a known project, {loads['empty']} empty")
+    if j := s.get("jit"):
+        events = ", ".join(f"{n} {k}" for k, n in j["by_event"].items())
+        print(
+            f"Mid-session memory (jit): {j['fires']} injections ({events or 'none'}) in {j['sessions']} sessions; "
+            f"{j['prompts_fired']} of {j['prompts']} prompts fired; "
+            f"{j['chars_per_session'].get('median', 0)} chars per session (median), "
+            f"{j['opened_after']} injected items opened afterwards"
+        )
     if s["projects"]:
         print("Projects: " + ", ".join(f"{p} ({n})" for p, n in s["projects"].items()))
     print("\nLatest:")
@@ -454,6 +462,36 @@ def cmd_usage(a) -> None:
         print(
             f"  {e['at'][5:16].replace('T', ' ')}  {e.get('client') or e['via']:8} {e['tool']:15} {what[:40]}  {result}"
         )
+
+
+def cmd_jit(a) -> None:
+    """What jit would hand an agent for a prompt, a file it reads, or a failed command, and
+    why. The hooks themselves answer through `recall hook` (integrations/hooks.py)."""
+    from . import jit
+
+    con = store.connect()
+    cwd = os.path.abspath(a.cwd or os.getcwd())
+    if a.file:
+        items = jit.file_items(con, a.agent, os.path.abspath(a.file), cwd, [])
+    elif a.error:
+        sig = jit.error_signature(a.error)
+        print(f"signature: {sig['key'] if sig else '(too generic: stays silent)'}")
+        items = jit.failure_items(con, sig, cwd, []) if sig else []
+    else:
+        gate = jit.load_gate()
+        items = jit.match_prompt(con, " ".join(a.prompt), cwd, keep_all=True)
+        if not items:
+            print("Nothing to match: the prompt is too short, a command, or matches no chat or note.")
+            return
+        print(f"gate threshold {gate['threshold']:.3f}" + ("" if os.path.exists(jit.GATE_FILE) else " (default)"))
+        for i in items:
+            mark = "fires" if i.p >= gate["threshold"] else "     "
+            print(f"  {mark}  p={i.p:.3f}  {i.kind:4}  {i.id}")
+            if a.json:
+                print("         " + json.dumps({k: round(v, 3) for k, v in i.features.items()}))
+        items = [i for i in items if i.p >= gate["threshold"]]
+    block = jit.render(items[: jit.MAX_ITEMS])
+    print("\n" + (block if block else "(nothing would be injected)"))
 
 
 def cmd_status(a) -> None:
@@ -797,6 +835,13 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--file", required=True, help="the file, relative to the repo, as recall status shows it")
     sp.add_argument("--since", default="12h")
     sp.add_argument("--json", action="store_true")
+    sp = command("jit", cmd_jit, "what recall would hand an agent mid-session, and why")
+    sp.add_argument("prompt", nargs="*", help="a prompt to match against past chats and notes")
+    sp.add_argument("--cwd", help="the project folder (default: the current folder)")
+    sp.add_argument("--file", help="a file the agent reads: rules, notes and chats anchored to it")
+    sp.add_argument("--error", help="a failed command's output: past chats with the same error")
+    sp.add_argument("--agent", default="claude", help="which agent: claude, codex or cursor")
+    sp.add_argument("--json", action="store_true", help="also print each match's features")
     sp = command("usage", cmd_usage, "how recall itself gets used, from its local log")
     sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
     sp.add_argument("--json", action="store_true")
