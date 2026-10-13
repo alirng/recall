@@ -506,11 +506,11 @@ def brief(folder: str | None, prompt: str, con=None, threshold: float = THRESHOL
 #           but no prompt: it is read from that rollout, and without it recall abstains.
 #           Stop: SubagentStop after every child turn, with last_assistant_message and
 #           agent_transcript_path. (Docs and source; not run live.)
-#   cursor  Start: subagentStart drops additional_context, and a rewritten Task prompt is not
-#           installed while Cursor's reading of a no-decision reply is unconfirmed, so the
-#           cache reaches Cursor's subagents only through MCP (project_memory with a task).
-#           Stop: subagentStop with subagent_type, task, summary and agent_transcript_path.
-#           (Docs and the 3.23 app code; not run live.)
+#   cursor  Start: subagentStart drops additional_context, so preToolUse on the subagent tool
+#           (Task, Subagent or mcp_task, by model), whose tool_input holds prompt and
+#           subagent_type; updated_input.prompt carries the block, merged into the call with no
+#           permission field. Stop: subagentStop with subagent_type, task, summary and
+#           agent_transcript_path. (Docs and the 3.23 app code; not run live.)
 
 
 def on_start(e):

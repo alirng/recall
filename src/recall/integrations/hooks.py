@@ -34,6 +34,8 @@ Formats, confirmed against each agent's docs or source, or live (October 2026):
           is blocked; postToolUse (Write, Read, or a Shell call that exited non-zero) and
           postToolUseFailure carry additional_context; stop takes followup_message.
           beforeSubmitPrompt, preCompact and subagentStart cannot inform: they are observed.
+          preToolUse on its subagent tool takes updated_input (merged into the call; from
+          the 3.23 app code, not live-tested), which carries a subagent_start context.
           Its edit fires Read then Write under one tool_use_id (Event.call). Cursor also
           runs Claude Code's hooks (with cursor_version set); the claude adapter stands down.
   gemini  BeforeTool on write_file/replace can deny; AfterTool carries context.
@@ -69,11 +71,11 @@ HANDLERS: dict[str, list[str]] = {
 }
 
 # Exploration subagents (explore.py): where each agent's subagent's prompt and report reach a
-# hook. Cursor's start is left out: its preToolUse(Task) reply is not confirmed to be harmless.
+# hook. Cursor's subagent tool is named Task, Subagent or mcp_task depending on the model.
 EXPLORE = {
     "claude": [("PreToolUse", "Agent|Task"), ("SubagentStop", "Explore")],
     "codex": [("SubagentStart", "explorer"), ("SubagentStop", "explorer")],
-    "cursor": [("subagentStop", "explor")],
+    "cursor": [("preToolUse", "Task|Subagent|mcp_task"), ("subagentStop", "explor")],
 }
 
 # The entries `recall install` writes: (event, matcher) per agent, all answered by one command,
@@ -242,10 +244,10 @@ def parse(agent: str, raw: dict) -> Event | None:
         # Cursor drops context at subagentStart; a subagent's end is for handlers to note.
         e.observe = name in _OBSERVE or e.kind == "subagent_stop" or (agent == "cursor" and e.kind == "subagent_start")
     elif name in ("PreToolUse", "preToolUse") and tool in _SUBAGENT_TOOLS:
-        # Claude Code's subagent prompt is only in its Agent/Task call; rewriting it reaches the
-        # subagent. Cursor could do the same only by approving the spawn, so it just observes.
+        # The subagent's prompt is only in its Agent/Task call, and rewriting it reaches the
+        # subagent: Claude Code (tested live) and Cursor (from its 3.23 app code, not live).
         e.kind, e.prompt, e.subagent = "subagent_start", args.get("prompt"), args.get("subagent_type")
-        e.observe = agent != "claude"
+        e.observe = agent not in ("claude", "cursor")
     elif name in ("PostToolUse", "postToolUse") and tool == "Read":
         e.kind, e.files = "read", [args["file_path"]] if args.get("file_path") else []
     elif agent == "codex" and name == "PostToolUse" and tool == "Bash":
@@ -365,6 +367,11 @@ def render(e: Event, r: Reply) -> tuple[str, int]:
             return json.dumps(
                 {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args | {"prompt": prompt}}}
             ), 0
+        if agent == "cursor" and e.name == "preToolUse":
+            # Merged into the Task call's input (extensions/cursor-agent-exec/dist/main.js in 3.23);
+            # no permission field, so nothing is approved. Not live-tested.
+            prompt = f"{(e.raw.get('tool_input') or {}).get('prompt') or ''}\n\n{r.context}".strip()
+            return json.dumps({"updated_input": {"prompt": prompt}}), 0
         if agent in ("claude", "codex") and e.name == "SubagentStart":
             return json.dumps(
                 {"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": r.context}}
