@@ -287,12 +287,24 @@ def read_note(note_id: str, ctx: Context = None) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def project_memory(path: str, ctx: Context = None) -> str:
+def project_memory(path: str, task: str | None = None, ctx: Context = None) -> str:
     """The memory block for a project folder: the developer's working preferences, always-on
     rules the repo gives other agents, and that project's notes. Agents without a
-    session-start hook should call this once at the start."""
+    session-start hook should call this once at the start.
+
+    task: what you are about to explore in this repo. Returns instead the earlier
+    exploration report that best answers it, as pointers, with its commit and what changed
+    since; or says there is none close enough. Use it before exploring a repo from scratch.
+    """
     agent = _client(ctx) or "claude"
     found = projects.for_folder(path)
+    if task:
+        from . import explore
+
+        def run():
+            return explore.brief(path, task)[0] or "No earlier exploration of this repo answers that closely enough."
+
+        return _logged(ctx, "project_memory", {"cwd": path, "task": task}, run, project=found.id if found else None)
     return _logged(
         ctx,
         "project_memory",
