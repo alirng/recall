@@ -307,6 +307,8 @@ def on_session_start(event):
     from .. import projects, usage
     from ..integrations.hooks import Reply
 
+    if getattr(event, "observe", False):  # Cursor's preCompact, Claude's PostCompact: nothing to deliver
+        return None
     cwd = event.cwd or os.getcwd()
     text = session_context(cwd, agent=event.agent)
     found = projects.for_folder(cwd)

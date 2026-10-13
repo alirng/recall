@@ -33,7 +33,9 @@ Formats, confirmed against each agent's docs or source, or live (October 2026):
   cursor  preToolUse on Write can only allow or deny, and must always print JSON or the edit
           is blocked; postToolUse (Write, Read, or a Shell call that exited non-zero) and
           postToolUseFailure carry additional_context; stop takes followup_message.
-          beforeSubmitPrompt, preCompact and subagentStart cannot inform: they are observed.
+          beforeSubmitPrompt takes additional_context too: undocumented, but 3.23's
+          validator accepts it and sends it as a system reminder (read from the app bundle,
+          not live-tested). preCompact and subagentStart cannot inform: they are observed.
           preToolUse on its subagent tool takes updated_input (merged into the call; from
           the 3.23 app code, not live-tested), which carries a subagent_start context.
           Its edit fires Read then Write under one tool_use_id (Event.call). Cursor also
@@ -106,10 +108,10 @@ INSTALL: dict[str, list[tuple]] = {
     "cursor": [
         ("preToolUse", EDIT_TOOLS["cursor"]),
         ("postToolUse", EDIT_TOOLS["cursor"]),
-        ("beforeSubmitPrompt", None),  # jit: noted, delivered at the next read or failure
+        ("beforeSubmitPrompt", None),  # jit: additional_context, read from the app bundle (3.23)
         ("postToolUse", "Read"),
-        ("postToolUse", "Shell"),  # jit: a failed command (non-streaming shell)
-        ("postToolUseFailure", "Shell"),  # jit: a failed command (streaming shell)
+        # Failed Shell calls (postToolUse with exitCode, postToolUseFailure) wait for the index
+        # to keep tool errors: until then every Shell call would pay a hook for nothing.
         ("preCompact", None),
         ("stop", None, {"loop_limit": 3}),  # a follow-up at most three times in a row
         *EXPLORE["cursor"],
@@ -187,7 +189,7 @@ _KINDS = {
     "preCompact": "compact",
     "beforeSubmitPrompt": "prompt",
 }
-_OBSERVE = {"PostCompact", "preCompact", "beforeSubmitPrompt"}
+_OBSERVE = {"PostCompact", "preCompact"}
 _SUBAGENT_TOOLS = ("Agent", "Task", "Subagent", "mcp_task")
 _READERS = {"cat", "head", "tail", "sed", "nl", "less", "more", "bat", "awk", "grep", "rg"}
 # The events and tools that are an edit, per agent: anything else is not parsed as one.
@@ -366,6 +368,10 @@ def render(e: Event, r: Reply) -> tuple[str, int]:
         return json.dumps(
             {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": r.context}}
         ), 0
+    if kind == "prompt" and agent == "cursor" and r.context:
+        # beforeSubmitPrompt: documented as continue/user_message only, but 3.23's validator
+        # takes additional_context and the composer sends it as a system reminder (app bundle).
+        return json.dumps({"additional_context": r.context}), 0
     if kind == "edit":
         return _render_edit(e, r)
     if kind in ("read", "tool_failure") and r.context:
