@@ -68,17 +68,26 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True) -> dic
             return 0
         return con.execute(f"delete from {table} where {column} = ?", (sid,)).rowcount
 
+    # Every table that keys rows by chat: vectors, extractions, candidates, and tables other
+    # features add later (such as explorations), without forget having to name them.
+    keyed = [
+        name
+        for name in sorted(have)
+        if not name.startswith(("sqlite_", "messages_fts", "sessions_fts"))
+        and any(c[1] == "session_id" for c in con.execute(f"pragma table_info('{name}')"))
+    ]
+    named = {"messages": "messages", "vectors": "vectors", "candidates": "candidates"}
     for sid in ids:
         counts["chats"] += delete("sessions", "id", sid)
-        counts["messages"] += delete("messages", "session_id", sid)  # a trigger updates messages_fts
         delete("sessions_fts", "id", sid)
-        delete("chat_projects", "session_id", sid)
-        counts["vectors"] += delete("vectors", "session_id", sid)
         counts["archive_copies"] += delete("chat_archive", "id", sid)
-        delete("extractions", "session_id", sid)
-        counts["candidates"] += delete("candidates", "session_id", sid)
+        for table in keyed:
+            if table == "seen" and not remember:
+                continue  # an unchanged file stays read, so retention does not re-read it each run
+            n = delete(table, "session_id", sid)  # messages: a trigger updates messages_fts
+            if table in named:
+                counts[named[table]] += n
         if remember:
-            delete("seen", "session_id", sid)
             con.execute("insert or replace into forgotten_chats values (?, ?)", (sid, time.time()))
     con.commit()
     return counts
