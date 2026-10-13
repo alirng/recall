@@ -63,6 +63,9 @@ change.
 - Restart any open Codex and Cursor windows so they load the MCP server.
 - In Codex, run `/hooks` once and trust recall's session-start hook; until then Codex can still
   use recall's tools but does not load memory automatically.
+- If Claude Code was set to delete chats within a year (its default is 30 days), setup raised
+  `cleanupPeriodDays` in `~/.claude/settings.json` to ten years, so the history recall reads
+  stays; the old file is at `settings.json.recall-backup`. Setup says so in its output.
 - Their notes live in `~/.agents/memory` (plain markdown, a git repository) and the index in
   `~/.agents/recall`. Nothing else is written outside those folders and the agent configs.
 - `recall projects suggest --write` drafts a list of their projects from their history, which

@@ -5,6 +5,33 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **recall never loses a chat it has indexed.** Every chat is kept compressed in its own
+  table, one copy per file it came from, which a rebuild never drops. When the parser changes,
+  chats are re-read from their files, and those whose files are gone (Claude Code deletes
+  transcripts after 30 days by default) come back from the archive, marked restored. When a
+  re-read finds fewer messages than recall had (Codex compaction has rewritten session files),
+  the missing ones are kept. A chat whose copies live in several files (Cursor writes one per
+  project folder, Codex one in `sessions/` and one in `archived_sessions/`) now shows every
+  message from all of them, where before only the file read last counted.
+- **`recall forget <chat id>` and `--project NAME`** remove chats from the index, the archive,
+  embeddings, extraction records and cached model answers, and keep them from being indexed
+  again. Notes that cite them are listed with the git command that removes them from history.
+- **Retention.** `recall install` and `recall setup` offer to raise Claude Code's
+  `cleanupPeriodDays` when it is under a year (backed up first; uninstall never lowers it).
+  When an organisation sets that period through managed settings, recall forgets Claude Code
+  chats older than it.
+
+### Fixed
+
+- Text that reaches the user's turn without the person writing it is no longer indexed as
+  theirs: Claude Code peer messages and task notifications delivered mid-turn, compaction
+  summaries and `!` command output; Cursor's session-hook context and tool catalogues; Codex
+  goal continuations, skill bodies, browser state and subagent reports. Memory extraction
+  reads user turns as the developer speaking. The index rebuilds once (chat schema 3).
+- A chat file deleted while recall was listing files no longer stops the index run.
+
 ### Changed
 
 - **One hook command.** Every hook recall installs, for every agent, now runs
