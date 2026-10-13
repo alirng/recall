@@ -33,7 +33,7 @@ import zlib
 from dataclasses import dataclass
 
 from .. import paths
-from .transcript import Message, Session
+from .transcript import Message, Session, clean_user_text
 
 SCHEMA = """
 create table if not exists chat_archive (
@@ -46,6 +46,8 @@ create table if not exists chat_archive (
   data blob,         -- zlib-compressed JSON: the session's fields and its messages
   primary key (id, source)
 );
+-- chats `recall forget` removed: never indexed again
+create table if not exists forgotten_chats (id text primary key, at real);
 """
 
 
@@ -83,6 +85,20 @@ def unpack(blob: bytes) -> Session:
     d = json.loads(zlib.decompress(blob))
     messages = [(Kept if rest else Message)(role, text, ts) for role, ts, text, *rest in d.pop("messages")]
     return Session(**d, messages=messages)
+
+
+def messages(row: sqlite3.Row, parser: str) -> list[Message]:
+    """A copy's messages. A copy made by another parser version has its user turns put
+    through today's cleaning, so a cleaning change reaches chats whose files are gone too."""
+    msgs = unpack(row["data"]).messages
+    if row["parser"] == parser:
+        return msgs
+    out = []
+    for m in msgs:
+        text = clean_user_text(m.text) if m.role == "user" else m.text
+        if text.strip():
+            out.append(type(m)(m.role, text, m.ts))
+    return out
 
 
 def copies(con: sqlite3.Connection, sid: str) -> list[sqlite3.Row]:

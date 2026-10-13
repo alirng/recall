@@ -38,12 +38,16 @@ def load(path: str) -> Session | None:
             summary = summary or d.get("summary")
         att = d.get("attachment") or {}
         if kind == "attachment" and att.get("type") == "queued_command" and att.get("commandMode") == "prompt":
-            # A message the person typed while the agent was mid-turn.
-            ts = iso_ts(att.get("timestamp") or d.get("timestamp"))
-            append(messages, "user", clean_user_text(str(att.get("prompt") or "")), ts)
+            # A message that arrived while the agent was mid-turn: the person's, unless
+            # another session or a background task sent it.
+            if _by_person(att) and _by_person(d):
+                ts = iso_ts(att.get("timestamp") or d.get("timestamp"))
+                append(messages, "user", clean_user_text(str(att.get("prompt") or "")), ts)
             continue
         if kind not in ("user", "assistant") or d.get("isSidechain") or d.get("isMeta"):
             continue
+        if kind == "user" and (d.get("isCompactSummary") or not _by_person(d)):
+            continue  # a compaction summary, a peer message or a task notification
         if not s.project and str(d.get("entrypoint", "")).startswith("sdk"):
             s.origin = "headless"  # Agent SDK / `claude -p` run, not a person typing
         cwd = d.get("cwd")
@@ -60,3 +64,11 @@ def load(path: str) -> Session | None:
     s.title = s.title or summary
     s.messages = messages
     return s
+
+
+def _by_person(entry: dict) -> bool:
+    """Claude Code tags what it delivers in the user's turn with an origin: "peer" for
+    another session's message, "task-notification" for a background task. Only "human",
+    or no origin at all, is the person."""
+    origin = entry.get("origin")
+    return not isinstance(origin, dict) or origin.get("kind") in (None, "human")
