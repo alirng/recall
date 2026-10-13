@@ -75,8 +75,11 @@ An agent source reads one agent's chat history and gives the index a list of cha
 4. Drop what the index should not hold: tool output, reasoning, and text the tool injects,
    such as system reminders. The existing sources show how.
 5. If a parser change alters what the index should hold, bump `CHAT_SCHEMA_VERSION` in
-   `src/recall/chats/store.py`. The index rebuilds itself. The memory tables and notes are not
-   derived data, so never drop them.
+   `src/recall/chats/store.py`. The chat tables rebuild from the agents' files, and chats whose
+   files are gone come back from recall's archive (`src/recall/chats/archive.py`), which a
+   rebuild never drops. Never drop the archive, the memory tables or the notes: they are not
+   derived data. A change that should stop indexing some chats must also delete their archive
+   copies, or the rebuild restores them.
 
 Then run `uv run recall index`, and search for a chat you know with `uv run recall search`.
 Field-level notes for about 25 agents are in
