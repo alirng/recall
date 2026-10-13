@@ -138,6 +138,43 @@ def cmd_stats(a) -> None:
     print(json.dumps(store.stats(store.connect()), indent=2))
 
 
+def cmd_why(a) -> None:
+    from . import commits, usage
+
+    if not a.target and not a.commit:
+        sys.exit("recall why needs a file (path, path:line or path:start-end) or --commit <sha>")
+    con = store.connect()
+    indexer.index(con, max_age=60)
+    started = time.perf_counter()
+    result = commits.why(con, a.target, a.commit)
+    found = [c for x in result.get("commits") or [] for c in x.get("chats") or []]
+    usage.record("cli", "why", {"target": a.target, "commit": a.commit}, found, ms=usage.ms_since(started))
+    print(json.dumps(result, indent=2) if a.json else commits.render(result))
+
+
+def cmd_links(a) -> None:
+    from . import commits
+
+    con = store.connect()
+    indexer.index(con, max_age=60)
+    if not commits.enabled():
+        commits.clear(con)
+        sys.exit("commit links are off ([links] enabled = false in config.toml); any stored links were removed")
+    result = commits.update(con, log=lambda m: print(m, file=sys.stderr))
+    if a.episodes:
+        found = commits.episodes(con)
+        if a.json:
+            print(json.dumps(found, indent=2))
+            return
+        for e in found:
+            print(f"{e['fix_commit'][:8]}  {e['repo']}  fixes a {e['failure']['kind']} in {e['failure']['chat']}")
+            print(f"  prompt: {(e['prompt'] or '')[:160]}")
+        print(f"{len(found)} failure-then-fix episodes")
+        return
+    out = {**commits.stats(con), "seconds": result.get("seconds")}
+    print(json.dumps(out, indent=2) if a.json else "\n".join(f"{k:18} {v}" for k, v in out.items()))
+
+
 # --- memory -------------------------------------------------------------------
 
 
@@ -512,6 +549,11 @@ def cmd_eval(a) -> None:
 
         evals_amb.from_args(a)
         return
+    if a.kind == "links":
+        from . import evals_links
+
+        evals_links.from_args(a)
+        return
     if a.kind == "agent" or a.v2:
         _eval_v2(a)
     elif a.kind in ("longmemeval", "locomo"):
@@ -651,6 +693,13 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("chat_id", nargs="?")
     sp.add_argument("--project", help="every chat in this project")
     sp.add_argument("--yes", action="store_true", help="do not ask first")
+    sp = command("why", cmd_why, "the chats that wrote a file, a line or a commit (git blame, read-only)")
+    sp.add_argument("target", nargs="?", help="path, path:line or path:start-end")
+    sp.add_argument("--commit", help="a commit sha (or any name git knows) instead of a file")
+    sp.add_argument("--json", action="store_true")
+    sp = command("links", cmd_links, "link commits to the chats that produced them (local only)")
+    sp.add_argument("--episodes", action="store_true", help="list chats where something failed, then a commit fixed it")
+    sp.add_argument("--json", action="store_true")
 
     sp = command("dream", cmd_dream, "distil new chats into memory notes (runs nightly)")
     sp.add_argument("--model", help="one-off override, e.g. claude:haiku or local:qwen3:4b")
@@ -726,6 +775,7 @@ def _parser() -> argparse.ArgumentParser:
         "memorycode",
         "amb",
         "explore",
+        "links",
     ]
     sp.add_argument("kind", nargs="?", choices=kinds, default="search")
     sp.add_argument(
