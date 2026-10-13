@@ -481,11 +481,12 @@ When no earlier report matches closely enough, it adds nothing.
 | --- | --- | --- |
 | Claude Code | `SubagentStop` | `PreToolUse` on the Agent tool rewrites the prompt |
 | Codex | `SubagentStop` (explorer role) | `SubagentStart` (explorer role) |
-| Cursor | `subagentStop` | on request: `project_memory` with a `task` |
+| Cursor | `subagentStop` | `preToolUse` on the Task tool rewrites the prompt (from Cursor's app code; not yet tested live) |
 
 `recall explore` lists a repo's stored explorations, `recall explore lookup <question>` shows
 what a new one would get, and `recall explore backfill` stores the ones already in your chat
-history, each at the commit its repo's main branch was on at the time.
+history, each at the commit its repo's main branch was on at the time. Any agent can also ask
+for it through MCP: `project_memory` with a `task`.
 
 
 recall logs its own use to `~/.agents/recall/usage.jsonl`: each MCP call, session-start load
