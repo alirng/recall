@@ -184,6 +184,34 @@ def cmd_hook(a) -> None:
     sys.exit(code)
 
 
+def cmd_explore(a) -> None:
+    from . import explore
+
+    con = explore.connect()
+    if a.action == "backfill":
+        started = time.time()
+        r = explore.backfill(con, store.connect(), log=lambda m: print(m, file=sys.stderr))
+        print(f"{r['stored']} past explorations stored ({r['skipped']} skipped) in {time.time() - started:.0f}s")
+        return
+    folder = a.cwd or os.getcwd()
+    if a.action == "lookup":
+        text, info = explore.brief(folder, " ".join(a.terms), con)
+        print(text or f"no earlier exploration close enough ({info})")
+        return
+    here = explore.checkout(folder)
+    if not here:
+        sys.exit(f"{folder} is not in a git repo")
+    rows = con.execute(
+        "select created_at, agent, agent_type, commit_sha, commit_source, prompt from explorations"
+        " where repo = ? order by created_at desc limit ?",
+        (here.repo, a.limit),
+    )
+    for r in rows:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["created_at"]))
+        sha = (r["commit_sha"] or "?")[:9] + ("~" if r["commit_source"] != "head" else "")
+        print(f"{when}  {r['agent']:6} {sha:10}  {' '.join(r['prompt'].split())[:100]}")
+
+
 # --- projects -------------------------------------------------------------------
 
 
@@ -558,6 +586,12 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--agent", choices=["claude", "codex", "cursor"], default="claude", help="who will read it")
     sp = command("hook", cmd_hook, "answer an agent's hook, reading its JSON input (recall install sets this up)")
     sp.add_argument("--agent", default="claude", help="claude, codex, cursor, gemini or opencode")
+
+    sp = command("explore", cmd_explore, "earlier exploration reports per repo, served to exploration subagents")
+    sp.add_argument("action", nargs="?", choices=["list", "lookup", "backfill"], default="list")
+    sp.add_argument("terms", nargs="*", help="lookup: the exploration prompt")
+    sp.add_argument("--cwd", help="the repo folder (default: the current directory)")
+    sp.add_argument("--limit", type=int, default=20)
 
     sp = command("projects", cmd_projects, "your projects over time, as git-style lanes")
     sp.add_argument("action", nargs="?", choices=["lanes", "suggest", "show"], default="lanes")
