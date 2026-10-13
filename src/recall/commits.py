@@ -1,20 +1,24 @@
 """Which chats produced which commits, worked out on this machine alone.
 
-For each chat recall reads the files its agent edited and the lines it left in them
+For each chat recall reads the files its agent edited and the lines it wrote into them
 (chats/work.py, from the same tool calls status.py reads). It then matches them with commits
 in that repo: made after the edits, touching the same files, and adding the same lines. When
 two chats wrote the same line, the one that wrote it last before the commit gets it. Lines
-many commits add (boilerplate) are no evidence, and a line an earlier commit on the same
-history already added was moved, not written. A chat that ran `git commit` itself is matched
-by the sha git printed, or by the commit's subject when the agent keeps no command output
-(Cursor).
+many commits add (boilerplate) are no evidence, and a line that an earlier commit on the same
+history already added was moved by this commit, not written for it. A chat that ran `git
+commit` (or revert, or cherry-pick) itself is matched by the sha git printed, or by the
+commit's subject when the agent keeps no command output (Cursor).
 
-Private by design. Links live only in recall's index. Git is only read (rev-list, log, show,
-blame, merge-base), with optional locks off, so nothing is written to any repo: no commit messages,
-trailers, notes, refs, branches or hooks, and nothing is pushed. Every table here is derived:
-it can be rebuilt from the chats (which the archive keeps) and git. A chat whose transcript
-is gone keeps the edits read from it while it existed. `[links] enabled = false` in
-config.toml turns linking off and drops these tables.
+Private by design. Links live only in recall's index. Git is only read (rev-parse, rev-list,
+log, show, blame), with optional locks, lazy fetching and textconv caches off, so nothing is
+written to any repo: no commit messages, trailers, notes, refs, branches, hooks or objects,
+and nothing is pushed or fetched. `[links] enabled = false` in config.toml stops linking and
+drops every table here.
+
+What was read from transcripts (the KEPT tables) cannot be rebuilt once an agent deletes a
+transcript (Claude Code does after 30 days; the archive keeps cleaned text, not tool calls),
+so it is migrated, never dropped, and a re-read merges with what was read before. The rest
+(DERIVED) is worked out from it and git, and is rebuilt freely.
 
 Projects are keyed on their git remote (chats/projects.py), so worktrees and clones of one
 repo share their links. Squash merges and rebases need nothing special: the new commit adds
@@ -22,6 +26,7 @@ the same lines, so it links to the same chats.
 """
 
 import contextlib
+import fcntl
 import glob
 import hashlib
 import json
@@ -33,23 +38,17 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
-from . import config
+from . import config, paths
 from .chats.projects import resolve
 from .chats.work import READERS, Work
 
-SCHEMA_VERSION = "2"  # bump to rebuild every table below on next run
-TABLES = (
-    "link_chats",
-    "link_edits",
-    "link_events",
-    "link_checkouts",
-    "link_repos",
-    "link_commits",
-    "link_commit_files",
-    "commit_links",
-)
+KEPT = ("link_chats", "link_edits", "link_events", "link_checkouts")
+KEPT_VERSION = 1  # a change to a KEPT table migrates it in _migrate; never drop one
+DERIVED = ("link_repos", "link_todo", "link_commits", "link_commit_files", "commit_links")
+DERIVED_VERSION = 3  # bump to rebuild the DERIVED tables
+READ_VERSION = 2  # bump when chats/work.py reads differently: chats still on disk are read again
 SCHEMA = """
-create table if not exists link_chats (session_id text primary key, fingerprint text, read_at real);
+create table if not exists link_chats (session_id text primary key, fingerprint text, size int, read_at real);
 create table if not exists link_edits (
   session_id text, repo text, path text, first_at real, last_at real, lines blob, weak blob, n int,
   first_ask text, ask text, primary key (session_id, repo, path)
@@ -58,7 +57,8 @@ create index if not exists link_edits_repo on link_edits(repo, path);
 create table if not exists link_events (session_id text, n int, at real, kind text, text text, detail text);
 create index if not exists link_events_session on link_events(session_id, n);
 create table if not exists link_checkouts (repo text, top text, primary key (repo, top));
-create table if not exists link_repos (repo text primary key, dirty int, linked_at real);
+create table if not exists link_repos (repo text primary key, linked_at real);
+create table if not exists link_todo (repo text, sha text, primary key (repo, sha));
 create table if not exists link_commits (
   repo text, sha text, parent text, at real, authored real, author text, subject text, gitdir text,
   diffed int default 0, n int, primary key (repo, sha)
@@ -90,6 +90,7 @@ _GENERATED = re.compile(
 )
 _EMPTY = "0" * 40
 _SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
+_ENOUGH = re.compile(r"[^\W_](?:.*?[^\W_]){3}")  # four letters or digits
 
 
 # --- lines -------------------------------------------------------------------------
@@ -99,13 +100,18 @@ def _norm(line: str) -> bytes | None:
     """A line as evidence: whitespace collapsed, hashed. Short and punctuation-only lines say
     nothing about who wrote them, so they are dropped."""
     s = " ".join(line.split())
-    if len(s) < 8 or sum(c.isalnum() for c in s) < 4:
+    if len(s) < 8 or not _ENOUGH.search(s):
         return None
     return hashlib.blake2b(s.encode(), digest_size=8).digest()
 
 
 def _hashes(lines) -> set[bytes]:
     return {h for x in lines if (h := _norm(x))}
+
+
+def _written(e) -> set[bytes]:
+    """The lines an edit wrote: what it adds, less the unchanged lines around the change."""
+    return _hashes(e.added) - _hashes(e.removed)
 
 
 def _pack(hs: set[bytes]) -> bytes:
@@ -119,11 +125,20 @@ def _unpack(blob: bytes | None) -> set[bytes]:
 # --- git, read-only -------------------------------------------------------------------
 
 _GIT = ("-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false")
-_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+# No inherited GIT_DIR and the like; no optional locks (index refresh), no fetching of objects
+# a partial clone lacks (that writes packs), no prompts.
+_ENV = {
+    **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "LC_ALL": "C",
+}
 
 
-def _git(where: str, *args: str, stdin: str | None = None, timeout: int = 120, gitdir: bool = False) -> str | None:
-    """Run a read-only git command in a checkout (or against a git dir); None if it fails."""
+def git(where: str, *args: str, stdin: str | None = None, timeout: int = 120, gitdir: bool = False) -> str | None:
+    """Run a read-only git command in a checkout (or against a git dir); None if it fails or
+    times out. Callers pass --no-textconv to anything that diffs: a textconv cache writes notes."""
     loc = ("--git-dir", where) if gitdir else ("-C", where)
     try:
         r = subprocess.run(
@@ -141,7 +156,7 @@ def _git(where: str, *args: str, stdin: str | None = None, timeout: int = 120, g
 
 
 def _top(path: str, cache: dict) -> str | None:
-    from .status import _top as top
+    from .status import _top as top  # the walk up to a checkout that status.py already does
 
     return top(path, cache)
 
@@ -181,122 +196,210 @@ def enabled() -> bool:
     return bool(config.load().get("links", {}).get("enabled", True))
 
 
+def present(con) -> bool:
+    """Whether the link tables exist; reading them must not create them."""
+    return bool(con.execute("select 1 from sqlite_master where name='link_chats'").fetchone())
+
+
 def ensure(con) -> None:
     con.execute("create table if not exists meta (k text primary key, v text)")
-    row = con.execute("select v from meta where k='links_schema'").fetchone()
-    if not row or row[0] != SCHEMA_VERSION:
-        for t in TABLES:
+    meta = dict(con.execute("select k, v from meta where k like 'links_%'").fetchall())
+    if "links_schema" in meta:  # a development build before the KEPT/DERIVED split
+        clear(con)
+        meta = {}
+    if meta.get("links_kept") and int(meta["links_kept"]) < KEPT_VERSION:
+        _migrate(con, int(meta["links_kept"]))
+    if meta.get("links_derived") != str(DERIVED_VERSION):
+        for t in DERIVED:
             con.execute(f"drop table if exists {t}")
-        con.execute("insert or replace into meta values ('links_schema', ?)", (SCHEMA_VERSION,))
     con.executescript(SCHEMA)
-
-
-def clear(con) -> None:
-    """Forget every link, for when linking is turned off."""
-    for t in TABLES:
-        con.execute(f"drop table if exists {t}")
-    con.execute("delete from meta where k='links_schema'")
+    con.executemany(
+        "insert or replace into meta values (?, ?)",
+        [("links_kept", str(KEPT_VERSION)), ("links_derived", str(DERIVED_VERSION))],
+    )
     con.commit()
 
 
-def _fingerprint(source: str) -> str | None:
+def _migrate(con, version: int) -> None:
+    """Bring the KEPT tables from an older version to KEPT_VERSION, keeping every row."""
+
+
+def clear(con) -> bool:
+    """Forget every link and everything read for them, for when linking is turned off. The
+    freed pages are zeroed and the write-ahead log truncated, so nothing lingers on disk."""
+    if not con.execute(
+        f"select 1 from sqlite_master where name in ({','.join('?' * len(KEPT + DERIVED))})", (*KEPT, *DERIVED)
+    ).fetchone():
+        return False
+    con.execute("pragma secure_delete = on")
+    for t in (*KEPT, *DERIVED):
+        con.execute(f"drop table if exists {t}")
+    con.execute("delete from meta where k like 'links_%'")
+    con.commit()
+    with contextlib.suppress(Exception):
+        con.execute("pragma wal_checkpoint(TRUNCATE)")
+    con.execute("pragma secure_delete = off")
+    return True
+
+
+@contextlib.contextmanager
+def _locked():
+    """One link update at a time across recall's processes; a second one skips."""
+    os.makedirs(paths.HOME, exist_ok=True)
+    with open(os.path.join(paths.HOME, "links.lock"), "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
+
+def prune(con) -> None:
+    """Drop what is kept about repos no chat touches any more, such as after `recall forget`:
+    their commit subjects, authors and paths."""
+    keep = "(select distinct repo from link_edits)"
+    for t in ("link_checkouts", *DERIVED):
+        con.execute(f"delete from {t} where repo not in {keep}")
+    con.commit()
+
+
+# --- reading chats -------------------------------------------------------------------
+
+
+def _fingerprint(source: str) -> tuple[str, int] | None:
     try:
         st = os.stat(source)
     except OSError:
         return None
-    fp = f"{st.st_mtime_ns}:{st.st_size}"
+    fp = f"{READ_VERSION}:{st.st_mtime_ns}:{st.st_size}"
     if source.endswith(".jsonl"):  # Claude Code keeps a chat's subagents beside it
         subs = glob.glob(os.path.join(source[:-6], "subagents", "*.jsonl"))
         if subs:
             fp += f":{len(subs)}:{max(os.stat(s).st_mtime_ns for s in subs)}"
-    return fp
+    return fp, st.st_size
 
 
-def read_chats(con, log=None) -> set[str]:
-    """Read the edits of every chat that changed since the last run. Returns the repos touched."""
-    seen = dict(con.execute("select session_id, fingerprint from link_chats"))
+def read_chats(con, log=None) -> int:
+    """Read the edits of every chat that changed since the last run; returns how many."""
+    seen = {r[0]: (r[1], r[2] or 0) for r in con.execute("select session_id, fingerprint, size from link_chats")}
     rows = con.execute("select id, agent, source, project, started_at, updated_at from sessions").fetchall()
     cache: dict = {}
-    repos: set[str] = set()
     done = 0
     for r in rows:
         reader = READERS.get(r["agent"])
         if not reader or not r["source"] or "#" in r["source"]:
             continue  # Cursor's older chats live in its database and keep no tool calls
-        fp = _fingerprint(r["source"])
-        if fp is None or seen.get(r["id"]) == fp:
+        got = _fingerprint(r["source"])
+        if got is None or seen.get(r["id"], (None,))[0] == got[0]:
             continue
         try:
             work = reader(r["source"])
         except Exception:  # one unreadable chat must not stop the run
             continue
-        repos |= _store_chat(con, r, work, cache)
-        con.execute("insert or replace into link_chats values (?,?,?)", (r["id"], fp, time.time()))
+        _store_chat(con, r, work, cache, shrank=got[1] < seen.get(r["id"], (None, 0))[1])
+        con.execute("insert or replace into link_chats values (?,?,?,?)", (r["id"], got[0], got[1], time.time()))
+        con.commit()  # per chat, so no write lock is held while the next transcript is read
         done += 1
-        if done % 200 == 0:
-            con.commit()
-            if log:
-                log(f"links: read {done} chats…")
-    con.commit()
-    return repos
+        if log and done % 200 == 0:
+            log(f"links: read {done} chats…")
+    return done
 
 
-def _store_chat(con, r, work: Work, cache: dict) -> set[str]:
+def _store_chat(con, r, work: Work, cache: dict, shrank: bool) -> None:
+    """Store what a chat wrote, per file. A transcript only grows, so a file missing from a
+    new read no longer resolves to its repo (its worktree is gone): what was read before is
+    kept. A transcript that shrank was cut short, so the two reads are merged."""
     sid = r["id"]
     folder = work.folder or r["project"]
-    old = {row[0] for row in con.execute("select distinct repo from link_edits where session_id=?", (sid,))}
-    con.execute("delete from link_edits where session_id=?", (sid,))
-    con.execute("delete from link_events where session_id=?", (sid,))
     files: dict[tuple[str, str], dict] = {}
+    tops = set()
     for e in work.edits:
         where = place(e.path, folder, cache)
         if not where:
             continue
         repo, rel, top = where
-        con.execute("insert or ignore into link_checkouts values (?,?)", (repo, top))
+        tops.add((repo, top))
         at = e.at or r["started_at"] or r["updated_at"]
-        f = files.setdefault((repo, rel), {"strong": set(), "weak": set(), "first": at, "last": at, "ask": e.ask})
+        f = files.setdefault((repo, rel), {"lines": set(), "weak": set(), "first": at, "last": at, "ask": e.ask})
         f["first_ask"] = f.get("first_ask") or e.ask
         added, removed = _hashes(e.added), _hashes(e.removed)
         if e.whole:  # the file as a whole: what stays of the chat's own lines, the rest is weak
-            f["strong"] &= added
-            f["weak"] = added - f["strong"]
+            f["lines"] &= added
+            f["weak"] = added - f["lines"]
         else:
-            f["strong"] = (f["strong"] - (removed - added)) | added
+            f["lines"] = (f["lines"] - (removed - added)) | (added - removed)
             f["weak"] -= removed - added
         if at:
             f["first"] = min(x for x in (f["first"], at) if x)
             f["last"] = max(x for x in (f["last"], at) if x)
         f["ask"] = e.ask or f["ask"]
-    for (repo, rel), f in files.items():
-        if not f["strong"] and not f["weak"]:
-            continue
-        con.execute(
-            "insert into link_edits values (?,?,?,?,?,?,?,?,?,?)",
+    old = {(o["repo"], o["path"]): dict(o) for o in con.execute("select * from link_edits where session_id=?", (sid,))}
+    rows = {}
+    for key, f in files.items():
+        rows[key] = {**f, "lines": _pack(f["lines"]), "weak": _pack(f["weak"]), "n": len(f["lines"] | f["weak"])}
+    for key, o in old.items():
+        if key not in rows:
+            rows[key] = {**o, "first": o["first_at"], "last": o["last_at"]}
+        elif shrank:
+            new = rows[key]
+            lines = _unpack(o["lines"]) | _unpack(new["lines"])
+            weak = (_unpack(o["weak"]) | _unpack(new["weak"])) - lines
+            new.update(lines=_pack(lines), weak=_pack(weak), n=len(lines | weak), first_ask=o["first_ask"])
+            new.update(first=min(o["first_at"], new["first"]), last=max(o["last_at"], new["last"]))
+    con.execute("delete from link_edits where session_id=?", (sid,))
+    con.executemany(
+        "insert into link_edits values (?,?,?,?,?,?,?,?,?,?)",
+        [
             (
                 sid,
                 repo,
                 rel,
                 f["first"],
                 f["last"] or r["updated_at"],
-                _pack(f["strong"]),
-                _pack(f["weak"]),
-                len(f["strong"]) + len(f["weak"]),
+                f["lines"],
+                f["weak"],
+                f["n"],
                 f["first_ask"],
                 f["ask"],
-            ),
-        )
-    con.executemany(
-        "insert into link_events values (?,?,?,?,?,?)",
-        [(sid, i, at or r["updated_at"], kind, text, detail) for i, (at, kind, text, detail) in enumerate(work.events)],
+            )
+            for (repo, rel), f in rows.items()
+            if f["n"]
+        ],
     )
-    repos = old | {repo for repo, _ in files}
+    events = [(at or r["updated_at"], kind, text, detail) for at, kind, text, detail in work.events]
+    if shrank:
+        kept = [
+            tuple(e) for e in con.execute("select at, kind, text, detail from link_events where session_id=?", (sid,))
+        ]
+        events = kept + [e for e in events if e not in set(kept)]
+    con.execute("delete from link_events where session_id=?", (sid,))
+    con.executemany("insert into link_events values (?,?,?,?,?,?)", [(sid, i, *e) for i, e in enumerate(events)])
     # A chat that ran `git commit` in its folder may have committed edits made by hand.
-    if folder and any(kind == "commit" for _, kind, _, _ in work.events) and (home := place(folder, None, cache)):
-        repos.add(home[0])
-        con.execute("insert or ignore into link_checkouts values (?,?)", (home[0], home[2]))
-    con.executemany("insert or replace into link_repos values (?, 1, null)", [(x,) for x in repos])
-    return repos
+    home = place(folder, None, cache) if folder and any(e[1] == "commit" for e in events) else None
+    if home:
+        tops.add((home[0], home[2]))
+    con.executemany("insert or ignore into link_checkouts values (?,?)", sorted(tops))
+    # The commits this chat could be behind, before and after this read, are worked out again.
+    spans = {key: (o["first_at"] or 0, o["last_at"] or 0) for key, o in old.items()}
+    for key, f in rows.items():
+        a, b = spans.get(key, (f["first"] or 0, f["last"] or 0))
+        spans[key] = (min(a, f["first"] or a), max(b, f["last"] or b))
+    for (repo, rel), (a, b) in spans.items():
+        _todo(con, repo, "f.path = ?", (rel,), a - SLACK, b + WINDOW)
+    for at, kind, _, _ in events:
+        if kind == "commit" and at:
+            for repo in {repo for repo, _ in rows} | ({home[0]} if home else set()):
+                _todo(con, repo, "1", (), at - SLACK, at + 12 * 3600)
+
+
+def _todo(con, repo: str, where: str, args: tuple, start: float, end: float) -> None:
+    con.execute(
+        "insert or ignore into link_todo select distinct c.repo, c.sha from link_commits c "
+        f"join link_commit_files f on f.repo = c.repo and f.sha = c.sha where c.repo = ? and {where} "
+        "and c.at between ? and ?",
+        (repo, *args, start, end),
+    )
 
 
 # --- commits -------------------------------------------------------------------------
@@ -304,52 +407,52 @@ def _store_chat(con, r, work: Work, cache: dict) -> set[str]:
 _FORMAT = "%x1e%H%x1f%P%x1f%ct%x1f%at%x1f%an%x1f%s"
 
 
+def _since(con, repo: str) -> int | None:
+    row = con.execute("select min(first_at) from link_edits where repo=?", (repo,)).fetchone()
+    return int(row[0] - 2 * 86400) if row and row[0] else None
+
+
 def scan(con, repo: str) -> int:
     """Record every commit in the repo's clones since its chats began; returns how many are new."""
-    row = con.execute("select min(first_at) from link_edits where repo=?", (repo,)).fetchone()
-    if not row or not row[0]:
+    since = _since(con, repo)
+    if since is None:
         return 0
-    since = int(row[0] - 2 * 86400)
     known = {r[0] for r in con.execute("select sha from link_commits where repo=?", (repo,))}
     new = 0
     for gitdir in _gitdirs(con, repo):
-        out = _git(gitdir, "rev-list", "--exclude=refs/stash", "--all", "--no-merges", f"--since={since}", gitdir=True)
+        out = git(gitdir, "rev-list", "--exclude=refs/stash", "--all", "--no-merges", f"--since={since}", gitdir=True)
         fresh = [s for s in (out or "").split() if s not in known]
         if not fresh:
             continue
-        out = _git(
-            gitdir,
-            "log",
-            "--no-walk=unsorted",
-            "--stdin",
-            "--name-only",
-            f"--format={_FORMAT}",
-            stdin="\n".join(fresh),
-            gitdir=True,
-        )
+        out = git(
+            gitdir, "log", "--no-walk=unsorted", "--stdin", "--name-only", f"--format={_FORMAT}",
+            stdin="\n".join(fresh), gitdir=True, timeout=300,
+        )  # fmt: skip
+        rows, files = [], []
         for block in (out or "").split("\x1e")[1:]:
             head, _, names = block.partition("\n")
             parts = head.split("\x1f")
             if len(parts) < 6:
                 continue
             sha, parents, ct, at, author, subject = parts[:6]
-            con.execute(
-                "insert or ignore into link_commits(repo, sha, parent, at, authored, author, subject, gitdir) "
-                "values (?,?,?,?,?,?,?,?)",
-                (repo, sha, (parents.split() or [None])[0], float(ct), float(at), author, subject, gitdir),
-            )
-            con.executemany(
-                "insert or ignore into link_commit_files(repo, sha, path) values (?,?,?)",
-                [(repo, sha, n) for n in names.splitlines() if n.strip()],
-            )
+            rows.append((repo, sha, (parents.split() or [None])[0], float(ct), float(at), author, subject, gitdir))
+            files += [(repo, sha, n) for n in names.splitlines() if n.strip()]
             known.add(sha)
-            new += 1
-    con.commit()
+        con.executemany(
+            "insert or ignore into link_commits(repo, sha, parent, at, authored, author, subject, gitdir) "
+            "values (?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.executemany("insert or ignore into link_commit_files(repo, sha, path) values (?,?,?)", files)
+        con.executemany("insert or ignore into link_todo values (?,?)", [(repo, x[1]) for x in rows])
+        con.commit()  # git ran with no write lock held, and the next clone's will too
+        new += len(rows)
     return new
 
 
 def _gitdirs(con, repo: str) -> list[str]:
-    """Every clone of the repo on disk that a chat worked in; worktrees share their clone's."""
+    """Every clone of the repo on disk that a chat worked in; worktrees share their clone's.
+    A clone that was moved or deleted drops out."""
     out = []
     for (top,) in con.execute("select top from link_checkouts where repo=?", (repo,)).fetchall():
         if os.path.isdir(top) and (g := _gitdir(top)) and os.path.isdir(g) and g not in out:
@@ -357,45 +460,55 @@ def _gitdirs(con, repo: str) -> list[str]:
     return out
 
 
+def live_gitdir(con, repo: str, gitdir: str | None) -> str | None:
+    """The clone a commit was recorded from, or another live one if it has gone."""
+    if gitdir and os.path.isdir(gitdir):
+        return gitdir
+    live = _gitdirs(con, repo)
+    if live and gitdir:
+        con.execute("update link_commits set gitdir=? where repo=? and gitdir=?", (live[0], repo, gitdir))
+        con.commit()
+    return live[0] if live else None
+
+
 def _diff(con, repo: str, shas: list[str]) -> None:
-    """Read the lines each commit adds, for commits not read yet."""
+    """Read the lines each commit adds, for commits not read yet. A commit git cannot show
+    without fetching (a partial clone) or within the time limit is marked failed, not retried."""
     by_dir: dict[str, list[str]] = {}
     for sha in shas:
         row = con.execute("select gitdir, diffed from link_commits where repo=? and sha=?", (repo, sha)).fetchone()
-        if row and not row["diffed"]:
-            by_dir.setdefault(row["gitdir"], []).append(sha)
+        if row and not row["diffed"] and (g := live_gitdir(con, repo, row["gitdir"])):
+            by_dir.setdefault(g, []).append(sha)
     for gitdir, todo in by_dir.items():
-        for i in range(0, len(todo), 200):
-            batch = todo[i : i + 200]
-            out = _git(
-                gitdir,
-                "log",
-                "--no-walk=unsorted",
-                "--stdin",
-                "-p",
-                "-U0",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--format=%x1e%H",
-                stdin="\n".join(batch),
-                gitdir=True,
-                timeout=300,
-            )
-            if out is None:
-                continue
-            for block in out.split("\x1e")[1:]:
-                sha, files = _parse_patch(block)
+        for i in range(0, len(todo), 100):
+            batch = todo[i : i + 100]
+            got = _patches(gitdir, batch)
+            if got is None:  # one commit can fail a batch: read them one at a time, for a while
+                got, until = {}, time.time() + 120
+                for sha in batch:
+                    if time.time() < until:
+                        got.update(_patches(gitdir, [sha], timeout=60) or {})
+            rows, done = [], []
+            for sha in batch:
                 total = 0
-                for path, lines in files.items():
+                for path, lines in got.get(sha, {}).items():
                     hs = _hashes(lines) if len(lines) <= MAX_FILE_LINES and not _GENERATED.search(path) else set()
                     total += len(hs)
-                    con.execute(
-                        "insert or replace into link_commit_files values (?,?,?,?,?)",
-                        (repo, sha, path, _pack(hs), len(hs)),
-                    )
-                con.execute("update link_commits set diffed=1, n=? where repo=? and sha=?", (total, repo, sha))
-    con.commit()
+                    rows.append((repo, sha, path, _pack(hs), len(hs)))
+                done.append((1 if sha in got else -1, total, repo, sha))
+            con.executemany("insert or replace into link_commit_files values (?,?,?,?,?)", rows)
+            con.executemany("update link_commits set diffed=?, n=? where repo=? and sha=?", done)
+            con.commit()
+
+
+def _patches(gitdir: str, shas: list[str], timeout: int = 300) -> dict[str, dict[str, list[str]]] | None:
+    out = git(
+        gitdir, "log", "--no-walk=unsorted", "--stdin", "-p", "-U0", "--no-color", "--no-ext-diff",
+        "--no-textconv", "--format=%x1e%H", stdin="\n".join(shas), gitdir=True, timeout=timeout,
+    )  # fmt: skip
+    if out is None:
+        return None
+    return dict(_parse_patch(block) for block in out.split("\x1e")[1:])
 
 
 def _parse_patch(block: str) -> tuple[str, dict[str, list[str]]]:
@@ -418,13 +531,47 @@ def _parse_patch(block: str) -> tuple[str, dict[str, list[str]]]:
     return sha.strip(), files
 
 
+def _history(con, repo: str) -> dict[str, tuple[float, list[str]]]:
+    """sha -> (commit time, parents) for every commit in the repo's clones since its chats
+    began, merges included: one rev-list per clone."""
+    out: dict[str, tuple[float, list[str]]] = {}
+    since = _since(con, repo)
+    for gitdir in _gitdirs(con, repo) if since else []:
+        text = git(
+            gitdir, "rev-list", "--exclude=refs/stash", "--all", "--timestamp", "--parents", f"--since={since}",
+            gitdir=True, timeout=300,
+        )  # fmt: skip
+        for line in (text or "").split("\n"):
+            parts = line.split()
+            if len(parts) >= 2:
+                out[parts[1]] = (float(parts[0]), parts[2:])
+    return out
+
+
+def _ancestor(history: dict, a: str, b: str, known: dict) -> bool:
+    """Whether commit a is an ancestor of commit b, walking b's parents no further back than a."""
+    if (a, b) not in known:
+        floor = history.get(a, (0.0,))[0] - 86400  # committer clocks drift a little
+        stack, seen, found = [b], set(), False
+        while stack and not found:
+            x = stack.pop()
+            if x in seen or x not in history:
+                continue
+            seen.add(x)
+            ts, parents = history[x]
+            found = a in parents
+            if ts >= floor:
+                stack += parents
+        known[(a, b)] = found
+    return known[(a, b)]
+
+
 # --- linking ---------------------------------------------------------------------------
 
 
 @dataclass
 class _Claim:
     session: str
-    path: str
     first: float
     last: float
     strong: set[bytes]
@@ -432,9 +579,11 @@ class _Claim:
     ask: str
 
 
-def link(con, repo: str) -> int:
-    """Work out the repo's links again from its chats' edits and its commits."""
-    found, ran, commits = evidence(con, repo)
+def link(con, repo: str, only: set[str] | None = None) -> int:
+    """Work out the repo's links again from its chats' edits and its commits: every commit, or
+    only these."""
+    found, ran, commits = evidence(con, repo, only)
+    scope = set(commits) if only is None else only & set(commits)
     rows = []
     for (sha, sid), x in found.items():
         made = (sha, sid) in ran
@@ -444,10 +593,16 @@ def link(con, repo: str) -> int:
         how = "ran" if made else "wrote"
         rows.append((repo, sha, sid, score, how, x["lines"], x["total"], x["chat"], json.dumps(x["files"]), x["ask"]))
     for sha, sid in ran - set(found):
-        rows.append((repo, sha, sid, 1.0, "ran", 0, commits[sha]["n"] or 0, 0, "[]", ""))
-    con.execute("delete from commit_links where repo=?", (repo,))
+        if sha in scope:
+            rows.append((repo, sha, sid, 1.0, "ran", 0, commits[sha]["n"] or 0, 0, "[]", ""))
+    if only is None:
+        con.execute("delete from commit_links where repo=?", (repo,))
+        con.execute("delete from link_todo where repo=?", (repo,))
+    else:
+        con.executemany("delete from commit_links where repo=? and sha=?", [(repo, s) for s in only])
+        con.executemany("delete from link_todo where repo=? and sha=?", [(repo, s) for s in only])
     con.executemany("insert or replace into commit_links values (?,?,?,?,?,?,?,?,?,?)", rows)
-    con.execute("insert or replace into link_repos values (?, 0, ?)", (repo, time.time()))
+    con.execute("insert or replace into link_repos values (?, ?)", (repo, time.time()))
     con.commit()
     return len(rows)
 
@@ -460,23 +615,14 @@ def confident(x: dict) -> bool:
     return x["distinct"] >= MIN_LINES and (big or 0 <= x["gap"] <= RECENT)
 
 
-def evidence(con, repo: str) -> tuple[dict[tuple[str, str], dict], set[tuple[str, str]], dict]:
-    """For each (commit, chat) that could be linked: the lines the chat wrote into the commit
-    and their share of each; the (commit, chat) pairs where the chat ran the commit; the
-    repo's commits."""
+def evidence(con, repo: str, only: set[str] | None = None) -> tuple[dict, set, dict]:
+    """For each (commit, chat) that could be linked, among `only` if given: the lines the chat
+    wrote into the commit and their share of each. Also the (commit, chat) pairs where the
+    chat ran the commit, and the repo's commits."""
     claims: dict[str, list[_Claim]] = {}
     for r in con.execute("select * from link_edits where repo=?", (repo,)):
-        claims.setdefault(r["path"], []).append(
-            _Claim(
-                r["session_id"],
-                r["path"],
-                r["first_at"],
-                r["last_at"],
-                _unpack(r["lines"]),
-                _unpack(r["weak"]),
-                r["ask"],
-            )
-        )
+        c = _Claim(r["session_id"], r["first_at"], r["last_at"], _unpack(r["lines"]), _unpack(r["weak"]), r["ask"])
+        claims.setdefault(r["path"], []).append(c)
     commits = {r["sha"]: r for r in con.execute("select * from link_commits where repo=?", (repo,))}
     touching: dict[str, list[str]] = {}
     for r in con.execute("select sha, path from link_commit_files where repo=?", (repo,)):
@@ -488,34 +634,42 @@ def evidence(con, repo: str) -> tuple[dict[tuple[str, str], dict], set[tuple[str
 
     # A revert brings back lines someone wrote before; it is the reverter's, so only a chat
     # that ran it links to it.
-    candidates = [
-        s
-        for s, ps in touching.items()
-        if not (commits[s]["subject"] or "").startswith('Revert "')
-        and any(admits(c, commits[s]["at"]) for p in ps for c in claims[p])
-    ]
-    _diff(con, repo, candidates)
-    files: dict[str, dict] = {}
-    seen_in: Counter = Counter()  # line -> how many commits add it: boilerplate is in many
-    for sha in candidates:
-        rows = con.execute("select path, lines, n from link_commit_files where repo=? and sha=?", (repo, sha))
-        files[sha] = {r["path"]: (_unpack(r["lines"]), r["n"] or 0) for r in rows}
-        seen_in.update({h for lines, _ in files[sha].values() for h in lines})
+    candidates = sorted(
+        (
+            s
+            for s, ps in touching.items()
+            if not (commits[s]["subject"] or "").startswith('Revert "')
+            and any(admits(c, commits[s]["at"]) for p in ps for c in claims[p])
+        ),
+        key=lambda s: commits[s]["at"],
+    )
+    focus = candidates if only is None else [s for s in candidates if s in only]
+    _diff(con, repo, focus)
+    added: dict[str, dict[str, tuple[set, int]]] = {}
+    for r in con.execute(
+        "select sha, path, lines, n from link_commit_files where repo=? and lines is not null", (repo,)
+    ):
+        if r["sha"] in commits:
+            added.setdefault(r["sha"], {})[r["path"]] = (_unpack(r["lines"]), r["n"] or 0)
+    every = {sha: set().union(*(x for x, _ in files.values())) for sha, files in added.items()}
+    seen_in: Counter = Counter(h for lines in every.values() for h in lines)  # boilerplate is in many
+    moved = _moved(con, repo, focus, every, seen_in, commits)
     found: dict[tuple[str, str], dict] = {}
-    for sha in candidates:
+    for sha in focus:
         at = commits[sha]["at"]
-        total = sum(n for _, n in files[sha].values())
+        total = sum(n for _, n in added.get(sha, {}).values()) - len(moved[sha])
         for path in touching[sha]:
-            added = files[sha].get(path, (set(), 0))[0]
-            if not added:
+            lines = added.get(sha, {}).get(path, (set(), 0))[0] - moved[sha]
+            if not lines:
                 continue
-            # The chat that wrote a line last before the commit gets it. Lines a chat only
-            # wrote as part of a whole file count after every chat's own edits.
-            live = sorted((c for c in claims[path] if admits(c, at)), key=lambda c: -c.last)
+            # The chat that wrote a line last before the commit gets it; a chat that went on
+            # editing after the commit comes after those that stopped before it. Lines a chat
+            # only wrote as part of a whole file count after every chat's own edits.
+            live = sorted((c for c in claims[path] if admits(c, at)), key=lambda c: (c.last > at + SLACK, -c.last))
             taken: set[bytes] = set()
             for tier in ("strong", "weak"):
                 for c in live:
-                    got = (getattr(c, tier) & added) - taken
+                    got = (getattr(c, tier) & lines) - taken
                     taken |= got
                     x = found.setdefault((sha, c.session), {"got": set(), "chat": 0, "files": [], "ask": "", "last": 0})
                     x["total"] = total
@@ -526,47 +680,35 @@ def evidence(con, repo: str) -> tuple[dict[tuple[str, str], dict], set[tuple[str
                             x["last"], x["ask"] = c.last, c.ask
                     if got and path not in x["files"]:
                         x["files"].append(path)
-    _drop_moved(found, commits)
     for (sha, _), x in found.items():
         got = x.pop("got")
         x["lines"], x["distinct"] = len(got), sum(seen_in[h] <= COMMON for h in got)
-        x["share"] = x["lines"] / x["total"] if x["total"] else 0.0
+        x["share"] = x["lines"] / x["total"] if x["total"] > 0 else 0.0
         x["kept"] = x["lines"] / x["chat"] if x["chat"] else 0.0
         x["gap"] = commits[sha]["at"] - x["last"]  # seconds from the chat's last edit to the commit
     return found, _ran(con, repo, commits), commits
 
 
-def _drop_moved(found: dict, commits: dict) -> None:
-    """A line a chat wrote that an earlier commit on the same history already added was
-    moved or re-indented by this one, not written for it: credit only its first commit. A
-    squash merge or a rebase copies lines onto another history, so it keeps them."""
-    mine: dict[str, list[str]] = {}
-    for sha, sid in found:
-        mine.setdefault(sid, []).append(sha)
-    known: dict[tuple[str, str], bool] = {}
-    for sid, shas in mine.items():
-        shas.sort(key=lambda s: commits[s]["at"])
-        for i, sha in enumerate(shas):
-            got = found[(sha, sid)]["got"]
-            for prev in shas[:i]:
-                dup = got & found[(prev, sid)]["got"]
-                if dup and _ancestor(commits[sha]["gitdir"], prev, sha, known):
-                    got -= dup
-
-
-def _ancestor(gitdir: str, a: str, b: str, known: dict) -> bool:
-    if (a, b) not in known:
-        try:
-            r = subprocess.run(
-                ["git", *_GIT, "--git-dir", gitdir, "merge-base", "--is-ancestor", a, b],
-                capture_output=True,
-                timeout=30,
-                env=_ENV,
-            )
-            known[(a, b)] = r.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            known[(a, b)] = False
-    return known[(a, b)]
+def _moved(con, repo: str, focus: list[str], every: dict, seen_in: Counter, commits: dict) -> dict[str, set]:
+    """Per commit, the lines an earlier commit on the same history already added: moved or
+    re-indented here, not written. A squash merge or a rebase copies lines onto another
+    history, so it keeps them."""
+    out: dict[str, set] = {sha: set() for sha in focus}
+    adders: dict[bytes, list[str]] = {}
+    for sha, lines in every.items():
+        for h in lines:
+            if seen_in[h] > 1:
+                adders.setdefault(h, []).append(sha)
+    if not adders:
+        return out
+    history, known = _history(con, repo), {}
+    for sha in focus:
+        at = commits[sha]["at"]
+        earlier = {s for h in every.get(sha, ()) for s in adders.get(h, ()) if s != sha and commits[s]["at"] <= at}
+        for s in earlier:
+            if _ancestor(history, s, sha, known):
+                out[sha] |= every[sha] & every[s]
+    return out
 
 
 def _ran(con, repo: str, commits: dict) -> set[tuple[str, str]]:
@@ -601,28 +743,42 @@ def _ran(con, repo: str, commits: dict) -> set[tuple[str, str]]:
 
 
 def update(con, repo: str | None = None, log=None) -> dict:
-    """Bring the links up to date: read the chats that changed, record new commits, and link
-    again wherever anything moved. With repo, only that repo is scanned. No model calls."""
+    """Bring the links up to date: read the chats that changed, record new commits, and work
+    out again only the links those touch. With repo, only that repo's commits are scanned. No
+    model calls. If another process is updating, this one skips and the links stay as they are."""
     if not enabled():
         clear(con)
         return {"enabled": False}
-    ensure(con)
     started = time.time()
-    read_chats(con, log)
-    repos = [repo] if repo else [r[0] for r in con.execute("select distinct repo from link_edits")]
-    dirty = {r[0] for r in con.execute("select repo from link_repos where dirty != 0")}
-    done = set(r[0] for r in con.execute("select repo from link_repos where linked_at is not null"))
-    linked = 0
-    for name in repos:
-        if scan(con, name) or name in dirty or name not in done:
-            linked += link(con, name)
-            if log:
-                log(f"links: {name}: {linked} links so far")
-    return {"repos": len(repos), "links": linked, "seconds": round(time.time() - started, 1)}
+    with _locked() as mine:
+        if not mine:
+            return {"busy": True}
+        ensure(con)
+        read = read_chats(con, log)
+        prune(con)
+        repos = [repo] if repo else [r[0] for r in con.execute("select distinct repo from link_edits")]
+        linked = {r[0] for r in con.execute("select repo from link_repos")}
+        changed = 0
+        for name in repos:
+            scan(con, name)
+            todo = {r[0] for r in con.execute("select sha from link_todo where repo=?", (name,))}
+            if name not in linked:
+                changed += link(con, name)
+            elif todo:
+                changed += link(con, name, todo)
+            if log and (name not in linked or todo):
+                log(f"links: {name}: {len(todo) if name in linked else 'all'} commits worked out again")
+    return {
+        "chats_read": read,
+        "repos": len(repos),
+        "links_written": changed,
+        "seconds": round(time.time() - started, 1),
+    }
 
 
 def stats(con) -> dict:
-    ensure(con)
+    if not present(con):
+        return {"enabled": enabled(), "links": 0}
 
     def one(sql: str) -> int:
         return con.execute(sql).fetchone()[0]
@@ -662,13 +818,7 @@ def chats_for(con, repo: str, sha: str) -> list[dict]:
     out = []
     for r in rows:
         c = _chat(con, r["session_id"])
-        c.update(
-            how=r["how"],
-            lines=r["lines"],
-            of=r["commit_lines"],
-            score=r["score"],
-            asked=r["ask"] or None,
-        )
+        c.update(how=r["how"], lines=r["lines"], of=r["commit_lines"], score=r["score"], asked=r["ask"] or None)
         out.append(c)
     return out
 
@@ -678,10 +828,11 @@ def _commit_meta(con, repo: str, sha: str, top: str) -> dict:
     if r:
         at, author, subject, parent = r["at"], r["author"], r["subject"], r["parent"]
     else:
-        out = (_git(top, "show", "-s", "--format=%ct%x1f%an%x1f%s%x1f%P", sha) or "").strip().split("\x1f")
-        if len(out) < 4:
+        out = (git(top, "show", "-s", "--no-textconv", "--format=%ct%x1f%an%x1f%s%x1f%P", sha) or "").strip()
+        parts = out.split("\x1f")
+        if len(parts) < 4:
             return {"sha": sha}
-        at, author, subject, parent = float(out[0]), out[1], out[2], (out[3].split() or [None])[0]
+        at, author, subject, parent = float(parts[0]), parts[1], parts[2], (parts[3].split() or [None])[0]
     return {
         "sha": sha,
         "date": datetime.fromtimestamp(at).strftime("%Y-%m-%d %H:%M"),
@@ -700,9 +851,7 @@ def why(con, target: str | None = None, commit: str | None = None, cwd: str | No
     if m and not os.path.exists(os.path.join(cwd, os.path.expanduser(target))):
         path, lines = m.group(1), (int(m.group(2)), int(m.group(3) or m.group(2)))
     where = os.path.realpath(os.path.join(cwd, os.path.expanduser(path))) if path else os.path.realpath(cwd)
-    top = (
-        _git(where if os.path.isdir(where) else os.path.dirname(where), "rev-parse", "--show-toplevel") or ""
-    ).strip()
+    top = (git(where if os.path.isdir(where) else os.path.dirname(where), "rev-parse", "--show-toplevel") or "").strip()
     if not top:
         return {"error": f"{path or cwd} is not in a git repo"}
     project = resolve(top)
@@ -710,19 +859,25 @@ def why(con, target: str | None = None, commit: str | None = None, cwd: str | No
         return {"error": f"{top} is a scratch folder: recall links no chats there"}
     if not enabled():
         return {"error": "commit links are off: set [links] enabled = true in recall's config.toml"}
-    ensure(con)
-    con.execute("insert or ignore into link_checkouts values (?,?)", (project.key, top))
+    with _locked() as mine:
+        if mine:
+            ensure(con)
+            con.execute("insert or ignore into link_checkouts values (?,?)", (project.key, top))
+            con.commit()
     update(con, project.key)
+    if not present(con):
+        return {"error": "commit links are not built yet: another recall process is building them"}
     out: dict = {"repo": project.key}
     if commit:
-        sha = (_git(top, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}") or "").strip()
+        sha = (git(top, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}") or "").strip()
         if not sha:
             return {"error": f"no commit {commit!r} in {top}"}
         out["commits"] = [{**_commit_meta(con, project.key, sha, top), "chats": chats_for(con, project.key, sha)}]
         return out
     rel = os.path.relpath(where, top)
     out["file"] = rel + (f":{lines[0]}" + (f"-{lines[1]}" if lines[1] != lines[0] else "") if lines else "")
-    blame = _git(top, "blame", "--porcelain", *(["-L", f"{lines[0]},{lines[1]}"] if lines else []), "--", rel)
+    span = ["-L", f"{lines[0]},{lines[1]}"] if lines else []
+    blame = git(top, "blame", "--porcelain", "--no-textconv", *span, "--", rel)
     if blame is None:
         return {"error": f"git blame failed for {rel}: is it tracked, and is the line range inside the file?"}
     texts: dict[str, list[str]] = {}
@@ -771,7 +926,7 @@ def _line_ask(con, sid: str, rel: str, lines: list[str]) -> dict | None:
     want = _hashes(lines)
     with contextlib.suppress(Exception):
         for e in reversed(reader(r["source"]).edits):
-            if (e.path == rel or e.path.endswith("/" + rel)) and want & _hashes(e.added) and e.ask:
+            if (e.path == rel or e.path.endswith("/" + rel)) and want & _written(e) and e.ask:
                 return {"asked": e.ask, "asked_at": e.at}
     return None
 
@@ -814,10 +969,8 @@ def render(result: dict) -> str:
     out = [f"{result.get('file') or 'commit'}  ({repo})"]
     for c in result.get("commits") or []:
         here = f"  ({c['lines']} line{'s' if c['lines'] != 1 else ''} here)" if result.get("file") else ""
-        out.append(
-            f"\n{(c.get('sha') or '')[:8] or 'working copy'}  {(c.get('date') or '')[:10]}  "
-            f"{c.get('subject', '')}{here}"
-        )
+        sha = (c.get("sha") or "")[:8] or "working copy"
+        out.append(f"\n{sha}  {(c.get('date') or '')[:10]}  {c.get('subject', '')}{here}")
         chats = c.get("chats") or []
         if not chats:
             out.append(
@@ -848,82 +1001,109 @@ FAILURES = "('check', 'command', 'correction')"
 
 
 def episodes(con, repo: str | None = None, days: int = 7) -> list[dict]:
-    """Chats where something failed, then a commit fixed it.
+    """Commits that fixed something that had failed: one episode per fixing commit, each
+    failure counted once, for the first commit that followed it.
 
-    A failure is a check or command that exited non-zero after the chat started editing, a
+    A failure is a check or command that exited non-zero while the chat was editing, a
     message from the person saying the work is wrong or still broken, or a revert of an
-    earlier commit to the same files. The fix is a commit the chat is linked to, made after
-    the chat edited those files again; or the failure was in an earlier chat (within `days`)
-    on the same files whose work never reached a commit. Each episode gives the repo, the
-    parent commit (where to start from), the person's request, the failure and the fixing
-    commit. Rough heuristics, with no check that the failure and the fix are about the same
-    thing: see the precision measured in the PR that added this.
+    earlier commit to the same files. It must come after the chat's previous commit to those
+    files and before its last edit to them, so that work followed it. When the fixing chat
+    shows none, an earlier chat on the same files (within `days`) whose work never reached
+    a commit can supply one. Each episode gives the repo, the parent commit (where to start
+    from), the person's request, the failures and the fixing commit. Rough heuristics, with
+    no check that the failure and the fix are about the same thing: see the precision
+    measured in the PR that added this.
     """
-    ensure(con)
-    sql = "select * from commit_links where files != '[]'" + (" and repo=?" if repo else "")
-    out, seen = [], set()
-    for lk in con.execute(sql + " order by repo, sha", (repo,) if repo else ()).fetchall():
-        if (lk["repo"], lk["sha"]) in seen:
-            continue
-        files = set(json.loads(lk["files"]))
-        c = con.execute("select * from link_commits where repo=? and sha=?", (lk["repo"], lk["sha"])).fetchone()
+    if not present(con):
+        return []
+    sql = (
+        "select l.*, c.at, c.parent, c.subject from commit_links l "
+        "join link_commits c on c.repo=l.repo and c.sha=l.sha where l.files != '[]'"
+        + (" and l.repo=?" if repo else "")
+        + " order by c.at"
+    )
+    used: set = set()
+    before: dict[tuple[str, str], list[tuple[float, set]]] = {}  # (chat, repo) -> its earlier commits
+    out: dict[tuple[str, str], dict] = {}
+    for lk in con.execute(sql, (repo,) if repo else ()).fetchall():
+        files, sid, at = set(json.loads(lk["files"])), lk["session_id"], lk["at"]
         q = ",".join("?" * len(files))
         last = con.execute(
             f"select max(last_at) from link_edits where session_id=? and repo=? and path in ({q})",
-            (lk["session_id"], lk["repo"], *files),
+            (sid, lk["repo"], *files),
         ).fetchone()[0]
-        if not c or not last:
+        mine = before.setdefault((sid, lk["repo"]), [])
+        prev = max((t for t, fs in mine if fs & files), default=float("-inf"))
+        mine.append((at, files))
+        if not last:
             continue
-        sid, source = lk["session_id"], lk["session_id"]
-        # A failure in the fixing chat, before its last edit to the files: something followed it.
-        events = con.execute(
-            f"select * from link_events where session_id=? and kind in {FAILURES} and at <= ? order by n",
-            (sid, min(last, c["at"])),
-        ).fetchall()
-        for prev in [] if events else _earlier(con, lk["repo"], files, sid, c["at"], days):
-            events = con.execute(
-                f"select * from link_events where session_id=? and kind in {FAILURES} order by n", (prev,)
-            ).fetchall()
-            if events:
-                source = prev
+        found = [
+            dict(e)
+            for e in con.execute(
+                f"select * from link_events where session_id=? and kind in {FAILURES} and at > ? and at <= ? "
+                "order by n",
+                (sid, prev, min(last, at)),
+            )
+        ]
+        for other in [] if found else _earlier(con, lk["repo"], files, sid, at, days):
+            found = [
+                dict(e)
+                for e in con.execute(
+                    f"select * from link_events where session_id=? and kind in {FAILURES} order by n", (other,)
+                )
+            ]
+            if found:
                 break
-        failure = dict(events[-1]) if events else _reverted(con, lk["repo"], files, c["at"], days)
-        if not failure:
+        if not found and (r := _reverted(con, lk["repo"], files, max(prev, at - days * 86400), at)):
+            found = [r]
+        found = [f for f in found if (f["session_id"], f.get("n"), f["kind"], f["at"]) not in used]
+        if not found:
             continue
-        seen.add((lk["repo"], lk["sha"]))
-        out.append(
+        used |= {(f["session_id"], f.get("n"), f["kind"], f["at"]) for f in found}
+        ep = out.setdefault(
+            (lk["repo"], lk["sha"]),
             {
                 "repo": lk["repo"],
-                "parent": c["parent"],
-                "fix_commit": c["sha"],
-                "fix_subject": c["subject"],
+                "parent": lk["parent"],
+                "fix_commit": lk["sha"],
+                "fix_subject": lk["subject"],
                 "fix_chat": sid,
                 "files": sorted(files),
-                "prompt": _prompt(con, source, lk["repo"], files) or lk["ask"],
-                "failure": {
-                    "chat": failure.get("session_id", source),
-                    **{k: failure.get(k) for k in ("kind", "text", "detail", "at")},
-                },
-                "same_chat": failure.get("session_id", source) == sid,
-            }
+                "prompt": _prompt(con, found[-1]["session_id"] or sid, lk["repo"], files) or lk["ask"],
+                "failures": [],
+            },
         )
-    return out
+        ep["failures"] += [{k: f.get(k) for k in ("session_id", "kind", "text", "detail", "at")} for f in found]
+        ep["same_chat"] = all(f["session_id"] == sid for f in ep["failures"])
+    for ep in out.values():
+        # The one to show: the latest failed check or correction, which say more about the code
+        # than any command that exited non-zero; the latest failure of any kind otherwise.
+        strong = [f for f in ep["failures"] if f["kind"] in ("check", "correction", "revert")]
+        ep["failure"] = (strong or ep["failures"])[-1]
+        ep["failure_count"] = len(ep["failures"])
+        ep["failures"] = ep["failures"][-10:]
+    return list(out.values())
 
 
-def _reverted(con, repo: str, files: set[str], at: float, days: int) -> dict | None:
-    """A revert of an earlier commit to these files, in the days before `at`."""
+def _reverted(con, repo: str, files: set[str], start: float, end: float) -> dict | None:
+    """A revert (git's own `Revert "…"`, as linking reads it) of an earlier commit to these files."""
     q = ",".join("?" * len(files))
     row = con.execute(
-        f"select c.sha, c.subject, c.at from link_commits c join link_commit_files f on f.repo=c.repo and f.sha=c.sha "
-        f"where c.repo=? and f.path in ({q}) and c.subject like 'Revert %' and c.at < ? and c.at > ? "
+        "select c.sha, c.subject, c.at from link_commits c join link_commit_files f on f.repo=c.repo and f.sha=c.sha "
+        f"where c.repo=? and f.path in ({q}) and c.subject like 'Revert \"%' and c.at > ? and c.at < ? "
         "order by c.at desc limit 1",
-        (repo, *files, at, at - days * 86400),
+        (repo, *files, start, end),
     ).fetchone()
-    return (
-        {"session_id": None, "kind": "revert", "text": row["subject"], "detail": row["sha"], "at": row["at"]}
-        if row
-        else None
-    )
+    if not row:
+        return None
+    return {
+        "session_id": None,
+        "n": None,
+        "kind": "revert",
+        "text": row["subject"],
+        "detail": row["sha"],
+        "at": row["at"],
+    }
 
 
 def _earlier(con, repo: str, files: set[str], sid: str, at: float, days: int) -> list[str]:
