@@ -5,9 +5,11 @@
 
 Each arm is one or more run folders of the same eval: a harness run folder (cases.jsonl, and
 test/cases.jsonl for test cases) or a folder from the shared run wrapper, whose output.txt names
-the harness folder. Every (run folder, repeat) is one replicate of the arm. Cases are paired by
-id across arms; a case's value in an arm is its mean over the arm's replicates, so extra repeats
-of a few cases (see --flips) sharpen those cases without reweighting the rest.
+the harness folder. RUN#2 (or RUN#1,3) keeps only those repeats of a run, so a run's repeats can
+be compared with each other: what no change looks like. Every (run folder, repeat) is one
+replicate of the arm. Cases are paired by id across arms; a case's value in an arm is its mean
+over the arm's replicates, so extra repeats of a few cases (see --flips) sharpen those cases
+without reweighting the rest.
 
 Per metric it reports:
   base, cand, Δ     the arm scores over the cases both arms scored, and cand minus base
@@ -170,6 +172,10 @@ def resolve(path: str) -> str:
 
 
 def read_run(path: str) -> dict:
+    """A run's rows; RUN#2 or RUN#1,3 keeps only those repeats (a run against its own repeats
+    shows what no change looks like)."""
+    path, _, picked = path.partition("#")
+    keep = {int(k) for k in picked.split(",") if k.strip()} if picked else None
     folder = resolve(path)
     meta = {}
     if os.path.exists(os.path.join(folder, "meta.json")):
@@ -181,8 +187,10 @@ def read_run(path: str) -> dict:
         if os.path.exists(p):
             with open(p) as f:
                 rows += [json.loads(line) for line in f if line.strip()]
+    if keep:
+        rows = [r for r in rows if (r.get("repeat") or 1) in keep]
     if not rows:
-        sys.exit(f"{folder}: no case rows")
+        sys.exit(f"{folder}: no case rows" + (f" for repeat {picked}" if keep else ""))
     return {"dir": folder, "meta": meta, "eval": meta.get("eval") or "", "rows": rows}
 
 
