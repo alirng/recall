@@ -339,7 +339,7 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
             "hooks": {"PreToolUse": [{"matcher": "Agent|Task", "hooks": [{"type": "command", "command": hook}]}]}
         }
         os.makedirs(os.path.join(repo, ".claude"), exist_ok=True)
-        with open(os.path.join(repo, ".claude", "settings.json"), "w") as f:
+        with open(os.path.join(repo, ".claude", "settings.local.json"), "w") as f:  # the repo's own stay
             json.dump(settings, f)
     from .llm.agent_cli import plan_env
 
@@ -354,27 +354,31 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
         "--output-format",
         "stream-json",
         "--verbose",
-        "--no-session-persistence",
+        "--no-session-persistence",  # nothing reaches ~/.claude/projects, so the real index never sees these
+        "--strict-mcp-config",  # no MCP servers: the runs stay off the owner's live connectors
+        "--mcp-config",
+        '{"mcpServers": {}}',
     ]
     started = time.time()
     try:
         proc = subprocess.run(
-            [*cmd, PARENT.format(prompt=row["prompt"])],
+            cmd,  # the prompt goes on stdin: --mcp-config would take it for another config
+            input=PARENT.format(prompt=row["prompt"]),
             cwd=repo,
             env=env,
-            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
         )
-        out = proc.stdout
+        out, detail = proc.stdout, proc.stderr.strip()[-300:]
         status = h.OK
     except subprocess.TimeoutExpired as e:
         out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        status = "timeout"
+        status, detail = "timeout", ""
     res = _measure(out) | {"wall_s": round(time.time() - started, 1)}
     if status == h.OK and not res.get("report"):
         status = "no_report"
+        res["detail"] = detail
     res["status"] = status
     usage = os.path.join(home, "usage.jsonl")
     if os.path.exists(usage):
@@ -529,7 +533,10 @@ def from_args(a) -> None:
         model = a.agent or "claude-haiku-5-5"
         timeout = max(a.timeout, 1200)  # an exploration at medium thoroughness can take minutes
         settings = {"model": model, "repeats": a.repeats, "limit": a.limit or 10, "workers": min(a.workers, 2)}
-        settings["flags"] = "claude -p --model M --output-format stream-json --verbose --no-session-persistence"
+        settings["flags"] = (
+            "claude -p --model M --output-format stream-json --verbose --no-session-persistence "
+            "--strict-mcp-config --mcp-config '{\"mcpServers\": {}}'; user settings, hooks and permission mode as usual"
+        )
         run = h.Run("explore_agent", "test", settings, a.who, a.runs_dir)
         agent(run, model, a.judge or h.JUDGE, a.limit or 10, max(1, a.repeats), a.workers, timeout)
         return
