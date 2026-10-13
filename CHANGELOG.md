@@ -5,6 +5,27 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor
+  chats active in the last 12 hours, the branch each is on and the files it edited, and flags a
+  file that two chats in one repo both have open changes to: whether the two would conflict if
+  merged now (`git merge-tree`), or share one working copy. Each flagged file comes with a note
+  to paste into the other chat. It reads agent history directly and caches each chat by its
+  size and mtime, so it stays current and cheap.
+- **Rules for when two chats change the same file.** Before an agent edits a file another
+  chat has open changes to, recall applies your rule for the situation: another live chat in
+  the same working copy, a branch that would conflict, or an overlap that merges cleanly.
+  `ask` stops the agent once so it checks with you, `worktree` has it move into its own git
+  worktree, `tell` lets the edit through and tells it, `off` does nothing. Each other chat is
+  raised once, listing every file the two share. `recall setup` offers presets; the
+  recommended one asks before two live chats edit one working copy and mentions conflicts.
+- **Edit hooks for Claude Code, Codex, Cursor, Gemini CLI and OpenCode** (a plugin), added
+  by `recall install` (Codex runs them once you trust them in `/hooks`). T3 Code runs Claude
+  Code, Codex and Cursor underneath, so it is covered too. Every hook also logs the edit, so `recall status` sees chats from agents
+  whose history recall cannot read yet. Agents without hooks can call the new MCP tool
+  `open_elsewhere` before editing.
+
 ## [0.3.0] - 2026-10-13
 
 recall measured on coding work: finding the session where a bug was fixed before, how much an
