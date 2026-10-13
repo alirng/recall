@@ -196,7 +196,15 @@ def cmd_explore(a) -> None:
     folder = a.cwd or os.getcwd()
     if a.action == "lookup":
         text, info = explore.brief(folder, " ".join(a.terms), con)
-        print(text or f"no earlier exploration close enough ({info})")
+        if text:
+            print(text)
+        elif info.get("candidates"):
+            print(
+                f"no match: the best of {info['candidates']} earlier explorations scored {info['top']}, "
+                f"under the {explore.THRESHOLD} gate"
+            )
+        else:
+            print(f"no match: {info.get('reason')}")
         return
     here = explore.checkout(folder)
     if not here:
