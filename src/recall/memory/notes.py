@@ -14,6 +14,14 @@ or open the folder as an Obsidian vault. Each note ends with wikilinks to its mo
 related notes, which recall rewrites on every run (see links.py). The SQLite index
 is rebuilt from these files, so hand edits always win. The folder is a git repository and every memory
 run is one commit: `git log` shows what changed and `git revert` undoes it.
+
+A note is a titled list of rules, each a statement that can change on its own. The
+frontmatter keeps every rule with its dates, sources and status; the body is rendered
+from the rules still active (one rule: its text; several: a bullet list), so whatever
+reads the body sees only what holds now. A retired rule stays in the frontmatter with
+the date, the reason and the rule that replaced it. Notes written before rules existed
+read as a note with one rule. The body stays the place to edit: an edit there is read
+back into the rules (see _edits).
 """
 
 import fcntl
@@ -26,6 +34,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from difflib import SequenceMatcher
 
 import yaml
 
@@ -44,11 +53,40 @@ CONFIDENCE = {"high": 1.0, "medium": 0.7, "low": 0.4}
 GLOBAL_INDEX_LINES = 40
 PROJECT_INDEX_LINES = {"preference": 12, "fact": 30, "decision": 20, "lesson": 20, "open": 10}
 RELATED_MARK = "<!-- recall: related notes, rewritten on each run -->"
+REMOVED_BY_HAND = "removed by hand"
+HOOK_CHARS = 160
 README = (
     "# Agent memory\n\nMaintained by recall from your coding-agent chats. Start at MEMORY.md. "
     "Every note is plain markdown: edit or delete anything, and recall respects it on its next run. "
     "Each run is one git commit, so `git log` shows what changed and `git revert` undoes it.\n"
 )
+
+
+@dataclass
+class Rule:
+    """One statement in a note that can change on its own: a convention, a fact, a decision."""
+
+    id: str  # unique within its note and never reused, so operations can name it
+    text: str
+    first_seen: str = ""  # date of the earliest chat that stated it
+    last_seen: str = ""  # date of the latest chat that stated or confirmed it
+    sources: list[str] = field(default_factory=list)  # chat ids
+    said_by: str | None = None  # "developer" | "agent": who stated it in the chats
+    evidence: str = ""  # a supporting quote from a chat
+    status: str = "active"  # "active" | "retired"
+    retired: str = ""  # date it stopped holding
+    reason: str = ""  # why it was retired
+    replaced_by: str | None = None  # id of the rule that replaced it, in the same note
+    edited: str = ""  # date the developer last changed it by hand
+
+    @property
+    def active(self) -> bool:
+        return self.status == "active"
+
+    @property
+    def seen(self) -> str:
+        """The newest date the rule is known to hold: last stated in a chat, or edited by hand."""
+        return max(self.last_seen, self.edited)
 
 
 @dataclass
@@ -61,11 +99,13 @@ class Note:
     project: str | None = None  # project key
     project_name: str | None = None
     confidence: str = "medium"
-    status: str = "active"  # "active" | "superseded" | "expired"
+    status: str = "active"  # "active" | "superseded" | "expired" | "retired" (every rule retired)
     created: str = ""
     updated: str = ""
     last_seen: str = ""
     sources: list[str] = field(default_factory=list)  # chat ids
+    rules: list[Rule] = field(default_factory=list)  # the body is rendered from the active ones
+    edited_by_hand: bool = field(default=False, repr=False)  # the body was edited since recall wrote it
     supersedes: list[str] = field(default_factory=list)
     superseded_by: str | None = None
     related: list[str] = field(default_factory=list)  # note ids, kept by links.relink
@@ -123,6 +163,9 @@ class NoteStore:
         return notes
 
     def write(self, note: Note) -> None:
+        for r in note.rules:  # the body is rendered from the rules, so a credential is cut from them too
+            r.text, r.evidence = redact(r.text), redact(r.evidence)
+        sync(note)
         note.title, note.body = redact(note.title), redact(note.body)  # a note never keeps a credential
         directory = self._dir_for(note)
         os.makedirs(directory, exist_ok=True)
@@ -130,6 +173,9 @@ class NoteStore:
         if note.path and os.path.abspath(note.path) != os.path.abspath(path) and os.path.exists(note.path):
             os.remove(note.path)  # the note moved: archived, or its project folder changed
         meta = {k: v for k, v in asdict(note).items() if k not in _NOT_FRONTMATTER and v not in (None, [], "")}
+        if note.rules:
+            meta["rules"] = [_rule_meta(r) for r in note.rules]
+        note.edited_by_hand = False
         self.titles[note.id] = note.title
         note.footer = self.footer(note)
         tmp = path + ".tmp"
@@ -312,10 +358,146 @@ def parse_note(text: str, path: str) -> Note | None:
             fields[k] = str(fields[k])  # YAML reads bare dates as date objects
     body, mark, footer = m.group(2).partition(RELATED_MARK)
     related = [i.strip() for i in re.findall(r"\[\[([^\]|#]+)", footer)]
-    return Note(**fields, body=body.strip(), related=related, footer=(mark + footer).strip(), path=path)
+    note = Note(**fields, body=body.strip(), related=related, footer=(mark + footer).strip(), path=path)
+    rules = [r for r in map(_rule_from, meta.get("rules") or []) if r]
+    if rules:
+        note.rules, note.edited_by_hand = _edits(note, rules, _edit_date(path))
+    elif note.body:  # written before notes held rules: the whole body is one rule
+        note.rules = [
+            Rule(
+                id=rule_id(note.id, "", set()),
+                text=note.body,
+                first_seen=note.created or note.last_seen,
+                last_seen=note.last_seen,
+                sources=list(note.sources),
+            )
+        ]
+    return note
 
 
-_NOT_FRONTMATTER = ("body", "path", "related", "footer")  # the body and its link footer live below the frontmatter
+_NOT_FRONTMATTER = ("body", "path", "related", "footer", "rules", "edited_by_hand")  # rules: see _rule_meta
+
+
+# --- rules ----------------------------------------------------------------------
+
+
+def rule_id(note_id: str, text: str, taken: set[str]) -> str:
+    """A short id for a new rule, stable for the same note and text, unused in the note."""
+    n = 0
+    while True:
+        rid = "r" + hashlib.sha1(f"{note_id}\n{text}\n{n}".encode()).hexdigest()[:5]
+        if rid not in taken:
+            return rid
+        n += 1
+
+
+def render(rules: list[Rule]) -> str:
+    """A note's body: its one active rule, or a bullet list of several. A note with no rule
+    left in force (archived) shows the rules it last held, so the archive still reads."""
+    shown = [r for r in rules if r.active] or rules
+    if len(shown) == 1:
+        return shown[0].text.strip()
+    return "\n".join("- " + r.text.strip().replace("\n", "\n  ") for r in shown)
+
+
+def sync(note: Note) -> None:
+    """Set the body and the note-wide fields from the rules: active rules first, in order."""
+    if not note.rules:
+        return
+    live = [r for r in note.rules if r.active]
+    note.rules = live + [r for r in note.rules if not r.active]
+    if not live and note.status == "active":
+        note.status = "retired"  # every rule retired: the note moves to the archive
+    note.body = render(note.rules)
+    note.sources = sorted(set(note.sources).union(*(r.sources for r in note.rules)))
+    note.last_seen = max((r.seen for r in live if r.seen), default=note.last_seen)
+    note.created = min([r.first_seen for r in note.rules if r.first_seen] + [note.created], key=lambda d: d or "9")
+
+
+def _rule_meta(rule: Rule) -> dict:
+    meta = {k: v for k, v in asdict(rule).items() if v not in (None, [], "")}
+    meta["status"] = rule.status
+    return meta
+
+
+def _rule_from(entry) -> Rule | None:
+    if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
+        return None
+    known = {k: v for k, v in entry.items() if k in Rule.__dataclass_fields__}
+    for k in ("first_seen", "last_seen", "retired", "edited"):
+        if k in known:
+            known[k] = str(known[k]) if known[k] else ""
+    known["text"] = str(known["text"]).strip()
+    known["sources"] = [str(s) for s in known.get("sources") or []]
+    known.setdefault("id", rule_id("", known["text"], set()))
+    known["id"] = str(known["id"])
+    return Rule(**known)
+
+
+def _edit_date(path: str) -> str:
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
+    except OSError:
+        return today()
+
+
+_BULLET = re.compile(r"^[-*+] +")
+
+
+def _items(body: str) -> list[str]:
+    """A body as rule texts: the items of a bullet list, else the whole body as one."""
+    lines = body.strip().split("\n")
+    if not _BULLET.match(lines[0]):
+        return [body.strip()] if body.strip() else []
+    out: list[str] = []
+    for line in lines:
+        if _BULLET.match(line):
+            out.append(_BULLET.sub("", line, count=1))
+        elif out:
+            out[-1] += "\n" + (line[2:] if line.startswith("  ") else line)
+    return [t.strip() for t in out if t.strip()]
+
+
+def _same(a: str, b: str) -> bool:
+    return " ".join(a.split()) == " ".join(b.split())
+
+
+def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
+    """Read a hand edit of the body back into the rules. A line that matches a rule keeps it,
+    a changed line updates the rule it is closest to, a new line is a new rule in the
+    developer's words, and a rule whose line is gone is retired as removed by hand.
+    Returns the rules and whether the body had been edited."""
+    if _same(render(rules), note.body):
+        return rules, False
+    texts = _items(note.body)
+    free = [r for r in rules if r.active]
+    placed: dict[int, Rule] = {}
+    for i, t in enumerate(texts):
+        match = next((r for r in free if _same(r.text, t)), None)
+        if match:
+            placed[i] = match
+            free.remove(match)
+    for i, t in enumerate(texts):  # a retired rule's text written back brings it back
+        back = None if i in placed else next((r for r in rules if not r.active and _same(r.text, t)), None)
+        if back and back not in placed.values():
+            back.status, back.retired, back.reason, back.replaced_by, back.edited = "active", "", "", None, date
+            placed[i] = back
+    taken = {r.id for r in rules}
+    for i, t in enumerate(texts):
+        if i in placed:
+            continue
+        close = max(free, key=lambda r: SequenceMatcher(None, r.text, t).ratio(), default=None)
+        if close and SequenceMatcher(None, close.text, t).ratio() >= 0.5:
+            close.text, close.edited, close.said_by = t, date, "developer"
+            free.remove(close)
+            placed[i] = close
+        else:
+            placed[i] = Rule(rule_id(note.id, t, taken), t, date, date, said_by="developer", edited=date)
+            taken.add(placed[i].id)
+    for r in free:
+        r.status, r.retired, r.reason = "retired", date, REMOVED_BY_HAND
+    order = [placed[i] for i in range(len(texts))]
+    return order + [r for r in rules if r not in order], True
 
 
 def _link_text(title: str) -> str:
@@ -359,9 +541,17 @@ def audience(n: Note, table: dict[str, list[str]]) -> str | None:
 
 
 def _index_line(note: Note, href: str) -> str:
-    first = re.split(r"(?<=[.!?])\s", " ".join(note.body.split()), maxsplit=1)[0]
-    hook = first if len(first) <= 160 else first[:157] + "…"
+    live = [r for r in note.rules if r.active]
+    if len(live) > 1:  # each rule's first sentence, so every rule can reach the index
+        first = "; ".join(_first_sentence(r.text).rstrip(".") for r in live) + "."
+    else:
+        first = _first_sentence(note.body)
+    hook = first if len(first) <= HOOK_CHARS else first[: HOOK_CHARS - 3] + "…"
     return f"- **{note.title}**: {hook} ([note]({href}))"
+
+
+def _first_sentence(text: str) -> str:
+    return re.split(r"(?<=[.!?])\s", " ".join(text.split()), maxsplit=1)[0]
 
 
 def _read_json(path: str) -> dict:
