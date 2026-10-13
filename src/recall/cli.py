@@ -335,7 +335,9 @@ def _status_hook(a, since: float) -> None:
         event = json.load(sys.stdin)
         edit = hooks.parse(a.agent, event)
         found = edit and [
-            d for f in edit.files if (d := status.check_edit(a.agent, edit.session, f, edit.cwd, since, edit.acts))
+            d
+            for f in edit.files
+            if (d := status.check_edit(a.agent, edit.session, f, edit.cwd, since, edit.acts, edit.transcript))
         ]
         if not found:
             if quiet := hooks.silent(a.agent):

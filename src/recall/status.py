@@ -18,10 +18,11 @@ from dataclasses import dataclass, field
 from itertools import combinations
 
 from . import paths
-from .chats.sources import claude, codex, cursor, read_jsonl
+from .chats.sources import claude, codex, cursor, iso_ts, read_jsonl
 
 LIVE_SECONDS = 15 * 60  # a session touched this recently counts as live
 CACHE = os.path.join(paths.HOME, "cache", "status.json")
+CACHE_VERSION = 2  # bump when _read's record changes, so old entries are read again
 WARNED = os.path.join(paths.HOME, "cache", "edit-warnings.json")
 # Every agent's edit hook adds a line here, so agents whose history recall cannot read yet
 # still show up, and an edit counts before the agent's own transcript is written.
@@ -37,10 +38,20 @@ AGENTS = {
 # Tool calls that change a file, and the input field naming it, per agent.
 _EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "StrReplace", "Delete", "EditNotebook"}
 _PATH_KEYS = ("file_path", "notebook_path", "path", "target_file")
-# Codex edits through apply_patch; the patch names each file it touches.
+# Codex and OpenCode edit through apply_patch; the patch names each file it touches. In a
+# transcript the patch sits inside a JSON or JS string, so a line can also end at "\n".
 _PATCH_FILE = re.compile(
-    r"\*\*\* (?:Add|Update|Delete) File: (.+?)(?=\\n|\n|\"|$)|\*\*\* Move to: (.+?)(?=\\n|\n|\"|$)"
+    r"\*\*\* (?:Add|Update|Delete) File: (.+?)(?=\\n|\n|\"|$)|\*\*\* Move to: (.+?)(?=\\n|\n|\"|$)", re.M
 )
+
+
+def patch_files(text: str, cwd: str | None) -> list[str]:
+    """The files an apply_patch patch touches, made absolute against cwd."""
+    out = []
+    for m in _PATCH_FILE.finditer(text):
+        f = (m.group(1) or m.group(2)).strip()
+        out.append(f if os.path.isabs(f) or not cwd else os.path.join(cwd, f))
+    return list(dict.fromkeys(out))
 
 
 @dataclass
@@ -52,9 +63,12 @@ class Live:
     branch: str | None
     updated_at: float
     ask: str = ""  # the person's latest request in the chat
-    edits: list[str] = field(default_factory=list)  # absolute paths, least recently edited first
+    source: str | None = None  # its transcript, which an edit hook also reports
+    # path -> when it was last edited (None if the agent records no times), oldest first
+    edits: dict[str, float | None] = field(default_factory=dict)
     checkout: str | None = None  # the worktree it last edited in, else the one it runs in
-    touched: list[tuple[str, str]] = field(default_factory=list)  # (checkout, repo-relative path)
+    # (checkout, repo-relative path, when), one per file, oldest edit first
+    touched: list[tuple[str, str, float | None]] = field(default_factory=list)
 
 
 @dataclass
@@ -71,10 +85,15 @@ class Checkout:
 # --- reading the agents' history ------------------------------------------------
 
 
-def _tool_edits(path: str) -> dict[str, None]:
-    """Files named by edit tool calls in a Claude Code or Cursor transcript, in the order
-    they were last edited."""
-    out: dict[str, None] = {}
+def _edited(out: dict, path: str, ts: float | None) -> None:
+    out.pop(path, None)
+    out[path] = ts
+
+
+def _tool_edits(path: str) -> dict[str, float | None]:
+    """Files named by edit tool calls in a Claude Code or Cursor transcript, with when each
+    was last edited, oldest first."""
+    out: dict[str, float | None] = {}
     for d in read_jsonl(path):
         content = (d.get("message") or {}).get("content")
         if not isinstance(content, list):
@@ -84,23 +103,18 @@ def _tool_edits(path: str) -> dict[str, None]:
                 args = b.get("input") or {}
                 target = next((args[k] for k in _PATH_KEYS if isinstance(args.get(k), str)), None)
                 if target:
-                    out.pop(target, None)
-                    out[target] = None
+                    _edited(out, target, iso_ts(d.get("timestamp")))
     return out
 
 
-def _codex_edits(path: str, cwd: str | None) -> dict[str, None]:
-    out: dict[str, None] = {}
+def _codex_edits(path: str, cwd: str | None) -> dict[str, float | None]:
+    out: dict[str, float | None] = {}
     for d in read_jsonl(path):
         payload = d.get("payload") or {}
         if d.get("type") != "response_item" or payload.get("type") not in ("custom_tool_call", "function_call"):
             continue
-        text = str(payload.get("input") or payload.get("arguments") or "")
-        for m in _PATCH_FILE.finditer(text):
-            target = (m.group(1) or m.group(2)).strip()
-            target = target if os.path.isabs(target) or not cwd else os.path.join(cwd, target)
-            out.pop(target, None)
-            out[target] = None
+        for target in patch_files(str(payload.get("input") or payload.get("arguments") or ""), cwd):
+            _edited(out, target, iso_ts(d.get("timestamp")))
     return out
 
 
@@ -130,16 +144,18 @@ def _read(agent: str, path: str, catalog) -> dict | None:
         "branch": s.branch,
         "updated_at": s.updated_at or 0,
         "ask": _line(asks[-1], 200) if asks else "",
-        "edits": list(edits),
+        "source": os.path.realpath(path),
+        "edits": list(edits.items()),
     }
 
 
 def _sessions(since: float) -> list[Live]:
     try:
         with open(CACHE) as f:
-            cache = json.load(f)
+            stored = json.load(f)
     except (OSError, json.JSONDecodeError):
-        cache = {}
+        stored = {}
+    cache = stored.get("chats", {}) if stored.get("version") == CACHE_VERSION else {}
     catalog = None
 
     def codex_catalog():
@@ -170,37 +186,47 @@ def _sessions(since: float) -> list[Live]:
             fresh[path] = {"fp": fp, "rec": rec}
             if rec:
                 live = Live(**{k: v for k, v in rec.items() if k != "edits"})
-                live.updated_at = max(live.updated_at, st.st_mtime)
-                live.edits = rec["edits"]
+                # The last message, not the file's mtime: apps rewrite transcripts (titles,
+                # compaction) without anyone working in the chat.
+                live.updated_at = live.updated_at or st.st_mtime
+                live.edits = dict(rec["edits"])
                 found.append(live)
     if changed or len(fresh) != len(cache):
         with contextlib.suppress(OSError):
             os.makedirs(os.path.dirname(CACHE), exist_ok=True)
             with open(CACHE + ".tmp", "w") as f:
-                json.dump(fresh, f)
+                json.dump({"version": CACHE_VERSION, "chats": fresh}, f)
             os.replace(CACHE + ".tmp", CACHE)
 
+    # A hook's chat id is not always the transcript's, so the transcript path joins them.
     by_id = {s.id: s for s in found}
+    by_source = {s.source: s for s in found if s.source}
     for sid, e in _logged(since).items():
-        s = by_id.get(sid)
+        s = by_id.get(sid) or by_source.get(e["transcript"])
         if not s:
             s = Live(sid, e["agent"], f"{AGENTS.get(e['agent'], e['agent'])} chat", e["cwd"], None, e["at"])
             found.append(s)
+            by_id[sid] = s
         s.updated_at = max(s.updated_at, e["at"])
-        s.edits += [f for f in e["files"] if f not in s.edits]
+        for f, at in e["files"].items():
+            _edited(s.edits, f, max(at, s.edits.get(f) or 0))
     return found
 
 
-def _log(agent: str, session: str, path: str, cwd: str | None) -> None:
-    line = json.dumps({"at": time.time(), "agent": agent, "session": session, "file": path, "cwd": cwd})
+def _log(agent: str, session: str, path: str, cwd: str | None, transcript: str | None) -> None:
+    entry = {"at": time.time(), "agent": agent, "session": session, "file": path, "cwd": cwd}
+    if transcript:
+        entry["transcript"] = os.path.realpath(transcript)
     with contextlib.suppress(OSError):
         os.makedirs(os.path.dirname(EDITS), exist_ok=True)
-        if os.path.exists(EDITS) and os.path.getsize(EDITS) > 512_000:  # keep two days
-            keep = [x for x in _log_lines() if x["at"] > time.time() - 2 * 86400]
-            with open(EDITS, "w") as f:
+        if os.path.exists(EDITS) and os.path.getsize(EDITS) > 512_000:
+            # Keep the newest 1,000 lines from the last two days, so the file stays small.
+            keep = [x for x in _log_lines() if x.get("at", 0) > time.time() - 2 * 86400][-1000:]
+            with open(EDITS + ".tmp", "w") as f:
                 f.writelines(json.dumps(x) + "\n" for x in keep)
+            os.replace(EDITS + ".tmp", EDITS)
         with open(EDITS, "a") as f:
-            f.write(line + "\n")
+            f.write(json.dumps(entry) + "\n")
 
 
 def _log_lines() -> list[dict]:
@@ -213,25 +239,32 @@ def _log_lines() -> list[dict]:
 
 
 def _logged(since: float) -> dict[str, dict]:
-    """Chats seen by the edit hooks since `since`: agent, folder, files in edit order."""
+    """Chats seen by the edit hooks since `since`: agent, folder, transcript, and each file
+    with when it was last edited, oldest first."""
     out: dict[str, dict] = {}
     for x in _log_lines():
-        if x.get("at", 0) < since:
+        if x.get("at", 0) < since or not all(k in x for k in ("agent", "session", "file")):
             continue
-        e = out.setdefault(f"{x['agent']}:{x['session']}", {"agent": x["agent"], "cwd": x.get("cwd"), "files": []})
+        e = out.setdefault(
+            f"{x['agent']}:{x['session']}",
+            {"agent": x["agent"], "cwd": x.get("cwd"), "transcript": x.get("transcript"), "files": {}},
+        )
         e["at"] = x["at"]
-        if x["file"] in e["files"]:
-            e["files"].remove(x["file"])
-        e["files"].append(x["file"])
+        _edited(e["files"], x["file"], x["at"])
     return out
 
 
 # --- git --------------------------------------------------------------------------
 
 
+# Paths with non-ASCII letters come back as written, not octal-escaped, so every git listing
+# names a file the same way the agents do.
+_GIT = ("-c", "core.quotePath=false")
+
+
 def _git(folder: str, *args: str) -> list[str] | None:
     try:
-        r = subprocess.run(["git", "-C", folder, *args], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", *_GIT, "-C", folder, *args], capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout.splitlines() if r.returncode == 0 else None
@@ -277,8 +310,16 @@ def _checkout(top: str) -> Checkout | None:
     info = _git(top, "rev-parse", "--git-common-dir", "--abbrev-ref", "HEAD")
     if not info or len(info) < 2:
         return None
-    porcelain = _git(top, "status", "--porcelain", "--untracked-files=all") or []
-    open_ = {line[3:].split(" -> ")[-1].strip('"') for line in porcelain}
+    # -z keeps paths with spaces or non-ASCII letters unquoted; a rename's old path follows it.
+    out = _git(top, "status", "--porcelain", "-z", "--untracked-files=all")
+    tokens = "\n".join(out or []).split("\0")
+    porcelain, i = [], 0
+    while i < len(tokens):
+        if tokens[i]:
+            porcelain.append(tokens[i])
+            i += 1 if set(tokens[i][:2]) & {"R", "C"} else 0
+        i += 1
+    open_ = {line[3:] for line in porcelain}
     default = (_git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ["main"])[0]
     base = (_git(top, "merge-base", default, "HEAD") or [None])[0]
     if base:
@@ -293,6 +334,15 @@ def _checkout(top: str) -> Checkout | None:
     return Checkout(top, os.path.realpath(os.path.join(top, info[0])), branch, base, open_, len(porcelain))
 
 
+def _committed_since(c: Checkout, rel: str, when: float | None) -> bool:
+    """Whether `rel` was committed in this checkout after `when`, so a chat's edit from
+    then is no longer among the open changes."""
+    if not when:
+        return False
+    out = _git(c.top, "log", "-1", "--format=%ct", "--", rel)
+    return bool(out and out[0].isdigit() and int(out[0]) >= when)
+
+
 def _conflicts(a: Checkout, b: Checkout) -> set[str]:
     """Files that would conflict if two checkouts were merged as they stand now. `git stash
     create` only writes a commit object: the working tree, index and stash list are untouched."""
@@ -301,7 +351,18 @@ def _conflicts(a: Checkout, b: Checkout) -> set[str]:
             c.snapshot = ((_git(c.top, "stash", "create") or []) + (_git(c.top, "rev-parse", "HEAD") or [""]))[0]
     try:
         r = subprocess.run(
-            ["git", "-C", a.top, "merge-tree", "--write-tree", "--name-only", "--no-messages", a.snapshot, b.snapshot],
+            [
+                "git",
+                *_GIT,
+                "-C",
+                a.top,
+                "merge-tree",
+                "--write-tree",
+                "--name-only",
+                "--no-messages",
+                a.snapshot,
+                b.snapshot,
+            ],
             capture_output=True,
             text=True,
             timeout=10,
@@ -311,6 +372,17 @@ def _conflicts(a: Checkout, b: Checkout) -> set[str]:
     return set(r.stdout.splitlines()[1:]) if r.returncode == 1 else set()
 
 
+def _resolve(s: Live, tops: dict[str, str | None]) -> list[tuple[str, str, float | None]]:
+    """A chat's edits as (checkout, repo-relative path, when), oldest first; edits outside
+    any git checkout are dropped."""
+    out = []
+    for f, when in s.edits.items():
+        full = os.path.realpath(f if os.path.isabs(f) or not s.folder else os.path.join(s.folder, f))
+        if top := _top(full, tops):
+            out.append((top, os.path.relpath(full, top), when))
+    return out
+
+
 def _place(sessions: list[Live]) -> dict[str, Checkout]:
     """Resolve every edit to its own checkout (a session can edit in a worktree it never
     started in) and place each session where it last edited."""
@@ -318,15 +390,11 @@ def _place(sessions: list[Live]) -> dict[str, Checkout]:
     checkouts: dict[str, Checkout | None] = {}
     for s in sessions:
         last = None
-        for f in s.edits:
-            full = os.path.realpath(f if os.path.isabs(f) or not s.folder else os.path.join(s.folder, f))
-            top = _top(full, tops)
-            if not top:
-                continue
+        for top, rel, when in _resolve(s, tops):
             if top not in checkouts:
                 checkouts[top] = _checkout(top)
             if checkouts[top]:
-                s.touched.append((top, os.path.relpath(full, top)))
+                s.touched.append((top, rel, when))
                 last = top
         home = _top(os.path.realpath(s.folder), tops) if s.folder and os.path.isdir(s.folder) else None
         if home and home not in checkouts:
@@ -382,13 +450,17 @@ def rules() -> dict[str, str]:
     return {k: got[k] if got.get(k) in ACTIONS else PRESETS["recommended"][0][k] for k in SITUATIONS}
 
 
-def _about(other: Live, c: Checkout, situation: str, files: list[str]) -> str:
-    """One line on another chat's open changes to files this agent is touching."""
-    where = "this same working copy" if situation == "same_copy" else f"branch {c.branch or 'detached'}"
+def _about(other: Live, c: Checkout, situation: str, files: list[str], same: bool) -> str:
+    """One line on another chat's open changes to files this agent is touching. `same`: the
+    other chat's changes are in this agent's working copy."""
+    where = "this same working copy" if same else f"branch {c.branch or 'detached'}"
+    risk = SITUATIONS[situation]
+    if same and situation == "overlap":
+        risk = "it has gone quiet, but its changes are still uncommitted here"
     who = AGENTS.get(other.agent, other.agent)
     line = (
         f'"{other.title}" ({who}, {where}, active {_ago(time.time() - other.updated_at)}) also has open '
-        f"changes to {', '.join(files)}: {SITUATIONS[situation]}."
+        f"changes to {', '.join(files)}: {risk}."
     )
     return line + (f' It was last asked: "{_line(other.ask, 140)}"' if other.ask else "")
 
@@ -415,18 +487,20 @@ def status(since: float) -> dict:
     #   act    the checkouts would conflict on it if merged now, or two live sessions are
     #          editing it in the same working tree
     #   watch  anything else: it merges clean, or one of the sessions has gone quiet
-    touched: dict[tuple[str, str], dict[str, Live]] = {}
+    # (repo, file) -> {chat id: the checkout it last edited the file in}
+    touched: dict[tuple[str, str], dict[str, str]] = {}
+    by_id = {s.id: s for s in sessions}
     for s in sessions:
-        for top, f in s.touched:
+        for top, f, when in s.touched:
             c = checkouts[top]
-            if f in c.open:
-                touched.setdefault((c.repo, f), {})[s.id] = s
+            if f in c.open and not _committed_since(c, f, when):
+                touched.setdefault((c.repo, f), {})[s.id] = top
     pairs: dict[tuple[str, str], set[str]] = {}
     overlaps = []
-    for (repo, f), group in sorted(touched.items(), key=lambda kv: kv[0][1]):
-        if len(group) < 2:
+    for (repo, f), side in sorted(touched.items(), key=lambda kv: kv[0][1]):
+        if len(side) < 2:
             continue
-        side = {sid: next(t for t, g in s.touched if g == f and checkouts[t].repo == repo) for sid, s in group.items()}
+        group = {sid: by_id[sid] for sid in side}
         tops = sorted(set(side.values()))
         live = sum(now - s.updated_at <= LIVE_SECONDS for s in group.values()) >= 2
         conflict = None
@@ -459,7 +533,9 @@ def status(since: float) -> dict:
                 # For each session, a note to paste into it about the others.
                 "notes": {
                     sid: "\n".join(
-                        _about(o, checkouts[side[oid]], situation, [f]) for oid, o in group.items() if oid != sid
+                        _about(o, checkouts[side[oid]], situation, [f], side[oid] == side[sid])
+                        for oid, o in group.items()
+                        if oid != sid
                     )
                     + "\nTell the user before changing it further, and agree which change goes in first."
                     for sid in group
@@ -483,7 +559,7 @@ def status(since: float) -> dict:
                 "updated_at": s.updated_at,
                 "age_seconds": int(now - s.updated_at),
                 "live": now - s.updated_at <= LIVE_SECONDS,
-                "files": sorted({f for _, f in s.touched}),
+                "files": sorted({f for _, f, _ in s.touched}),
             }
         )
     levels = {o["level"] for o in overlaps}
@@ -510,7 +586,11 @@ def elsewhere(path: str, since: float) -> str:
         return f"{path} is not in a git repo."
     lines = []
     for s in sessions:
-        mine = [(t, f) for t, f in s.touched if checkouts[t].repo == here.repo and f in checkouts[t].open]
+        mine = [
+            (t, f)
+            for t, f, when in s.touched
+            if checkouts[t].repo == here.repo and f in checkouts[t].open and not _committed_since(checkouts[t], f, when)
+        ]
         if not mine:
             continue
         clash: set[str] = set()
@@ -539,7 +619,13 @@ class Decision:
 
 
 def check_edit(
-    agent: str, session_id: str, path: str, cwd: str | None, since: float, acts=("worktree", "ask", "tell")
+    agent: str,
+    session_id: str,
+    path: str,
+    cwd: str | None,
+    since: float,
+    acts=("worktree", "ask", "tell"),
+    transcript: str | None = None,
 ) -> Decision | None:
     """Called when an agent is about to edit `path`. Logs the edit, then checks other chats
     with open changes to the same file in the same repo and applies the person's rule for the
@@ -547,7 +633,7 @@ def check_edit(
     before an edit and to inform after it). Each other chat is raised once, listing every
     file the two share, and again only if things get worse."""
     path = os.path.realpath(path if os.path.isabs(path) or not cwd else os.path.join(cwd, path))
-    _log(agent, session_id, path, cwd)
+    _log(agent, session_id, path, cwd, transcript)
     tops: dict[str, str | None] = {}
     top = _top(path, tops)
     repo = _repo_dir(top) if top else None
@@ -556,35 +642,32 @@ def check_edit(
         return None
     rel = os.path.relpath(path, top)
     me = f"{agent}:{session_id}"
+    source = os.path.realpath(transcript) if transcript else None
     repos: dict[str, str | None] = {}
 
-    def in_repo(s: Live) -> dict[str, str]:
-        """The chat's edits in this repo: repo-relative path -> its checkout."""
-        out = {}
-        for f in s.edits:
-            full = os.path.realpath(f if os.path.isabs(f) or not s.folder else os.path.join(s.folder, f))
-            t = _top(full, tops)
-            if t and repos.setdefault(t, _repo_dir(t)) == repo:
-                out[os.path.relpath(full, t)] = t
-        return out
+    def in_repo(s: Live) -> dict[str, tuple[str, float | None]]:
+        """The chat's edits in this repo: repo-relative path -> (checkout, when)."""
+        return {f: (t, when) for t, f, when in _resolve(s, tops) if repos.setdefault(t, _repo_dir(t)) == repo}
+
+    def is_me(s: Live) -> bool:
+        return s.id == me or bool(source and s.source == source)
 
     sessions = _sessions(since)
-    others = [(s, theirs) for s in sessions if s.id != me and rel in (theirs := in_repo(s))]
+    others = [(s, theirs) for s in sessions if not is_me(s) and rel in (theirs := in_repo(s))]
     if not others:
         return None
-    mine = next((s for s in sessions if s.id == me), None)
-    my_files = (set(in_repo(mine)) if mine else set()) | {rel}
+    my_files = {f for s in sessions if is_me(s) for f in in_repo(s)} | {rel}
     checkouts: dict[str, Checkout | None] = {top: _checkout(top)}
     if not checkouts[top]:
         return None
     rank = {name: i for i, name in enumerate(reversed(SITUATIONS))}  # overlap 0 … same_copy 2
     found = []
     for s, theirs in others:
-        t = theirs[rel]
+        t, when = theirs[rel]
         if t not in checkouts:
             checkouts[t] = _checkout(t)
         c = checkouts[t]
-        if not c or rel not in c.open:
+        if not c or rel not in c.open or _committed_since(c, rel, when):
             continue
         if t == top and time.time() - s.updated_at <= LIVE_SECONDS:
             situation = "same_copy"
@@ -593,8 +676,8 @@ def check_edit(
         else:
             situation = "overlap"
         if want[situation] in acts:
-            shared = sorted(f for f, ft in theirs.items() if f in my_files and ft == t and f in c.open)
-            found.append((situation, s, c, shared))
+            shared = sorted(f for f, (ft, _) in theirs.items() if f in my_files and ft == t and f in c.open)
+            found.append((situation, s, c, shared, t == top))
     if not found:
         return None
 
@@ -609,7 +692,7 @@ def check_edit(
         return None
     now = time.time()
     warned = {k: v for k, v in warned.items() if now - v.get("at", 0) < 2 * 86400}
-    warned[me] = {"at": now, "chats": {**seen, **{s.id: rank[sit] for sit, s, _, _ in fresh}}}
+    warned[me] = {"at": now, "chats": {**seen, **{s.id: rank[sit] for sit, s, *_ in fresh}}}
     with contextlib.suppress(OSError):
         os.makedirs(os.path.dirname(WARNED), exist_ok=True)
         with open(WARNED, "w") as f:
@@ -617,9 +700,9 @@ def check_edit(
 
     action = min((want[sit] for sit, *_ in fresh), key=ACTIONS.index)
     default = (_git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ["main"])[0]
-    lines = ["recall: " + _about(s, c, sit, shared) for sit, s, c, shared in fresh]
+    lines = ["recall: " + _about(s, c, sit, shared, same) for sit, s, c, shared, same in fresh]
     lines.append(_instruction(action, rel, _repo_name(repo), default))
-    worst, other = max(((sit, s) for sit, s, _, _ in fresh), key=lambda x: rank[x[0]])
+    worst, other = max(((sit, s) for sit, s, *_ in fresh), key=lambda x: rank[x[0]])
     words = {"same_copy": " in this working copy", "conflict": " and would conflict", "overlap": ""}[worst]
     notice = f"recall: {os.path.basename(path)} is also open in “{other.title}”{words}"
     return Decision(action, "\n".join(lines), notice)
