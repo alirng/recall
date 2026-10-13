@@ -232,8 +232,8 @@ local models nothing leaves your machine. recall has no telemetry. See [SECURITY
 **What does it cost?**
 With a local model, nothing but electricity. With a subscription it uses your plan's
 allowance: the nightly run is capped at 80 model calls by default, so a first backfill of a
-few thousand chats spreads across several nights. With an API key, a small model such as
-Claude Haiku costs cents a night.
+few thousand chats spreads across several nights. With an API key, the nightly run uses the
+batch API at half price and stops at $1 a night by default ([details](docs/reference.md#batch-api-and-the-dollar-budget)).
 
 **How is this different from Claude Code's or Codex's own memory?**
 Each tool's memory only knows that tool's chats and lives in its own format. recall spans all
