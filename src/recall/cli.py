@@ -161,15 +161,20 @@ def cmd_links(a) -> None:
         commits.clear(con)
         sys.exit("commit links are off ([links] enabled = false in config.toml); any stored links were removed")
     result = commits.update(con, log=lambda m: print(m, file=sys.stderr))
+    if result.get("busy"):
+        print("another recall process is updating commit links; showing them as they stand", file=sys.stderr)
     if a.episodes:
         found = commits.episodes(con)
         if a.json:
             print(json.dumps(found, indent=2))
             return
         for e in found:
-            print(f"{e['fix_commit'][:8]}  {e['repo']}  fixes a {e['failure']['kind']} in {e['failure']['chat']}")
+            f = e["failure"]
+            where = f"in {f['session_id']}" if f["session_id"] else f"(commit {f['detail'][:8]})"
+            print(f"{e['fix_commit'][:8]}  {e['repo']}  fixes a {f['kind']} {where}")
             print(f"  prompt: {(e['prompt'] or '')[:160]}")
-        print(f"{len(found)} failure-then-fix episodes")
+        failures = sum(e["failure_count"] for e in found)
+        print(f"{len(found)} fixing commits, after {failures} failures (each counted once)")
         return
     out = {**commits.stats(con), "seconds": result.get("seconds")}
     print(json.dumps(out, indent=2) if a.json else "\n".join(f"{k:18} {v}" for k, v in out.items()))
