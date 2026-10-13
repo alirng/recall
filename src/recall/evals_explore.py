@@ -19,7 +19,8 @@ agent    (`recall eval explore --agent MODEL`) Reruns --limit past exploration p
          subagent_type Explore and the original prompt, with recall's hook (arm "with") or
          without it ("without"), --repeats times each. It measures the subagent's tokens, tool
          calls and time from Claude Code's own accounting, and a blind judge compares the two
-         reports of each repeat. The copies only read; Ali's working repos are never touched.
+         reports of each repeat. Each run gets its own copy, so whatever the subagent does with
+         its shell stays in that copy; the owner's checkouts are only cloned from.
 """
 
 import json
@@ -86,14 +87,22 @@ def cases(con) -> tuple[list[dict], dict[str, set[str]]]:
 
 
 def replay(con, c: dict, files: dict) -> dict:
-    """What the cache would have served for one past exploration, and how good it was."""
+    """What the cache would have served for one past exploration, and how good it was. The
+    picker is the shipped one (explore.best at explore.THRESHOLD); the sweep reruns it at
+    other thresholds for choosing the gate on train."""
     mine = files[c["id"]]
 
     def recall_of(other_id: str) -> float:
         return len(mine & files[other_id]) / len(mine)
 
     found = explore.candidates(con, c["row"]["repo"], c["row"]["prompt"], before=c["start"] - GAP)
-    pick = explore.best(found, 0.0)
+    score = {m.row["id"]: m.score for m in found}
+    pick = explore.best(found, explore.THRESHOLD)
+    ungated = explore.best(found, 0.0)
+    sweep = {}
+    for th in SWEEP:
+        p = explore.best(found, th)
+        sweep[str(th)] = recall_of(p.row["id"]) if p else None
     row = {
         "status": h.OK,
         "files": len(mine),
@@ -101,26 +110,28 @@ def replay(con, c: dict, files: dict) -> dict:
         "latest_recall": recall_of(c["earlier"][0]["id"]),
         "oracle_recall": max(recall_of(e["id"]) for e in c["earlier"]),
         "top_score": round(found[0].score, 4) if found else 0.0,
-        "pick_score": round(next(m.score for m in found if m.row["id"] == pick.row["id"]), 4) if pick else 0.0,
-        "pick_recall": recall_of(pick.row["id"]) if pick else 0.0,
-        "pick_age_days": round((c["start"] - pick.row["created_at"]) / 86400, 2) if pick else None,
+        "served": int(pick is not None),
         "pick": pick.row["id"] if pick else None,
+        "pick_score": round(score[pick.row["id"]], 4) if pick else None,
+        "pick_recall": recall_of(pick.row["id"]) if pick else None,
+        "pick_age_days": round((c["start"] - pick.row["created_at"]) / 86400, 2) if pick else None,
+        "ungated_recall": recall_of(ungated.row["id"]) if ungated else 0.0,
+        "sweep": sweep,
     }
-    row["served"] = int(pick is not None and found[0].score >= explore.THRESHOLD)
-    row["useful"] = int(row["pick_recall"] >= USEFUL)
+    row["useful"] = int(pick is not None and row["pick_recall"] >= USEFUL)
     return row
 
 
 def _sweep(rows: list[dict]) -> list[dict]:
     out = []
     for th in SWEEP:
-        served = [r for r in rows if r["top_score"] >= th]
+        got = [r["sweep"][str(th)] for r in rows if r["sweep"][str(th)] is not None]
         out.append(
             {
                 "threshold": th,
-                "serve_rate": round(len(served) / len(rows), 3) if rows else 0,
-                "useful_when_served": round(sum(r["useful"] for r in served) / len(served), 3) if served else None,
-                "recall_when_served": round(sum(r["pick_recall"] for r in served) / len(served), 3) if served else None,
+                "serve_rate": round(len(got) / len(rows), 3) if rows else 0,
+                "useful_when_served": round(sum(g >= USEFUL for g in got) / len(got), 3) if got else None,
+                "recall_when_served": round(sum(got) / len(got), 3) if got else None,
             }
         )
     return out
@@ -149,7 +160,7 @@ def offline(run, judge: str | None, sample: int | None) -> dict:
             "file_recall_when_served": h.ci([r["pick_recall"] for r in served]) if served else None,
             "latest_file_recall_same_cases": h.ci([r["latest_recall"] for r in served]) if served else None,
             "oracle_file_recall_same_cases": h.ci([r["oracle_recall"] for r in served]) if served else None,
-            "file_recall_all_top1": h.ci([r["pick_recall"] for r in part]),
+            "file_recall_all_ungated": h.ci([r["ungated_recall"] for r in part]),
             "latest_file_recall_all": h.ci([r["latest_recall"] for r in part]),
             "served_older_than_1d": round(sum(1 for r in served if r["pick_age_days"] > 1) / len(served), 3)
             if served
@@ -326,7 +337,9 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
         cols = [d[1] for d in con.execute("pragma table_info(explorations)")]
         for e in con.execute("select * from explorations where created_at < ?", (c["start"] - GAP,)):
             db.execute(f"insert into explorations values ({','.join('?' * len(cols))})", tuple(e))
-            db.execute("insert into explorations_fts values (?,?,?)", (e["id"], e["prompt"], e["report"]))
+            db.execute(
+                "insert into explorations_fts values (?,?,?,?)", (e["id"], e["session_id"], e["prompt"], e["report"])
+            )
         db.commit()
         # This checkout's code answers the hook, with its own data folder.
         src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -355,6 +368,12 @@ def _run_one(con, c: dict, arm: str, rep: int, model: str, timeout: int, work: s
         "stream-json",
         "--verbose",
         "--no-session-persistence",  # nothing reaches ~/.claude/projects, so the real index never sees these
+        # Only the repo's own settings and this run's local ones: the user's hooks (an installed
+        # recall among them) would serve the "without" arm too, or the "with" arm twice.
+        "--setting-sources",
+        "project,local",
+        "--permission-mode",
+        "bypassPermissions",  # Explore searches with Bash; the copy is scratch
         "--strict-mcp-config",  # no MCP servers: the runs stay off the owner's live connectors
         "--mcp-config",
         '{"mcpServers": {}}',
@@ -528,7 +547,8 @@ def from_args(a) -> None:
         settings = {"model": model, "repeats": a.repeats, "limit": a.limit or 10, "workers": min(a.workers, 2)}
         settings["flags"] = (
             "claude -p --model M --output-format stream-json --verbose --no-session-persistence "
-            "--strict-mcp-config --mcp-config '{\"mcpServers\": {}}'; user settings, hooks and permission mode as usual"
+            "--setting-sources project,local --permission-mode bypassPermissions "
+            "--strict-mcp-config --mcp-config '{\"mcpServers\": {}}' (prompt on stdin)"
         )
         run = h.Run("explore_agent", "test", settings, a.who, a.runs_dir)
         agent(run, model, a.judge or h.JUDGE, a.limit or 10, max(1, a.repeats), a.workers, timeout)
