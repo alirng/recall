@@ -99,56 +99,97 @@ class Scope:
 _GROUP_KEY = "case when scope='project' then coalesce(project_key, '') else '' end"
 
 
-def run(con, client: Client, store: NoteStore, notes: dict[str, Note], log=print, each=None) -> Counter:
-    """Fold every new candidate into notes, one group (scope) at a time. each(fn, groups)
-    runs fn on every group; by default in turn, and a caller may run groups side by side
-    (each group's notes are its own, but the database connection and `notes` are shared)."""
-    stats = Counter()
-    for note in notes.values():
-        if note.edited_by_hand:  # keep the rules read back from a hand edit
-            store.write(note)
-            stats["edited by hand"] += 1
-    removed = [
-        {"title": n.title, "body": r.text, "scope": n.scope, "project": n.project}
-        for n in store.load(include_archived=True).values()
-        for r in n.rules
-        if r.reason == REMOVED_BY_HAND
-    ]
-    groups = con.execute(
-        f"""select scope, {_GROUP_KEY} key, max(project_name) name, count(*) n
-            from candidates where status='new' group by scope, {_GROUP_KEY} order by n desc"""
-    ).fetchall()
+def run(con, client: Client, store: NoteStore, notes: dict[str, Note], log=print) -> Counter:
+    """Fold every new candidate into notes, one group (scope) at a time."""
+    fold = Consolidation(con, store, notes, log)
+    for group in fold.groups:
+        while (request := fold.prepare(group)) is not None:
+            fold.apply(group, client.json(request.purpose, request.system, request.prompt, request.schema))
+    return fold.finish()
 
-    def one(g) -> None:
-        scope = Scope(g["scope"], g["key"] or None, g["name"]) if g["scope"] == "project" else Scope(g["scope"])
-        candidates = con.execute(
-            f"select * from candidates where status='new' and scope=? and {_GROUP_KEY}=? order by chat_ts, id",
-            (g["scope"], g["key"]),
-        ).fetchall()
-        log(f"consolidating {len(candidates)} candidates into {scope.label}")
-        rejected = [
-            r for r in store.rejected() + removed if r.get("scope") == scope.kind and r.get("project") == scope.key
+
+@dataclass
+class Request:
+    """One model call: client.json(purpose, system, prompt, schema)."""
+
+    purpose: str
+    system: str
+    prompt: str
+    schema: dict
+
+
+@dataclass
+class Group:
+    """The new candidates of one scope, taken BATCH at a time, oldest first."""
+
+    scope: Scope
+    candidates: list
+    rejected: list
+    start: int = 0  # the first candidate of the current batch
+    prompt: str | None = None  # the current batch's prompt, once prepared
+    retry: bool = False  # the answer waved the batch away: ask once more
+
+
+class Consolidation:
+    """Consolidation as steps, so a caller can send one request per group at a time and
+    apply the answers in turn: prepare(group) gives the group's next request (None when the
+    group is done), apply(group, answer) checks and applies it, and finish() closes the run.
+    A group's batches depend on each other; groups do not, as each holds its own notes."""
+
+    def __init__(self, con, store: NoteStore, notes: dict[str, Note], log=print):
+        self.con, self.store, self.notes, self.log = con, store, notes, log
+        self.stats = Counter()
+        for note in notes.values():
+            if note.edited_by_hand:  # keep the rules read back from a hand edit
+                store.write(note)
+                self.stats["edited by hand"] += 1
+        removed = [
+            {"title": n.title, "body": r.text, "scope": n.scope, "project": n.project}
+            for n in store.load(include_archived=True).values()
+            for r in n.rules
+            if r.reason == REMOVED_BY_HAND
         ]
-        for start in range(0, len(candidates), BATCH):
-            batch = candidates[start : start + BATCH]
-            existing = [n for n in notes.values() if scope.holds(n)]
-            prompt = _render(scope, _related(existing, batch), batch, rejected[-30:])
-            ops = client.json("consolidate", SYSTEM, prompt, SCHEMA)["operations"]
-            if _bulk_discard(ops, len(batch)):
-                # Small models sometimes wave a whole batch away with one blanket reason.
-                ops = client.json("consolidate-retry", SYSTEM, prompt + BULK_DISCARD_NUDGE, SCHEMA)["operations"]
-            _apply(con, store, notes, scope, batch, ops, stats, log)
-            con.commit()
-            stats["batches"] += 1
+        rejected = store.rejected() + removed
+        self.groups = []
+        for g in con.execute(
+            f"""select scope, {_GROUP_KEY} key, max(project_name) name, count(*) n
+                from candidates where status='new' group by scope, {_GROUP_KEY} order by n desc"""
+        ).fetchall():
+            scope = Scope(g["scope"], g["key"] or None, g["name"]) if g["scope"] == "project" else Scope(g["scope"])
+            candidates = con.execute(
+                f"select * from candidates where status='new' and scope=? and {_GROUP_KEY}=? order by chat_ts, id",
+                (g["scope"], g["key"]),
+            ).fetchall()
+            mine = [r for r in rejected if r.get("scope") == scope.kind and r.get("project") == scope.key]
+            self.groups.append(Group(scope, candidates, mine[-30:]))
 
-    (each or _in_turn)(one, groups)
-    stats["expired"] = expire(store, notes)
-    return stats
+    def prepare(self, group: Group) -> Request | None:
+        if group.start >= len(group.candidates):
+            return None
+        if group.prompt is None:
+            if group.start == 0:
+                self.log(f"consolidating {len(group.candidates)} candidates into {group.scope.label}")
+            batch = group.candidates[group.start : group.start + BATCH]
+            existing = [n for n in self.notes.values() if group.scope.holds(n)]
+            group.prompt = _render(group.scope, _related(existing, batch), batch, group.rejected)
+        if group.retry:  # small models sometimes wave a whole batch away with one blanket reason
+            return Request("consolidate-retry", SYSTEM, group.prompt + BULK_DISCARD_NUDGE, SCHEMA)
+        return Request("consolidate", SYSTEM, group.prompt, SCHEMA)
 
+    def apply(self, group: Group, answer: dict) -> None:
+        batch = group.candidates[group.start : group.start + BATCH]
+        ops = answer["operations"]
+        if not group.retry and _bulk_discard(ops, len(batch)):
+            group.retry = True  # the next prepare() asks again
+            return
+        _apply(self.con, self.store, self.notes, group.scope, batch, ops, self.stats, self.log)
+        self.con.commit()
+        self.stats["batches"] += 1
+        group.start, group.prompt, group.retry = group.start + BATCH, None, False
 
-def _in_turn(fn, items) -> None:
-    for item in items:
-        fn(item)
+    def finish(self) -> Counter:
+        self.stats["expired"] = expire(self.store, self.notes)
+        return self.stats
 
 
 def expire(store: NoteStore, notes: dict[str, Note]) -> int:
