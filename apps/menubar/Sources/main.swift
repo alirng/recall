@@ -209,8 +209,17 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.standardOutput = out
         p.standardError = err
         do { try p.run() } catch { return .failure(RunError(message: "Couldn't start \(command[0])")) }
+        // Drain stderr alongside stdout: a child that fills one pipe while we wait on the
+        // other would block forever.
+        var errData = Data()
+        let drained = DispatchGroup()
+        drained.enter()
+        DispatchQueue.global().async {
+            errData = err.fileHandleForReading.readDataToEndOfFile()
+            drained.leave()
+        }
         let data = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        drained.wait()
         p.waitUntilExit()
         if p.terminationStatus != 0 {
             let msg = String(data: errData, encoding: .utf8)?.split(separator: "\n").last.map(String.init)

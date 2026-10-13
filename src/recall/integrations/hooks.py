@@ -8,9 +8,9 @@ retry through). No agent's hooks can make it ask the person before an edit in ev
 but all of these can refuse one, so ask works the same everywhere.
 
   claude  PreToolUse on Edit/Write: context or deny.
-  codex   PreToolUse on apply_patch, whose input is the patch text, and on shell commands,
-          since a patch can also be applied through one: context or deny. Codex runs a new or
-          changed hook only after it is trusted in /hooks.
+  codex   PreToolUse on apply_patch, whose input is the patch text: context or deny. A patch
+          applied through a shell command is not seen; a hook on every shell command would
+          cost each one a Python start. Codex runs a hook only after it is trusted in /hooks.
   cursor  preToolUse on Write can only allow or deny, and must always print JSON or the edit
           is blocked; postToolUse carries context. Cursor also runs Claude Code's hooks, so
           the claude hook stands down inside Cursor and Cursor's own hooks answer.
@@ -23,18 +23,17 @@ AGENTS.md line are the way in, until their hooks are confirmed working.
 """
 
 import json
-import os
-import re
 from dataclasses import dataclass
+
+from ..status import patch_files
 
 EDIT_TOOLS = {
     "claude": "Edit|Write|MultiEdit|NotebookEdit",
-    "codex": "^(apply_patch|Bash)$",
+    "codex": "^apply_patch$",
     "cursor": "Write",
     "gemini": "^(write_file|replace)$",
 }
 DELIVERS = ("worktree", "ask", "tell")
-_PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.M)
 
 
 @dataclass
@@ -43,6 +42,7 @@ class Edit:
     files: list[str]
     cwd: str | None
     acts: tuple[str, ...] = DELIVERS  # the actions this call can carry out
+    transcript: str | None = None  # where the agent writes this chat, to tell it from others
 
 
 def parse(agent: str, event: dict) -> Edit | None:
@@ -54,26 +54,29 @@ def parse(agent: str, event: dict) -> Edit | None:
         target = args.get("file_path") or args.get("notebook_path")
         files = [target] if target else []
     elif agent == "codex":
-        patch = str(args.get("command") or args.get("input") or "")
-        files = [(m.group(1) or m.group(2)).strip() for m in _PATCH_FILE.finditer(patch)]
+        files = patch_files(str(args.get("command") or args.get("input") or ""), cwd)
     elif agent in ("cursor", "gemini", "opencode"):
         # These can refuse only before an edit and add a note only after it.
         if agent == "opencode":
             args = event.get("args") or {}
-            patch = str(args.get("patchText") or "")
-            files = [(m.group(1) or m.group(2)).strip() for m in _PATCH_FILE.finditer(patch)]
-            files += [args["filePath"]] if args.get("filePath") else []
+            files = patch_files(str(args.get("patchText") or ""), cwd) + (
+                [args["filePath"]] if args.get("filePath") else []
+            )
         else:
             target = args.get("file_path") or args.get("path") or args.get("target_file")
             files = [target] if target else []
-        files = [f if os.path.isabs(f) or not cwd else os.path.join(cwd, f) for f in files]
         after = str(event.get("hook_event_name", "")).lower().startswith(("post", "after"))
         session = event.get("conversation_id") if agent == "cursor" else event.get("session_id")
-        return Edit(session, files, cwd, ("tell",) if after else ("worktree", "ask")) if session and files else None
+        acts = ("tell",) if after else ("worktree", "ask")
+        return Edit(session, files, cwd, acts, event.get("transcript_path")) if session and files else None
     else:
         return None
     session = event.get("session_id")
-    return Edit(session, list(dict.fromkeys(files)), cwd) if session and files else None
+    return (
+        Edit(session, list(dict.fromkeys(files)), cwd, transcript=event.get("transcript_path"))
+        if session and files
+        else None
+    )
 
 
 def render(agent: str, event: dict, action: str, message: str, notice: str) -> tuple[str, int]:
