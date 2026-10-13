@@ -433,6 +433,11 @@ def cmd_eval(a) -> None:
 
         evals_memorycode.from_args(a)
         return
+    if a.kind == "explore":
+        from . import evals_explore
+
+        evals_explore.from_args(a)
+        return
     if a.kind == "amb":
         from . import evals_amb
 
@@ -630,7 +635,7 @@ def _parser() -> argparse.ArgumentParser:
     command("serve", cmd_serve, "run the MCP server over stdio")
 
     sp = command("eval", cmd_eval, "measure search, answer or memory quality")
-    kinds = ["search", "memory", "agent", "longmemeval", "locomo", "swe-contextbench", "memorycode", "amb"]
+    kinds = ["search", "memory", "agent", "longmemeval", "locomo", "swe-contextbench", "memorycode", "amb", "explore"]
     sp.add_argument("kind", nargs="?", choices=kinds, default="search")
     sp.add_argument("--cases", help="JSONL of hand-written cases; for longmemeval, the dataset's JSON file")
     sp.add_argument("--limit", type=int, help="longmemeval: the first N questions; v2: a fixed sample of N cases")
