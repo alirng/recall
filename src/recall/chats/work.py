@@ -82,9 +82,34 @@ def _note_ask(w: Work, at: float | None, raw: str) -> str:
 def _note_command(w: Work, at: float | None, cmd: str, out: str, failed: bool) -> None:
     if _COMMIT_CMD.search(cmd):
         w.events.append((at, "commit", redact(cmd)[:2000], redact(out)[:2000]))
-    elif failed and w.edited:
+    elif failed and w.edited and (_CHECK.search(cmd) or not _only_looking(cmd)):
         kind = "check" if _CHECK.search(cmd) else "command"
         w.events.append((at, kind, redact(cmd)[:500], redact(out)[-800:]))
+
+
+# Commands that only look around. grep finding nothing, or ls on a missing file, exits
+# non-zero without anything being wrong with the code.
+_LOOKING = frozenset(
+    "cd ls cat bat head tail grep rg ag fd find wc pwd echo printf sed awk sort uniq cut tr test [ which "
+    "type command stat file du tree sleep true false diff jq nl less more open realpath dirname basename".split()
+)
+_GIT_LOOKING = frozenset("status log diff show branch rev-parse ls-files grep blame remote config".split())
+
+
+def _only_looking(cmd: str) -> bool:
+    """Whether every program a shell command runs only reads or searches."""
+    for part in re.split(r"&&|\|\||[;|\n]", cmd):
+        words = [x for x in part.split() if not re.match(r"^\w+=", x)]
+        if not words:
+            continue
+        prog = os.path.basename(words[0].strip("(`"))
+        if prog == "git":
+            sub = next((x for x in words[1:] if not x.startswith("-") and "/" not in x), "")
+            if sub not in _GIT_LOOKING:
+                return False
+        elif prog not in _LOOKING:
+            return False
+    return True
 
 
 def _patch(text: str, cwd: str | None, at: float | None, ask: str) -> list[Edit]:

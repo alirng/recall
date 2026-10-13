@@ -10,7 +10,7 @@ commit` (or revert, or cherry-pick) itself is matched by the sha git printed, or
 commit's subject when the agent keeps no command output (Cursor).
 
 Private by design. Links live only in recall's index. Git is only read (rev-parse, rev-list,
-log, show, blame), with optional locks, lazy fetching and textconv caches off, so nothing is
+log, show, blame), with optional locks, lazy fetching and textconv off, so nothing is
 written to any repo: no commit messages, trailers, notes, refs, branches, hooks or objects,
 and nothing is pushed or fetched. `[links] enabled = false` in config.toml stops linking and
 drops every table here.
@@ -46,7 +46,7 @@ KEPT = ("link_chats", "link_edits", "link_events", "link_checkouts")
 KEPT_VERSION = 1  # a change to a KEPT table migrates it in _migrate; never drop one
 DERIVED = ("link_repos", "link_todo", "link_commits", "link_commit_files", "commit_links")
 DERIVED_VERSION = 3  # bump to rebuild the DERIVED tables
-READ_VERSION = 2  # bump when chats/work.py reads differently: chats still on disk are read again
+READ_VERSION = 3  # bump when chats/work.py reads differently: chats still on disk are read again
 SCHEMA = """
 create table if not exists link_chats (session_id text primary key, fingerprint text, size int, read_at real);
 create table if not exists link_edits (
@@ -226,19 +226,19 @@ def _migrate(con, version: int) -> None:
 
 def clear(con) -> bool:
     """Forget every link and everything read for them, for when linking is turned off. The
-    freed pages are zeroed and the write-ahead log truncated, so nothing lingers on disk."""
+    database is vacuumed and the write-ahead log truncated, so no deleted row lingers in free
+    pages either (rows rewritten in normal use leave some)."""
     if not con.execute(
         f"select 1 from sqlite_master where name in ({','.join('?' * len(KEPT + DERIVED))})", (*KEPT, *DERIVED)
     ).fetchone():
         return False
-    con.execute("pragma secure_delete = on")
     for t in (*KEPT, *DERIVED):
         con.execute(f"drop table if exists {t}")
     con.execute("delete from meta where k like 'links_%'")
     con.commit()
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception):  # another process holding the database: it runs next time too
+        con.execute("vacuum")
         con.execute("pragma wal_checkpoint(TRUNCATE)")
-    con.execute("pragma secure_delete = off")
     return True
 
 
@@ -372,7 +372,8 @@ def _store_chat(con, r, work: Work, cache: dict, shrank: bool) -> None:
         kept = [
             tuple(e) for e in con.execute("select at, kind, text, detail from link_events where session_id=?", (sid,))
         ]
-        events = kept + [e for e in events if e not in set(kept)]
+        before = set(kept)
+        events = kept + [e for e in events if e not in before]
     con.execute("delete from link_events where session_id=?", (sid,))
     con.executemany("insert into link_events values (?,?,?,?,?,?)", [(sid, i, *e) for i, e in enumerate(events)])
     # A chat that ran `git commit` in its folder may have committed edits made by hand.
@@ -425,7 +426,7 @@ def scan(con, repo: str) -> int:
         if not fresh:
             continue
         out = git(
-            gitdir, "log", "--no-walk=unsorted", "--stdin", "--name-only", f"--format={_FORMAT}",
+            gitdir, "log", "--no-walk=unsorted", "--stdin", "--name-only", "--no-renames", f"--format={_FORMAT}",
             stdin="\n".join(fresh), gitdir=True, timeout=300,
         )  # fmt: skip
         rows, files = [], []
@@ -482,14 +483,15 @@ def _diff(con, repo: str, shas: list[str]) -> None:
     for gitdir, todo in by_dir.items():
         for i in range(0, len(todo), 100):
             batch = todo[i : i + 100]
-            got = _patches(gitdir, batch)
+            got, tried = _patches(gitdir, batch), set(batch)
             if got is None:  # one commit can fail a batch: read them one at a time, for a while
-                got, until = {}, time.time() + 120
+                got, tried, until = {}, set(), time.time() + 120
                 for sha in batch:
                     if time.time() < until:
                         got.update(_patches(gitdir, [sha], timeout=60) or {})
+                        tried.add(sha)
             rows, done = [], []
-            for sha in batch:
+            for sha in [s for s in batch if s in tried]:  # the rest are tried on the next run
                 total = 0
                 for path, lines in got.get(sha, {}).items():
                     hs = _hashes(lines) if len(lines) <= MAX_FILE_LINES and not _GENERATED.search(path) else set()
@@ -1081,6 +1083,7 @@ def episodes(con, repo: str | None = None, days: int = 7) -> list[dict]:
         strong = [f for f in ep["failures"] if f["kind"] in ("check", "correction", "revert")]
         ep["failure"] = (strong or ep["failures"])[-1]
         ep["failure_count"] = len(ep["failures"])
+        ep["failure_kinds"] = dict(Counter(f["kind"] for f in ep["failures"]))
         ep["failures"] = ep["failures"][-10:]
     return list(out.values())
 
