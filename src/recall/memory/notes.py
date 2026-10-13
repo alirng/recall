@@ -164,7 +164,7 @@ class NoteStore:
 
     def write(self, note: Note) -> None:
         for r in note.rules:  # the body is rendered from the rules, so a credential is cut from them too
-            r.text, r.evidence = redact(r.text), redact(r.evidence)
+            r.text, r.evidence, r.reason = redact(r.text), redact(r.evidence), redact(r.reason)
         sync(note)
         note.title, note.body = redact(note.title), redact(note.body)  # a note never keeps a credential
         directory = self._dir_for(note)
