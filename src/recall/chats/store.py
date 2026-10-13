@@ -7,12 +7,15 @@ import time
 from datetime import datetime
 
 from .. import paths
+from . import archive
 from .projects import resolve
 from .redact import redact
-from .transcript import Session, conversation_fingerprint
+from .transcript import Message, Session, conversation_fingerprint
 
 MAX_MESSAGE_CHARS = 20_000
-# The chat index is derived data: bumping this drops and rebuilds it on next run.
+# Bumping this rebuilds the chat tables on next run: chats are re-read from their sources,
+# and the ones whose source is gone come back from the archive (archive.py), which a
+# rebuild never drops.
 CHAT_SCHEMA_VERSION = "2"
 CHAT_TABLES = ("sessions", "messages", "messages_fts", "sessions_fts", "seen", "chat_projects")
 
@@ -53,20 +56,97 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("pragma journal_mode=wal")
     con.execute("create table if not exists meta (k text primary key, v text)")
-    row = con.execute("select v from meta where k='chat_schema'").fetchone()
-    if not row or row[0] != CHAT_SCHEMA_VERSION:
-        for t in CHAT_TABLES:
-            con.execute(f"drop table if exists {t}")
-        con.execute("delete from meta where k like 'indexed_at:%' or k = 'projects_stamp'")
-        con.execute("insert or replace into meta values ('chat_schema', ?)", (CHAT_SCHEMA_VERSION,))
+    durable = path != ":memory:"
+    if durable:
+        archive.ensure(con)
+    if _schema(con) != CHAT_SCHEMA_VERSION:
+        con.execute("begin immediate")  # one process rebuilds; any other waits, then finds it done
+        built_by = _schema(con)
+        if built_by != CHAT_SCHEMA_VERSION:
+            if durable and built_by:
+                archive.snapshot(con, built_by)  # nothing the old tables hold is lost with them
+            for t in CHAT_TABLES:
+                con.execute(f"drop table if exists {t}")
+            con.execute("delete from meta where k like 'indexed_at:%' or k like 'scanned:%' or k = 'projects_stamp'")
+            con.execute("insert or replace into meta values ('chat_schema', ?)", (CHAT_SCHEMA_VERSION,))
+        con.commit()
     con.executescript(SCHEMA)
     return con
 
 
+def _schema(con) -> str | None:
+    row = con.execute("select v from meta where k='chat_schema'").fetchone()
+    return row[0] if row else None
+
+
 def upsert(con: sqlite3.Connection, s: Session) -> None:
+    """Write a parsed chat to the index, and its file's copy to the archive.
+
+    The shrink guard: if this file's earlier copy holds messages the parse no longer has
+    (the file was compacted or rewritten), they are kept, marked Kept; archive.merge has the
+    rule. The index then holds the union of the chat's copies from every file it lives in."""
+    stored = [Message(m.role, redact(m.text[:MAX_MESSAGE_CHARS]), m.ts) for m in s.messages if m.text.strip()]
+    if not archive.enabled(con):
+        _write(con, s, s.messages, stored)
+        return
+    others = []
+    msgs = stored
+    size = archive.source_size(s.source)
+    for row in archive.copies(con, s.id):
+        if row["source"] != s.source:
+            if archive.kind(row["source"]) == archive.kind(s.source):
+                others.append(archive.unpack(row["data"]).messages)
+            continue
+        # A copy from another parser version may differ for reasons that have nothing to do
+        # with the file, so only what it marked Kept carries over, unless the file shrank
+        # since: a rewrite.
+        shrank = (size or 0) < (row["source_size"] or 0)
+        same = row["parser"] == CHAT_SCHEMA_VERSION or shrank
+        msgs = archive.merge(archive.unpack(row["data"]).messages, stored, only_kept=not same)
+        if (n := archive.kept(msgs)) > (row["kept"] or 0):
+            archive.log(f"kept {n} messages of {s.id} that a re-read of {s.source} no longer has")
+    archive.save(con, s, msgs, CHAT_SCHEMA_VERSION, size)
+    shown = archive.union(msgs, others)
+    if shown is stored:
+        _write(con, s, s.messages, stored)
+    else:
+        _write(con, s, shown, shown)
+
+
+def restore(con: sqlite3.Connection, agents: list[str]) -> int:
+    """Put back archived chats of these agents that no source yielded on the last full
+    read, marked restored. Returns how many."""
+    if not agents or not archive.enabled(con):
+        return 0
+    ids = [
+        r[0]
+        for r in con.execute(
+            f"""select distinct id from chat_archive a where agent in ({",".join("?" * len(agents))})
+                and not exists (select 1 from sessions s where s.id = a.id)""",
+            agents,
+        )
+    ]
+    now = time.time()
+    for sid in ids:
+        rows = archive.copies(con, sid)
+        latest = rows[-1]  # the copy a source yielded most recently
+        s = archive.unpack(latest["data"])
+        same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
+        shown = archive.union(s.messages, [archive.unpack(r["data"]).messages for r in same_kind])
+        _write(con, s, shown, shown)
+        con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
+    if ids:
+        con.commit()
+        archive.log(f"restored {len(ids)} chat(s) from the archive: no source has them any more")
+    return len(ids)
+
+
+def _write(con: sqlite3.Connection, s: Session, parsed: list[Message], stored: list[Message]) -> None:
+    """The index rows for one chat. parsed: what the title and opening prompt come from;
+    stored: the message rows, already truncated and redacted."""
     con.execute("delete from messages where session_id=?", (s.id,))
     con.execute("delete from sessions_fts where id=?", (s.id,))
-    msgs = [m for m in s.messages if m.text.strip()]
+    msgs = [m for m in parsed if m.text.strip()]
     first_prompt = next((m.text for m in msgs if m.role == "user"), "")[:500]
     title = s.title or first_prompt[:80].replace("\n", " ")
     project = resolve(s.project)
@@ -82,7 +162,7 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
             s.started_at,
             s.updated_at,
             s.source,
-            len(msgs),
+            len(stored),
             redact(first_prompt),
             s.origin,
             conversation_fingerprint(msgs),
@@ -92,7 +172,7 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     )
     con.executemany(
         "insert into messages(session_id, seq, role, ts, text) values (?,?,?,?,?)",
-        [(s.id, i, m.role, m.ts, redact(m.text[:MAX_MESSAGE_CHARS])) for i, m in enumerate(msgs)],
+        [(s.id, i, m.role, m.ts, m.text) for i, m in enumerate(stored)],
     )
     con.execute(
         "insert into sessions_fts values (?,?,?,?)",
@@ -366,14 +446,39 @@ def read(con, chat_id: str, query=None, offset=None, limit=30, max_chars=2000) -
             text = text[:max_chars] + f"… [{len(r['text']) - max_chars} more chars]"
         msgs.append({"seq": r["seq"], "role": r["role"], "time": fmt_time(r["ts"]), "text": text})
     end = offset + len(rows)
-    return session_row(s) | {
+    out = session_row(s) | {
         "source": s["source"],
         "showing": f"{offset}-{end - 1} of {s['n_messages']}" if rows else "none",
         "next_offset": end if end < s["n_messages"] else None,
         "transcript": msgs,
     }
+    arch = (
+        archive.enabled(con)
+        and con.execute(
+            "select min(restored_at) restored, count(restored_at) = count(*) gone, sum(kept) kept"
+            " from chat_archive where id = ?",
+            (sid,),
+        ).fetchone()
+    )
+    if arch and arch["gone"] and arch["restored"]:
+        when = fmt_time(arch["restored"])
+        out["archived"] = f"no source has this chat any more; restored from recall's archive {when}"
+    elif arch and arch["kept"]:
+        out["archived"] = (
+            f"{arch['kept']} of these messages are gone from the chat's files and kept in recall's archive"
+        )
+    return out
 
 
 def stats(con) -> dict:
     rows = con.execute("select agent, count(*) n, sum(n_messages) m, max(updated_at) last from sessions group by agent")
-    return {r["agent"]: {"chats": r["n"], "messages": r["m"], "latest": fmt_time(r["last"])} for r in rows}
+    out = {r["agent"]: {"chats": r["n"], "messages": r["m"], "latest": fmt_time(r["last"])} for r in rows}
+    if archive.enabled(con):
+        for r in con.execute(
+            """select agent, count(*) n, sum(gone) restored, sum(kept) kept from (
+                 select id, agent, count(restored_at) = count(*) gone, sum(kept) kept from chat_archive group by id
+               ) group by agent"""
+        ):
+            if r["agent"] in out:
+                out[r["agent"]] |= {"archived": r["n"], "restored": r["restored"], "kept_messages": r["kept"] or 0}
+    return out

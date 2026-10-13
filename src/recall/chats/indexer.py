@@ -9,7 +9,7 @@ import time
 
 from .. import paths
 from . import store
-from .sources import all_sources
+from .sources import agents, all_sources
 
 # File-based sources are cheap to re-scan; Cursor's legacy store means reading a
 # multi-GB database, so it refreshes less often.
@@ -35,7 +35,7 @@ def index(con, only=None, force=False, max_age=None, log=None) -> dict:
         except BlockingIOError:
             return {}
         result = _index(con, only, force, max_age, log)
-        if max_age is None or any(r["indexed"] for r in result.values()):
+        if max_age is None or any(r["indexed"] or r.get("restored") for r in result.values()):
             from .. import embeddings
 
             embeddings.refresh(con, background=max_age is not None, log=log)
@@ -45,8 +45,28 @@ def index(con, only=None, force=False, max_age=None, log=None) -> dict:
 def _index(con, only, force, max_age, log) -> dict:
     from .. import config
 
+    selected = config.load()["sources"]
+    result = _scan(con, selected, only, force, max_age, log)
+    restored = store.restore(con, _read_since_rebuild(con, selected))
+    if restored:
+        result["archive"] = {"indexed": 0, "unchanged": 0, "restored": restored}
+    return result
+
+
+def _read_since_rebuild(con, selected) -> list[str]:
+    """Agents whose every source has been read in full since the chat tables were last
+    rebuilt: their archived chats that are not in the index now came from no source."""
+    stamps = {r[0] for r in con.execute("select k from meta where k like 'scanned:%'")}
+    return [
+        agent
+        for agent, (_, _, sources) in agents().items()
+        if (not selected or agent in selected) and all(f"scanned:{name}" in stamps for name in sources)
+    ]
+
+
+def _scan(con, selected, only, force, max_age, log) -> dict:
     result = {}
-    for name, items in all_sources(config.load()["sources"]).items():
+    for name, items in all_sources(selected).items():
         if only and name not in only:
             continue
         stamp_key = f"indexed_at:{name}"
@@ -89,7 +109,9 @@ def _index(con, only, force, max_age, log) -> dict:
                 con.commit()
                 if log:
                     log(f"{name}: {done} indexed…")
-        con.execute("insert or replace into meta values (?,?)", (stamp_key, str(time.time())))
+        now = str(time.time())
+        con.execute("insert or replace into meta values (?,?)", (stamp_key, now))
+        con.execute("insert or replace into meta values (?,?)", (f"scanned:{name}", now))
         con.commit()
         result[name] = {"indexed": done, "unchanged": skipped}
     return result
