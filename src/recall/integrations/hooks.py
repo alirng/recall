@@ -71,10 +71,11 @@ HANDLERS: dict[str, list[str]] = {
 }
 
 # Exploration subagents (explore.py): where each agent's subagent's prompt and report reach a
-# hook. Cursor's subagent tool is named Task, Subagent or mcp_task depending on the model.
+# hook. Codex only records: its SubagentStart comes before the child's task exists. Cursor's
+# subagent tool is named Task, Subagent or mcp_task depending on the model.
 EXPLORE = {
-    "claude": [("PreToolUse", "Agent|Task"), ("SubagentStop", "Explore")],
-    "codex": [("SubagentStart", "explorer"), ("SubagentStop", "explorer")],
+    "claude": [("PreToolUse", "Agent|Task"), ("SubagentStop", "[Ee]xplor")],
+    "codex": [("SubagentStop", "explorer")],
     "cursor": [("preToolUse", "Task|Subagent|mcp_task"), ("subagentStop", "explor")],
 }
 
