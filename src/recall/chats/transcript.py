@@ -33,13 +33,21 @@ class Session:
 
 
 # Harness-injected blocks that show up inside "user" turns. They are context the
-# tool added, not something the person said, and they swamp search results.
+# tool added, not something the person said, and they swamp search results. Memory
+# extraction reads user turns as the developer speaking, so hook output, other agents'
+# messages and tool output must never stay in them. Some blocks carry attributes.
 _INJECTED = re.compile(
     r"<(system-reminder|environment_context|user_instructions|app-context|recommended_plugins|"
     r"permissions instructions|collaboration_mode|multi_agent_[a-z_]+|local-command-[a-z]+|"
     r"command-[a-z]+|timestamp|image_files|attached_files|additional_data|user_info|rules|"
-    r"agent_skills|open_and_recently_viewed_files|git_status|turn_aborted|task-notification|"
-    r"dynamic_tool_catalog|ide_selection|ide_opened_file|external_[a-z_]+|recall-memory)>.*?</\1>",
+    r"agent_skills?|open_and_recently_viewed_files|git_status|turn_aborted|task-notification|"
+    r"dynamic_tool_catalog|ide_selection|ide_opened_file|external_[a-z_]+|recall-memory|"
+    # hook output (Cursor), other sessions and subagents, tool output, harness context
+    r"hooks_context|cross-session-message|agent-message|teammate-message|subagent_notification|"
+    r"bash-stdout|bash-stderr|codex_internal_context|in-app-browser-context|skill|"
+    r"manually_attached_skills|available_skills|available_subagent_types|available_subagent_models|"
+    r"mcp_meta_tool_servers|mcp_meta_tools|agent_transcripts|comment-anchor-context|wake)"
+    r"(?:\s[^>]*)?>.*?</\1>",
     re.S,
 )
 _USER_QUERY = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.S)
