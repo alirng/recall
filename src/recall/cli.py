@@ -614,6 +614,7 @@ def _eval_v2(a) -> None:
             a.consistency,
             a.against,
             a.from_candidates,
+            a.candidates_repeat,
         )
     else:
         from . import evals_search
@@ -794,6 +795,9 @@ def _parser() -> argparse.ArgumentParser:
         "--from-candidates",
         metavar="RUN_DIR",
         help="memorycode, memory --v2: reuse that run's extracted candidates and rerun only consolidation",
+    )
+    v2.add_argument(
+        "--candidates-repeat", type=int, metavar="K", help="--from-candidates: replay only that run's repeat K"
     )
     scb = sp.add_argument_group("swe-contextbench (also --hybrid, --split, --case, --limit, --against, --who, --note)")
     scb.add_argument("--data", help="the benchmark folder, holding repo/ (GitHub) and hf/ (Hugging Face)")
