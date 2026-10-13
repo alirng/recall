@@ -59,6 +59,14 @@ All notable changes to recall are listed here. The format follows
   docs and are not yet tested live; Codex cannot be served automatically, because its
   SubagentStart comes before the subagent's task exists. `recall eval explore` replays your
   past explorations.
+- **Memory mid-session.** Hooks hand an agent a note or past chat at the moment it applies:
+  when the prompt closely matches an earlier chat, when it reads a file (scoped rules it does
+  not load itself, notes naming the file, the last chat that talked about it), when a command
+  fails with an error seen before, and after compaction. A gate fitted on your own history
+  abstains unless it is sure; each item comes once per session, 1,200 characters at most per
+  injection. Claude Code, Codex and Cursor, each as far as its hooks allow. `recall jit` shows
+  what would fire and why; `recall usage` counts what did; `recall eval jit` fits the gate and
+  `--live` measures its precision on real injections.
 - **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor
   chats active in the last 12 hours, the branch each is on and the files it edited, and flags a
   file that two chats in one repo both have open changes to: whether the two would conflict if
