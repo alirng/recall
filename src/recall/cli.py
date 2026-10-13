@@ -25,7 +25,10 @@ def cmd_index(a) -> None:
     started = time.time()
     result = indexer.index(store.connect(), only=a.source, force=a.force, log=lambda m: print(m, file=sys.stderr))
     for name, r in result.items():
-        print(f"{name:14} {r['indexed']:5} indexed  {r['unchanged']:5} unchanged")
+        if "restored" in r:
+            print(f"{name:14} {r['restored']:5} restored (no source has them any more)")
+        else:
+            print(f"{name:14} {r['indexed']:5} indexed  {r['unchanged']:5} unchanged")
     print(f"done in {time.time() - started:.1f}s → {paths.DB}")
 
 
@@ -78,6 +81,8 @@ def cmd_show(a) -> None:
     if not chat:
         sys.exit(f"no chat {a.chat_id!r}")
     print(f"{chat['title']}  [{chat['agent']}]  {chat['project']}  ({chat['showing']})\n")
+    if chat.get("archived"):
+        print(f"({chat['archived']})\n")
     for m in chat["transcript"]:
         print(f"── {m['seq']} {m['role']} {m['time'] or ''}\n{m['text']}\n")
 
