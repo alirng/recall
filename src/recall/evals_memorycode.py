@@ -13,7 +13,8 @@ day ending yesterday, in a project folder named after the mentor's company.
 
   recall eval memorycode --data <download> [--split train|test|all] [--limit N] [--case ID]
       [--model PROVIDER:NAME] [--repeats N] [--fresh]          extraction (M4)
-  recall eval memorycode --data <download> --agent [MODEL] --arm none|tools|notes|full
+      [--from-candidates RUN_DIR]                              consolidation only (see below)
+  recall eval memorycode --data <download> --agent [MODEL] --arm none|tools|notes|hook|placebo|full
       [--notes RUN_DIR] [--queries N] [--hybrid]               agent (M2, M3)
 
 --data is a folder holding the dataset's parquet file (huggingface.co/datasets/
@@ -32,6 +33,11 @@ scored against the session labels:
   filler_notes    share of active notes learned only from filler sessions
 Each history's notes are kept in the run folder (notes/<id>/r<repeat>/) for --arm notes.
 
+--from-candidates RUN_DIR freezes extraction: each history's candidates come from that earlier
+extraction run (repeat r replays its repeat r, cycling when it has fewer) and only consolidation
+and grading run again, so a consolidation change is measured without extraction noise. It takes
+the earlier run's histories unless --case picks some, and always calls the model afresh.
+
 Agent mode gives the history's final coding requests to Claude Code (evals_agent.run_agent) and
 grades its code with the benchmark's checks, ported from the authors' evaluate_model_output.py
 and extract_objects.py: per request the share of conventions followed among those whose object
@@ -41,8 +47,13 @@ the code contains, averaged per history. Arms:
   notes  tools, plus the notes an extraction run wrote (--notes RUN_DIR)
   hook   as notes, and the system prompt also gets what the session-start hook injects for the
          history's folder (memory.context.session_context over those notes), as in production
+  placebo  the priming control: as hook, with another history's notes of about the same size
+         (moved into this project, people and company renamed) in place of this history's. A
+         gain of hook over tools that placebo also shows comes from having notes, not from what
+         they say
   full   the whole history in the prompt and no tools, as the paper's history setting; every
          history fits (the longest is about 72k tokens)
+Arms are classes in ARMS (see Arm): a new arm subclasses one and registers itself there.
 The paper asks every request of a history; --queries samples N of them per history (seeded), so
 a run takes minutes. Every request's code is checked against every convention, as in the paper.
 
@@ -299,7 +310,8 @@ def from_args(a) -> dict:
     """`recall eval memorycode`, from the CLI's arguments."""
     if not a.data:
         sys.exit("recall eval memorycode needs --data: the folder holding the dataset's parquet file")
-    histories = select(load(os.path.expanduser(a.data)), a.split, a.case, a.limit)
+    every = load(os.path.expanduser(a.data))
+    histories = select(every, a.split, a.case, a.limit)
     settings = {
         "data": a.data,
         "histories": len(histories),
@@ -310,15 +322,30 @@ def from_args(a) -> dict:
         "note": a.note or "",
     }
     if a.agent is None:
-        run = h.Run("memorycode-extract", a.split, settings, a.who, a.runs_dir)
-        return run_extract(histories, run, a.model, a.judge or h.JUDGE, a.fresh, a.repeats, a.workers, a.against)
+        replay = getattr(a, "from_candidates", None)
+        if replay:
+            source = candidate_index(replay)
+            if not a.case:  # the histories the earlier run read
+                histories = [x for x in histories if any(k[0] == str(x.id) for k in source["rows"])]
+            settings.update(histories=len(histories), from_candidates=source["dir"])
+            settings.update(
+                short=sum(x.length == "short" for x in histories), long=sum(x.length == "long" for x in histories)
+            )
+        name = "memorycode-consolidate" if replay else "memorycode-extract"
+        run = h.Run(name, a.split, settings, a.who, a.runs_dir)
+        return run_extract(
+            histories, run, a.model, a.judge or h.JUDGE, a.fresh, a.repeats, a.workers, a.against, replay
+        )
     from . import evals_agent
 
     model = (a.agent or evals_agent.DEFAULT_MODEL).removeprefix("claude:")
-    if a.arm in ("notes", "hook") and not a.notes:
+    arm = ARMS.get(a.arm)
+    if arm is None:
+        sys.exit(f"--arm must be one of: {', '.join(ARMS)}")
+    if arm.notes and not a.notes:
         sys.exit(f"--arm {a.arm} needs --notes: an extraction run folder (recall eval memorycode without --agent)")
     embedder = cache = None
-    if a.hybrid and a.arm in ("tools", "notes", "hook"):
+    if a.hybrid and arm.tools:
         import sqlite3
 
         from . import embeddings, paths
@@ -327,7 +354,7 @@ def from_args(a) -> dict:
         if embedder is None:
             sys.exit("--hybrid needs an [embeddings] table in config.toml and the embeddings extra")
         cache = sqlite3.connect(os.path.join(paths.HOME, "eval-vectors.db"), timeout=60)
-    search = ("-hybrid" if embedder else "-keyword") if a.arm in ("tools", "notes", "hook") else ""
+    search = ("-hybrid" if embedder else "-keyword") if arm.tools else ""
     settings.update(
         model=model,
         arm=a.arm,
@@ -338,7 +365,19 @@ def from_args(a) -> dict:
     )
     run = h.Run(f"memorycode-agent-{a.arm}{search}-{model}", a.split, settings, a.who, a.runs_dir)
     return run_agent(
-        histories, run, model, a.arm, a.notes, a.queries, a.repeats, a.workers, a.timeout, embedder, cache, a.against
+        histories,
+        run,
+        model,
+        a.arm,
+        a.notes,
+        a.queries,
+        a.repeats,
+        a.workers,
+        a.timeout,
+        embedder,
+        cache,
+        a.against,
+        {x.id: x for x in every},
     )
 
 
@@ -354,10 +393,12 @@ def run_extract(
     repeats: int = 1,
     workers: int = 4,
     against: str | None = None,
+    from_candidates: str | None = None,
 ) -> dict:
     from .llm import Client, from_spec
 
     provider = from_spec(model, config.load()["model"])
+    source = candidate_index(from_candidates) if from_candidates else None
     if problem := provider.check():
         sys.exit(problem)
     if h.same_model(provider.label.split("@")[0], judge):
@@ -365,6 +406,12 @@ def run_extract(
     if repeats > 1 and not fresh:
         print("--repeats implies --fresh: cached answers would repeat the first run", file=sys.stderr)
         fresh = True
+    warnings = []
+    if source:
+        fresh = True  # a cached answer would replay the earlier run's consolidation, not sample a new one
+        if source["model"] and source["model"] != provider.label:
+            warnings.append(f"candidates came from {source['model']}; consolidation now runs on {provider.label}")
+            print(f"warning: {warnings[-1]}", file=sys.stderr)
     client = Client(provider, cache=not fresh)
     grader = h.judge_client(judge)
     run.meta.update(model=provider.label, judge=judge, judge_version=JUDGE_VERSION, fresh=fresh)
@@ -374,7 +421,10 @@ def run_extract(
     def one(job):
         x, repeat = job
         started = time.time()
-        row, transcript = extract_history(x, repeat, run, client, grader)
+        replay = None
+        if source:
+            replay = source_candidates(source, x.id, repeat)
+        row, transcript = extract_history(x, repeat, run, client, grader, replay)
         row["seconds"] = round(time.time() - started, 1)
         if repeats > 1:
             row["repeat"] = repeat
@@ -431,7 +481,9 @@ def run_extract(
     }
     if repeats > 1:
         summary["variance"] = _variance(scored)
-    summary["warnings"] = h.headroom({"recall": metrics["recall"]})
+    summary["warnings"] = warnings + h.headroom({"recall": metrics["recall"]})
+    if source:
+        summary["from_candidates"] = source["dir"]
     if against:
         summary["against"] = {"run": against}
         summary["warnings"] += h.mismatch(against, run.meta)
@@ -460,13 +512,22 @@ def run_extract(
     return run.finish(summary, headline, columns, note=run.meta.get("note", ""))
 
 
-def extract_history(x: History, repeat: int, run: h.Run, client, grader) -> tuple[dict, dict]:
-    """Extract and fold one history into empty notes; returns (row, transcript)."""
+def extract_history(
+    x: History, repeat: int, run: h.Run, client, grader, replay: dict | None = None
+) -> tuple[dict, dict]:
+    """Extract and fold one history into empty notes; returns (row, transcript). replay: the
+    candidates an earlier run extracted ({"candidates": {session number: [...]}}), which
+    replaces extraction, or {"status": ...} when that run has none for this history."""
     from . import evals_memory
     from .llm import FatalError, LLMError
 
     row = {"status": h.OK, "detail": None, "sessions": len(x.sessions), "length": x.length}
     transcript: dict = {"mentor": x.mentor, "mentee": x.mentee, "company": x.company, "conventions": _gold(x)}
+    if replay is not None:
+        row["source_repeat"] = replay.get("repeat")
+        if replay.get("status"):
+            row.update(status="no_candidates", detail=replay["status"])
+            return row, transcript
     tmp = tempfile.mkdtemp(prefix="recall-eval-memorycode-")
     try:
         db = index(chats(x), os.path.join(tmp, "recall.db"))
@@ -479,7 +540,11 @@ def extract_history(x: History, repeat: int, run: h.Run, client, grader) -> tupl
         }
         step = "extract"
         try:
-            found, failed = evals_memory.read(client, rows, messages)
+            if replay is not None:
+                found = {x.chat_id(int(i) - 1): (c, None) for i, c in replay["candidates"].items()}
+                failed = {}
+            else:
+                found, failed = evals_memory.read(client, rows, messages)
             if failed:
                 row.update(status="api_error", detail=json.dumps(failed)[:300])
                 return row, transcript
@@ -551,6 +616,43 @@ def fold(db, rows, found: dict, client, root: str) -> dict:
         "stats": dict(stats),
         "log": log,
     }
+
+
+def candidate_index(run_dir: str) -> dict:
+    """An earlier extraction run's per-history transcripts, for --from-candidates."""
+    folder = os.path.abspath(os.path.expanduser(run_dir))
+    if not os.path.exists(os.path.join(folder, "meta.json")):  # a run wrapper folder: follow its output
+        from .evals_compare import resolve
+
+        folder = resolve(folder)
+    with open(os.path.join(folder, "meta.json")) as f:
+        meta = json.load(f)
+    if meta.get("eval") not in ("memorycode-extract", "memorycode-consolidate"):
+        sys.exit(f"--from-candidates needs a memorycode extraction run; {folder} is {meta.get('eval')}")
+    rows: dict[tuple[str, int], dict] = {}
+    for part in ("", "test"):
+        path = os.path.join(folder, part, "cases.jsonl")
+        if os.path.exists(path):
+            with open(path) as f:
+                for line in f:
+                    r = json.loads(line)
+                    r["path"] = os.path.join(folder, part, r["transcript"].removesuffix(".html") + ".json")
+                    rows[(r["id"], r.get("repeat") or 1)] = r
+    if not rows:
+        sys.exit(f"{folder} has no case rows")
+    return {"dir": folder, "model": meta.get("model"), "rows": rows, "repeats": max(k[1] for k in rows)}
+
+
+def source_candidates(source: dict, history: int, repeat: int) -> dict:
+    """The candidates the earlier run extracted for this history in the matching repeat."""
+    k = (repeat - 1) % source["repeats"] + 1
+    r = source["rows"].get((str(history), k))
+    if r is None:
+        return {"repeat": k, "status": f"history {history} repeat {k} is not in the source run"}
+    if r["status"] != h.OK or not os.path.exists(r["path"]):
+        return {"repeat": k, "status": f"the source run's repeat {k} was {r['status']}"}
+    with open(r["path"]) as f:
+        return {"repeat": k, "candidates": json.load(f).get("candidates") or {}}
 
 
 # --- scoring the notes ---------------------------------------------------------------------
@@ -807,20 +909,24 @@ def run_agent(
     embedder=None,
     cache=None,
     against: str | None = None,
+    every: dict | None = None,
 ) -> dict:
-    """Claude Code writes the code each history ends with; the benchmark's checks grade it."""
+    """Claude Code writes the code each history ends with; the benchmark's checks grade it.
+    arm: a name in ARMS. every: all histories by id, for arms that borrow from other histories."""
     from . import evals_agent
 
     if not shutil.which("claude"):
         sys.exit("Claude Code is not installed: `claude` is not on PATH")
-    run.meta.update(server=evals_agent._server_code() if arm in ("tools", "notes", "hook") else None)
+    name, arm = arm, ARMS[arm]
+    run.meta.update(server=evals_agent._server_code() if arm.tools else None)
     empty = os.path.join(run.dir, "no-mcp.json")
     with open(empty, "w") as f:
         json.dump({"mcpServers": {}}, f)
     end = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0) - timedelta(days=1)
     setup: dict[int, dict] = {}
+    every = every or {x.id: x for x in histories}
     for x in histories:
-        setup[x.id] = _agent_setup(x, run, arm, notes_run, end, embedder, cache, empty)
+        setup[x.id] = _agent_setup(x, arm, ArmContext(run.dir, notes_run, end, embedder, cache, empty, every))
     jobs = []
     for x in histories:
         asks = x.sessions[-1]["history_eval_query"]
@@ -838,21 +944,19 @@ def run_agent(
         row: dict = {"history": x.id, "length": x.length, "sessions": len(x.sessions), "query": query}
         if repeats > 1:
             row["repeat"] = repeat
+        row.update(info.get("row") or {})
         if info.get("skip"):
             run.record(case, {**row, "status": info["skip"], "detail": info.get("detail")}, {})
             return
         system = SYSTEM.format(mentee=x.mentee, mentor=x.mentor, at=f" at {x.company}" if x.company else "")
         context = evals_agent.session_prompt({"asked_on": end.date().isoformat(), "cwd": x.folder})
-        if info.get("memory"):
-            context += "\n\n" + info["memory"]
-        if arm == "full":
-            prompt = FULL.format(mentor=x.mentor, history=info["history"], query=query)
-        else:
-            prompt = REQUEST.format(query=query, mentor=x.mentor)
+        prompt, extra = arm.request(x, query, info)
+        if extra:
+            context += "\n\n" + extra
         attempt = evals_agent.run_agent(prompt, model, f"{system}\n\n{context}", info["mcp"], timeout)
         answer, transcript = attempt["answer"], attempt["transcript"]
         row.update(attempt["row"])
-        if arm in ("none", "full") and row["status"] == "mcp_error" and row.get("detail") == "[]":
+        if not arm.tools and row["status"] == "mcp_error" and row.get("detail") == "[]":
             row.update(status=h.OK, detail=None)  # no MCP server is the point of these arms
         checks = []
         if row["status"] == h.OK:
@@ -958,45 +1062,211 @@ def run_agent(
     return run.finish(summary, headline, columns, note=run.meta.get("note", ""))
 
 
-def _agent_setup(x: History, run: h.Run, arm: str, notes_run, end, embedder, cache, empty: str) -> dict:
-    """The MCP config (or none) and prompt material one history needs for this arm."""
-    from . import evals_agent
+# --- arms: what the agent gets as memory -------------------------------------------------------
 
-    if arm == "none":
-        return {"mcp": empty}
-    if arm == "full":
-        history = "".join(f"\n\n Session {i} \n\n" + s["text"] for i, s in enumerate(x.sessions))
-        if len(history) / 4 > FULL_HISTORY_MAX_TOKENS:
-            return {"skip": "too_long", "detail": f"about {len(history) // 4:,} tokens of history"}
-        return {"mcp": empty, "history": history}
-    home = os.path.join(run.dir, "homes", str(x.id))
-    memory = os.path.join(run.dir, "memory", str(x.id))
-    os.makedirs(home, exist_ok=True)
-    lines = ['sources = ["frozen-for-evals"]  # matches no agent: this index holds only the benchmark']
-    if embedder is not None:
-        lines += ["", "[embeddings]", f'provider = "{embedder.provider}"', f'name = "{embedder.name}"']
-        if embedder.base_url:
-            lines.append(f'base_url = "{embedder.base_url}"')
-    with open(os.path.join(home, "config.toml"), "w") as f:
-        f.write("\n".join(lines) + "\n")
-    index(chats(x, end), os.path.join(home, "recall.db"), embedder, cache).close()
-    injected = ""
-    if arm in ("notes", "hook"):
-        source = os.path.join(os.path.expanduser(notes_run), "notes", str(x.id), "r1")
+
+@dataclass
+class ArmContext:
+    """What an arm's setup can use: the run folder, the --notes run, the day the history ends,
+    search settings, an MCP config with no servers, and every history by id."""
+
+    run_dir: str
+    notes_run: str | None
+    end: datetime
+    embedder: object
+    cache: object
+    no_mcp: str
+    histories: dict[int, History]
+    home: str = ""  # this history's recall home (chats indexed), for arms with tools
+    memory: str = ""  # this history's notes folder, as the agent's recall server sees it
+
+    def notes_of(self, history: int) -> str:
+        """Where the --notes run kept a history's notes (its first repeat)."""
+        return os.path.join(os.path.expanduser(self.notes_run or ""), "notes", str(history), "r1")
+
+
+class Arm:
+    """One way of giving the agent memory. A new arm subclasses one of these and adds itself to
+    ARMS; --arm picks it by name. The runner builds what the flags ask for, then calls setup()
+    once per history and request() once per request.
+      tools      recall's MCP server over a home that holds only this history's chats
+      notes      needs --notes RUN_DIR; setup() fills ctx.memory, the server's notes folder
+    setup() returns what request() needs; {"skip": status, "detail": ...} skips the history and
+    {"row": {...}} adds fields to every row of the history."""
+
+    name = ""
+    help = ""
+    tools = True
+    notes = False
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        return {}
+
+    def request(self, x: History, query: str, info: dict) -> tuple[str, str]:
+        """One request: (the prompt, text appended to the system prompt)."""
+        return REQUEST.format(query=query, mentor=x.mentor), info.get("memory", "")
+
+
+class NoMemory(Arm):
+    name, help, tools = "none", "no tools and no history: the no-memory baseline", False
+
+
+class Tools(Arm):
+    name, help = "tools", "recall's MCP tools over this history's chats"
+
+
+class Notes(Arm):
+    name, help, notes = "notes", "tools, plus the notes an extraction run wrote (--notes RUN_DIR)", True
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        source = ctx.notes_of(x.id)
         if not os.path.isdir(source):
-            return {"skip": "no_notes", "detail": f"no notes for history {x.id} in {notes_run}"}
-        shutil.copytree(source, memory, dirs_exist_ok=True)
-        if arm == "hook":  # what the session-start hook would add for this folder, read-only
+            return {"skip": "no_notes", "detail": f"no notes for history {x.id} in {ctx.notes_run}"}
+        shutil.copytree(source, ctx.memory, dirs_exist_ok=True)
+        return {}
+
+
+class Hook(Notes):
+    name = "hook"
+    help = "notes, and the system prompt gets what the session-start hook injects for the folder"
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        info = super().setup(x, ctx)
+        if not info.get("skip"):  # what the session-start hook would add for this folder, read-only
             from .memory import context
             from .memory.notes import NoteStore
 
-            injected = context.session_context(x.folder, NoteStore(memory), agent="claude")
-    else:
-        os.makedirs(memory, exist_ok=True)
-    mcp = os.path.join(run.dir, "mcp", f"{x.id}.json")
+            info["memory"] = context.session_context(x.folder, NoteStore(ctx.memory), agent="claude")
+        return info
+
+
+class Placebo(Hook):
+    """The priming control: as hook, but the notes are another history's, about the same size,
+    moved into this history's project with the people and company renamed. Notes that help only
+    because they are there (any rules prime the agent to follow rules) help here too; notes that
+    help because they hold this history's conventions do not."""
+
+    name = "placebo"
+    help = "as hook, with another history's notes of about the same size in place of this history's"
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        own = _notes_chars(ctx.notes_of(x.id))
+        if own is None:
+            return {"skip": "no_notes", "detail": f"no notes for history {x.id} in {ctx.notes_run}"}
+        donors = []
+        for name in os.listdir(os.path.join(os.path.expanduser(ctx.notes_run), "notes")):
+            if name.isdigit() and int(name) != x.id and int(name) in ctx.histories:
+                size = _notes_chars(ctx.notes_of(int(name)))
+                if size is not None:  # a donor whose company can be renamed comes first
+                    named = (ctx.histories[int(name)].company is None) != (x.company is None)
+                    donors.append((named, abs(size - own), int(name), size))
+        if not donors:
+            return {"skip": "no_donor", "detail": "the --notes run has notes for no other history"}
+        _, _, donor, size = min(donors)
+        _transplant(ctx.notes_of(donor), ctx.memory, ctx.histories[donor], x)
+        from .memory import context
+        from .memory.notes import NoteStore
+
+        injected = context.session_context(x.folder, NoteStore(ctx.memory), agent="claude")
+        return {"memory": injected, "row": {"donor": donor, "notes_chars": own, "donor_chars": size}}
+
+
+class Full(Arm):
+    name, tools = "full", False
+    help = "the whole history in the prompt and no tools, as the paper's history setting"
+
+    def setup(self, x: History, ctx: ArmContext) -> dict:
+        history = "".join(f"\n\n Session {i} \n\n" + s["text"] for i, s in enumerate(x.sessions))
+        if len(history) / 4 > FULL_HISTORY_MAX_TOKENS:
+            return {"skip": "too_long", "detail": f"about {len(history) // 4:,} tokens of history"}
+        return {"history": history}
+
+    def request(self, x: History, query: str, info: dict) -> tuple[str, str]:
+        return FULL.format(mentor=x.mentor, history=info["history"], query=query), ""
+
+
+ARMS: dict[str, Arm] = {a.name: a for a in (NoMemory(), Tools(), Notes(), Hook(), Placebo(), Full())}
+
+
+def _agent_setup(x: History, arm: Arm, ctx: ArmContext) -> dict:
+    """The MCP config (or none) and what the arm's requests need, for one history."""
+    from . import evals_agent
+
+    if not arm.tools:
+        return {"mcp": ctx.no_mcp, **arm.setup(x, ctx)}
+    ctx.home = os.path.join(ctx.run_dir, "homes", str(x.id))
+    ctx.memory = os.path.join(ctx.run_dir, "memory", str(x.id))
+    os.makedirs(ctx.home, exist_ok=True)
+    os.makedirs(ctx.memory, exist_ok=True)
+    lines = ['sources = ["frozen-for-evals"]  # matches no agent: this index holds only the benchmark']
+    if ctx.embedder is not None:
+        e = ctx.embedder
+        lines += ["", "[embeddings]", f'provider = "{e.provider}"', f'name = "{e.name}"']
+        if e.base_url:
+            lines.append(f'base_url = "{e.base_url}"')
+    with open(os.path.join(ctx.home, "config.toml"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    index(chats(x, ctx.end), os.path.join(ctx.home, "recall.db"), ctx.embedder, ctx.cache).close()
+    info = arm.setup(x, ctx)
+    if info.get("skip"):
+        return info
+    mcp = os.path.join(ctx.run_dir, "mcp", f"{x.id}.json")
     os.makedirs(os.path.dirname(mcp), exist_ok=True)
-    config = evals_agent.write_mcp_config(mcp, {"RECALL_HOME": home, "RECALL_MEMORY": memory})
-    return {"mcp": config, "memory": injected}
+    config = evals_agent.write_mcp_config(mcp, {"RECALL_HOME": ctx.home, "RECALL_MEMORY": ctx.memory})
+    return {"mcp": config, "home": ctx.home, "memory_dir": ctx.memory, **info}
+
+
+def _notes_chars(folder: str) -> int | None:
+    """Characters of the active notes in a notes folder (titles and bodies), None if no folder."""
+    if not os.path.isdir(folder):
+        return None
+    return sum(len(n.title) + len(n.body) for n in _read_notes(folder) if n.status == "active")
+
+
+def _read_notes(folder: str) -> list:
+    from .memory.notes import read_note_file
+
+    out = []
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        out += [
+            n
+            for name in filenames
+            if name.endswith(".md") and name not in ("MEMORY.md", "README.md")
+            if (n := read_note_file(os.path.join(dirpath, name)))
+        ]
+    return out
+
+
+def _transplant(source: str, target: str, donor: History, x: History) -> None:
+    """Write the donor history's notes into target as if they were x's: project notes move to
+    x's project, and the donor's company and people take x's names."""
+    from .chats.projects import resolve
+    from .memory.notes import NoteStore
+
+    project = resolve(x.folder)
+    names = [(donor.company, x.company), (donor.mentor, x.mentor), (donor.mentee, x.mentee)]
+    names = [(a, b) for a, b in names if a and b and a != b]
+
+    def rename(text: str) -> str:
+        for old, new in names:
+            text = re.sub(
+                rf"\b{re.escape(old)}\b",
+                lambda m, new=new: (
+                    new.upper() if m.group(0).isupper() else new.title() if m.group(0).istitle() else new
+                ),
+                text,
+                flags=re.I,
+            )
+        return text
+
+    store_ = NoteStore(target)
+    for n in _read_notes(source):
+        n.title, n.body, n.path = rename(n.title), rename(n.body), ""
+        if n.scope == "project" and project:
+            n.project, n.project_name = project.key, project.name
+        store_.write(n)
+    store_.compile(store_.load())
 
 
 def _per_history(rows: list[dict]) -> dict[int, float]:
