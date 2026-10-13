@@ -77,6 +77,15 @@ All notable changes to recall are listed here. The format follows
   Code, Codex and Cursor underneath, so it is covered too. Every hook also logs the edit, so `recall status` sees chats from agents
   whose history recall cannot read yet. Agents without hooks can call the new MCP tool
   `open_elsewhere` before editing.
+- **Which chat wrote this.** `recall why <file>[:line]` follows code back through git blame to
+  the chats that produced it, with dates, the chat's title and what the person asked; `recall
+  why --commit <sha>` does the same for a commit. Agents get it through MCP: `recent_chats`
+  takes `file` or `commit`. Each chat's edits are matched with the lines later commits add,
+  so worktrees, clones, rebases and squash merges are covered, and a chat that ran
+  `git commit` is matched by the sha git printed. The links stay in recall's index on your
+  machine: git is only read, and nothing is written to any repo. They are worked out without
+  a model, in the nightly run and on each `recall why`; `[links] enabled = false` turns them
+  off. `recall links --episodes` lists chats where something failed and a commit then fixed it.
 
 ### Changed
 

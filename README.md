@@ -521,6 +521,34 @@ already in your chat history, each at the commit its repo's main branch was on a
 Any agent can also ask for it, whatever `serve` says, through MCP: `project_memory` with a
 `task`. `recall eval explore` replays your past explorations with and without it.
 
+### Which chat wrote this
+
+`recall why` follows a file, a line or a commit back to the chats that produced it: git blame
+finds the commit, and recall names the chats whose agent wrote its lines or ran the commit.
+
+```text
+$ recall why src/auth/session.py:42
+src/auth/session.py:42  (github.com/acme/harbor)
+
+3f9c2a1e  2026-09-14  Keep the redirect target through login  (1 line here)
+  Claude Code · 2026-09-14 · Fix the login redirect
+    made this commit and wrote 38 of its 41 lines · claude:5b1e…
+    asked: "after login it lands on the home page, it should go back where you were"
+```
+
+`recall why --commit <sha>` does the same for a commit, and agents ask through MCP
+(`recent_chats` with `file` or `commit`). recall matches the lines each chat's agent wrote
+(Edit, Write, apply_patch) with the lines each later commit adds, so rebases, squash merges
+and clones of the repo need nothing special. A file changed only through a shell command is
+not seen.
+
+The links never leave your machine. They live only in recall's index, and recall uses git
+read-only (`rev-list`, `log`, `show`, `blame`): nothing goes into a repo. That rules out
+commit messages, trailers, git notes, refs, branches and hooks, and nothing is pushed, so
+no chat id reaches a project or its collaborators. Links are worked out without a model,
+during the nightly run and on each `recall why`. Set `[links] enabled = false` in
+`config.toml` to stop linking; recall then drops the stored links.
+
 ### What recall is used for
 
 recall logs its own use to `~/.agents/recall/usage.jsonl`: each MCP call, session-start load
@@ -615,13 +643,15 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall rules [project \| folder] [--write]` | which agent reads which instructions; `--write` closes the gaps |
 | `recall usage [--since 7d]` | how recall itself gets used, from its local log |
 | `recall status [--since 12h] [--json]` | what each agent is working on now, and files two chats both have open changes to |
+| `recall why <file>[:line] \| --commit <sha>` | the chats that wrote a file, a line or a commit (local only) |
+| `recall links [--episodes]` | link commits to chats now; `--episodes` lists failures a later commit fixed |
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
 | `recall resolve --repo <repo> --file <file>` | message every chat in an overlap to agree who goes first (the menu bar's Resolve) |
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall explore [lookup <question> \| backfill] [--cwd DIR]` | earlier exploration reports for this repo, and what a new exploration would get |
 | `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first); install also offers to keep Claude Code chats for ten years (`--only retention`) |
 | `recall schedule enable \| disable \| status` | the nightly run |
-| `recall eval search \| agent \| memory \| swe-contextbench \| memorycode \| amb \| explore \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
+| `recall eval search \| agent \| memory \| links \| swe-contextbench \| memorycode \| amb \| explore \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
 
 Environment: `RECALL_HOME` moves the index, config and logs (default `~/.agents/recall`);
 `RECALL_MEMORY` moves the notes (default `~/.agents/memory`).
