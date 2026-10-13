@@ -249,10 +249,21 @@ def recent_chats(
     since: str | None = None,
     until: str | None = None,
     limit: int = 15,
+    file: str | None = None,
+    commit: str | None = None,
     ctx: Context = None,
 ) -> list[dict]:
     """The most recently active past chats, optionally for one agent, project or date window
-    (since / until, e.g. since="2026-09-01" until="2026-09-07")."""
+    (since / until, e.g. since="2026-09-01" until="2026-09-07").
+    file: an absolute path, optionally path:line or path:start-end. Returns instead the chats
+      that wrote that code (git blame, then recall's local commit links). commit: a sha, with
+      file naming any path in its repo."""
+    if file or commit:
+        from . import commits
+
+        return _logged(
+            ctx, "recent_chats", {"file": file, "commit": commit}, lambda: commits.why_rows(_db(), file, commit)
+        )
     args = {"agent": agent, "project": project, "since": since, "until": until}
     return _logged(
         ctx, "recent_chats", args, lambda: store.recent(_db(), agent, project, since, max(1, min(limit, 50)), until)
