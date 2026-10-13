@@ -148,8 +148,10 @@ def record(
 ) -> bool:
     """Store one exploration report. With no commit given, the folder's HEAD and dirty
     files right now are the commit it was observed at."""
-    prompt = _BLOCK.sub("\n", prompt or "").strip()
-    report = (report or "").strip()
+    from .chats.redact import redact  # keys and tokens never reach the table, as in the chat index
+
+    prompt = redact(_BLOCK.sub("\n", prompt or "").strip())
+    report = redact((report or "").strip())
     if len(report) < MIN_REPORT or not prompt:
         return False
     co = repo or checkout(folder)
