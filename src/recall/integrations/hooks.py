@@ -64,6 +64,16 @@ HANDLERS: dict[str, list[str]] = {
     "edit": ["recall.status:on_edit", "recall.mail:on_edit"],
     "prompt": ["recall.mail:on_turn"],
     "stop": ["recall.mail:on_turn"],
+    "subagent_start": ["recall.explore:on_start"],
+    "subagent_stop": ["recall.explore:on_stop"],
+}
+
+# Exploration subagents (explore.py): where each agent's subagent's prompt and report reach a
+# hook. Cursor's start is left out: its preToolUse(Task) reply is not confirmed to be harmless.
+EXPLORE = {
+    "claude": [("PreToolUse", "Agent|Task"), ("SubagentStop", "Explore")],
+    "codex": [("SubagentStart", "explorer"), ("SubagentStop", "explorer")],
+    "cursor": [("subagentStop", "explor")],
 }
 
 # The entries `recall install` writes: (event, matcher) per agent, all answered by one command,
@@ -74,12 +84,20 @@ INSTALL: dict[str, list[tuple]] = {
         ("PreToolUse", EDIT_TOOLS["claude"]),
         ("UserPromptSubmit", None),
         ("Stop", None),
+        *EXPLORE["claude"],
     ],
-    "codex": [("SessionStart", None), ("PreToolUse", EDIT_TOOLS["codex"]), ("UserPromptSubmit", None), ("Stop", None)],
+    "codex": [
+        ("SessionStart", None),
+        ("PreToolUse", EDIT_TOOLS["codex"]),
+        ("UserPromptSubmit", None),
+        ("Stop", None),
+        *EXPLORE["codex"],
+    ],
     "cursor": [
         ("preToolUse", EDIT_TOOLS["cursor"]),
         ("postToolUse", EDIT_TOOLS["cursor"]),
         ("stop", None, {"loop_limit": 3}),  # a follow-up at most three times in a row
+        *EXPLORE["cursor"],
     ],
     "gemini": [("BeforeTool", EDIT_TOOLS["gemini"]), ("AfterTool", EDIT_TOOLS["gemini"])],
 }
