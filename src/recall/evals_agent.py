@@ -5,8 +5,8 @@ Each qa_v2 case runs Claude Code headless as the agent under test:
   {"id": "q-001", "question": "...", "answer": "...", "claims": ["...", ...], "expect": [...],
    "answerable": true, "asked_on": "YYYY-MM-DD", "cwd": "/path or null", "tags": [...], "split": "test"}
 The agent gets recall's MCP server (this checkout's code, or a copy of src on PYTHONPATH,
-reading RECALL_HOME and RECALL_MEMORY) and nothing else: no built-in tools, so no Bash,
-Read, Grep or web, and none of the user's settings, hooks, plugins, skills or CLAUDE.md. It
+reading RECALL_HOME and RECALL_MEMORY) and nothing else: of the built-in tools only tool search,
+so no Bash, Read, Grep or web, and none of the user's settings, hooks, plugins, skills or CLAUDE.md. It
 runs in an empty temporary folder and saves no transcript, so its runs never reach
 ~/.claude/projects, where recall's live indexer would read them. The question is the user's
 message, as in production; the case's date and project folder go in the system prompt.
@@ -167,7 +167,8 @@ def run_agent(
 ) -> dict:
     """Run Claude Code headless on one prompt with recall's MCP tools and nothing else.
 
-    No built-in tools (no Bash, Read, Grep, web or subagents); none of the user's settings,
+    No built-in tools but tool search (no Bash, Read, Grep, web or subagents), so recall's
+    tools are deferred as in a default Claude Code session; none of the user's settings,
     hooks, plugins, skills, CLAUDE.md or auto-memory; an empty temporary working folder; the
     signed-in plan rather than an API key; and no transcript saved, so the run never reaches
     ~/.claude/projects. system is appended to Claude Code's own system prompt. mcp_config:
@@ -193,7 +194,11 @@ def run_agent(
         "--mcp-config",
         mcp_config,
         "--tools",
-        "",  # no built-in tools: no Bash, Read, Grep, web or subagents
+        # Only tool search, no Bash, Read, Grep, web or subagents. An empty list would drop
+        # ToolSearch too, and Claude Code would then load every MCP tool upfront, which a
+        # default session does not: there only the tool names, server instructions and
+        # tools marked anthropic/alwaysLoad load at the start.
+        "ToolSearch",
         "--allowedTools",
         "mcp__recall",
         "--permission-prompts",
