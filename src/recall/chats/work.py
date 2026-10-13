@@ -54,9 +54,11 @@ _CORRECTION = re.compile(
     r"\b(revert|undo|roll ?back) (that|this|it|the|your)|\byou broke\b|\b(broke|broken|crash(es|ed|ing)?)\b|"
     r"\b(error|exception|traceback)\b.{0,40}\b(when|after|on|now)\b|\bnot what i (asked|wanted|meant)\b"
 )
-# `git commit` as a command, after any global options: not `git log` in a folder named commit-x.
+# A command that makes commits (commit, revert, cherry-pick) after any of git's global options:
+# not `git log` in a folder named commit-x.
 _COMMIT_CMD = re.compile(
-    r"(?:^|[\s;&|(`])git(?:\s+(?:-[Cc]\s+(?:\"[^\"]*\"|'[^']*'|\S+)|-c\s+\S+|--[\w-]+(?:=\S+)?))*\s+commit(?=\s|$|[;&|)])"
+    r"(?:^|[\s;&|(`])git(?:\s+(?:-[Cc]\s+(?:\"[^\"]*\"|'[^']*'|\S+)|-c\s+\S+|--[\w-]+(?:=\S+)?))*"
+    r"\s+(?:commit|revert|cherry-pick)(?=\s|$|[;&|)])"
 )
 
 
