@@ -59,9 +59,11 @@ def run(
     consistency: int = 8,
     against: str | None = None,
     from_candidates: str | None = None,
+    candidates_repeat: int | None = None,
 ) -> dict:
     """from_candidates: an earlier memory_v2 run whose extracted memories replace extraction, so
-    only folding (consolidation) and grading run again; repeat r replays its repeat r."""
+    only folding (consolidation) and grading run again; repeat r replays its repeat r, or always
+    candidates_repeat."""
     provider = from_spec(model, config.load()["model"])
     if problem := provider.check():
         sys.exit(problem)
@@ -95,7 +97,7 @@ def run(
     results = []
     for repeat in range(1, repeats + 1):
         if source:
-            found, failed = _replay(source, repeat, items)
+            found, failed = _replay(source, candidates_repeat or repeat, items)
         else:
             print(f"extracting from {len(sessions)} chats with {provider.label}", file=sys.stderr)
             found, failed = read(client, list(sessions.values()), messages)
