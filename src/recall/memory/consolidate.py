@@ -99,7 +99,10 @@ class Scope:
 _GROUP_KEY = "case when scope='project' then coalesce(project_key, '') else '' end"
 
 
-def run(con, client: Client, store: NoteStore, notes: dict[str, Note], log=print) -> Counter:
+def run(con, client: Client, store: NoteStore, notes: dict[str, Note], log=print, each=None) -> Counter:
+    """Fold every new candidate into notes, one group (scope) at a time. each(fn, groups)
+    runs fn on every group; by default in turn, and a caller may run groups side by side
+    (each group's notes are its own, but the database connection and `notes` are shared)."""
     stats = Counter()
     for note in notes.values():
         if note.edited_by_hand:  # keep the rules read back from a hand edit
@@ -115,7 +118,8 @@ def run(con, client: Client, store: NoteStore, notes: dict[str, Note], log=print
         f"""select scope, {_GROUP_KEY} key, max(project_name) name, count(*) n
             from candidates where status='new' group by scope, {_GROUP_KEY} order by n desc"""
     ).fetchall()
-    for g in groups:
+
+    def one(g) -> None:
         scope = Scope(g["scope"], g["key"] or None, g["name"]) if g["scope"] == "project" else Scope(g["scope"])
         candidates = con.execute(
             f"select * from candidates where status='new' and scope=? and {_GROUP_KEY}=? order by chat_ts, id",
@@ -136,8 +140,15 @@ def run(con, client: Client, store: NoteStore, notes: dict[str, Note], log=print
             _apply(con, store, notes, scope, batch, ops, stats, log)
             con.commit()
             stats["batches"] += 1
+
+    (each or _in_turn)(one, groups)
     stats["expired"] = expire(store, notes)
     return stats
+
+
+def _in_turn(fn, items) -> None:
+    for item in items:
+        fn(item)
 
 
 def expire(store: NoteStore, notes: dict[str, Note]) -> int:
