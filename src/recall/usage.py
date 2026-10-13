@@ -155,8 +155,8 @@ def jit_summary(log: list[dict]) -> dict:
     if not jit:
         return {}
     sessions: dict[str, int] = defaultdict(int)
-    for e in fires:
-        sessions[f"{e.get('client')}:{e.get('session')}"] += e.get("chars") or 0
+    for e in fires:  # a subagent counts apart from the session it runs in
+        sessions[f"{e.get('client')}:{e.get('session')}:{e.get('agent_id') or ''}"] += e.get("chars") or 0
     followed = 0
     for i, e in enumerate(log):
         if e.get("tool") != "jit" or not e.get("ids"):

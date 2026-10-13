@@ -217,7 +217,7 @@ def harvest(con, path: str = LIVE, since: float | None = None) -> int:
     read fires name the file the agent had just read. Pairs already in the file are kept."""
     from datetime import datetime
 
-    from . import usage
+    from . import rules, usage
     from .memory.notes import NoteStore
 
     have = {p["id"]: p for p in (_read(path) if os.path.exists(path) else [])}
@@ -239,8 +239,10 @@ def harvest(con, path: str = LIVE, since: float | None = None) -> int:
         if event == "prompt":
             vec = jit.embed_query(prompt, timeout=OFFLINE_WAIT)
             found = jit.candidates(con, prompt, row[3], own=[chat], until=row[1] - 1, now=row[1], vector=vec)
-        elif args.get("file"):
-            found = jit.file_items(con, e.get("client") or "claude", args["file"], row[3], [chat])
+        elif args.get("file"):  # logged relative to the repo of the chat's folder
+            root = rules.repo_root(row[3]) or row[3] or ""
+            full = os.path.join(root, args["file"])
+            found = jit.file_items(con, e.get("client") or "claude", full, row[3], [chat])
         else:
             continue
         for c in found:
