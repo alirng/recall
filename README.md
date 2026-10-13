@@ -355,6 +355,17 @@ other chats until recall reads their history or hooks into them.
   always-on rule the repo gives another agent but not this one (a Cursor rule, say, in a
   Claude Code session), and the current project's notes: a body of at most 4,500 characters
   (about 5,000 with its framing), in which the project's notes always get room.
+- **Mid-session:** the same hook command hands over memory at the moment it applies, and
+  stays quiet when recall is unsure. When your prompt closely matches an earlier chat, the
+  agent gets one or two lines saying when and where you worked on it and how that chat ended.
+  When it reads a file, it gets the rules scoped to that file that it would not load itself,
+  notes that name the file, and the last chat that talked about it. A failed command brings
+  past chats with the same error, and after compaction notes are matched again to the task in
+  hand. Each item comes at most once per session, at most 1,200 characters at a time.
+  Claude Code gets all four. Codex gets prompts, reads (shell commands such as `cat` and
+  `sed -n`) and compaction; it has no failure event. Cursor gets reads and failures, and a
+  prompt match waits for its next read, because Cursor cannot add context to a prompt.
+  `recall jit "<prompt>"` shows what would fire and why.
 - **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
   `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and
   `message_chat`, which leaves a message for another chat in recall's own mailbox.
@@ -563,7 +574,9 @@ all of it.
 recall logs its own use to `~/.agents/recall/usage.jsonl`: each MCP call, session-start load
 and search, with the agent that made it, the words asked and the ids that came back, never
 chat or note text. `recall usage` sums it up: which agents use which tools, how many
-searches found nothing, and how many led to opening a result. It stays on your machine; set
+searches found nothing, how many led to opening a result, and what the mid-session hooks
+injected (ids only). `recall eval jit --live` has a judge label those injections, so you can
+see how often they were relevant. It stays on your machine; set
 `usage_log = false` in `config.toml` to stop it.
 
 ## How it works
@@ -658,9 +671,10 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall resolve --repo <repo> --file <file>` | message every chat in an overlap to agree who goes first (the menu bar's Resolve) |
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall explore [lookup <question> \| backfill] [--cwd DIR]` | earlier exploration reports for this repo, and what a new exploration would get |
+| `recall jit [<prompt>] [--file F] [--error TEXT] [--cwd DIR]` | what the mid-session hooks would hand an agent, and why |
 | `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first); install also offers to keep Claude Code chats for ten years (`--only retention`) |
 | `recall schedule enable \| disable \| status` | the nightly run |
-| `recall eval search \| agent \| memory \| links \| swe-contextbench \| memorycode \| amb \| explore \| longmemeval \| locomo` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
+| `recall eval search \| agent \| memory \| links \| swe-contextbench \| memorycode \| amb \| explore \| longmemeval \| locomo \| jit` | quality checks: see [Benchmarks](#benchmarks) and [Quality](#quality) |
 
 Environment: `RECALL_HOME` moves the index, config and logs (default `~/.agents/recall`);
 `RECALL_MEMORY` moves the notes (default `~/.agents/memory`).
