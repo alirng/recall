@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -34,7 +35,7 @@ from . import config
 from .chats.projects import resolve
 from .chats.work import READERS, Work
 
-SCHEMA_VERSION = "1"  # bump to rebuild every table below on next run
+SCHEMA_VERSION = "2"  # bump to rebuild every table below on next run
 TABLES = (
     "link_chats",
     "link_edits",
@@ -74,9 +75,11 @@ create index if not exists commit_links_session on commit_links(session_id);
 
 SLACK = 10 * 60  # a commit this long before an edit's recorded time can still hold it (clocks, coarse times)
 WINDOW = 30 * 86400  # a commit this long after a chat's last edit to a file can still hold it
-MIN_LINES = 3  # lines a chat must have written into a commit to link by content
+MIN_LINES = 3  # distinctive lines a chat must have written into a commit to link by content
 MIN_SHARE = 0.2  # ...and the share of the commit they make up,
 MIN_KEPT = 0.3  # ...or the share of what the chat wrote to those files that the commit holds
+RECENT = 6 * 3600  # ...or the commit came this soon after the chat's last edit
+COMMON = 3  # a line more commits than this add is boilerplate, not evidence
 MAX_FILE_LINES = 5000  # a file adding more lines than this in one commit is generated or vendored
 # Files whose lines say nothing about who wrote the code: lockfiles and build output.
 _GENERATED = re.compile(
@@ -429,6 +432,36 @@ class _Claim:
 
 def link(con, repo: str) -> int:
     """Work out the repo's links again from its chats' edits and its commits."""
+    found, ran, commits = evidence(con, repo)
+    rows = []
+    for (sha, sid), x in found.items():
+        made = (sha, sid) in ran
+        if not made and not confident(x):
+            continue
+        score = 1.0 if made else round(min(1.0, max(x["share"], x["kept"])) * min(1.0, x["lines"] / 10), 3)
+        how = "ran" if made else "wrote"
+        rows.append((repo, sha, sid, score, how, x["lines"], x["total"], x["chat"], json.dumps(x["files"]), x["ask"]))
+    for sha, sid in ran - set(found):
+        rows.append((repo, sha, sid, 1.0, "ran", 0, commits[sha]["n"] or 0, 0, "[]", ""))
+    con.execute("delete from commit_links where repo=?", (repo,))
+    con.executemany("insert or replace into commit_links values (?,?,?,?,?,?,?,?,?,?)", rows)
+    con.execute("insert or replace into link_repos values (?, 0, ?)", (repo, time.time()))
+    con.commit()
+    return len(rows)
+
+
+def confident(x: dict) -> bool:
+    """Whether a chat's lines in a commit are enough to say it wrote part of it: a few lines
+    no other commit adds, making up enough of the commit or of what the chat wrote to those
+    files, or committed within hours of the chat's last edit."""
+    big = x["share"] >= MIN_SHARE or x["kept"] >= MIN_KEPT
+    return x["distinct"] >= MIN_LINES and (big or 0 <= x["gap"] <= RECENT)
+
+
+def evidence(con, repo: str) -> tuple[dict[tuple[str, str], dict], set[tuple[str, str]], dict]:
+    """For each (commit, chat) that could be linked: the lines the chat wrote into the commit
+    and their share of each; the (commit, chat) pairs where the chat ran the commit; the
+    repo's commits."""
     claims: dict[str, list[_Claim]] = {}
     for r in con.execute("select * from link_edits where repo=?", (repo,)):
         claims.setdefault(r["path"], []).append(
@@ -460,15 +493,18 @@ def link(con, repo: str) -> int:
         and any(admits(c, commits[s]["at"]) for p in ps for c in claims[p])
     ]
     _diff(con, repo, candidates)
+    files: dict[str, dict] = {}
+    seen_in: Counter = Counter()  # line -> how many commits add it: boilerplate is in many
+    for sha in candidates:
+        rows = con.execute("select path, lines, n from link_commit_files where repo=? and sha=?", (repo, sha))
+        files[sha] = {r["path"]: (_unpack(r["lines"]), r["n"] or 0) for r in rows}
+        seen_in.update({h for lines, _ in files[sha].values() for h in lines})
     found: dict[tuple[str, str], dict] = {}
     for sha in candidates:
         at = commits[sha]["at"]
-        rows = {
-            r["path"]: r for r in con.execute("select * from link_commit_files where repo=? and sha=?", (repo, sha))
-        }
-        total = sum(r["n"] or 0 for r in rows.values())
+        total = sum(n for _, n in files[sha].values())
         for path in touching[sha]:
-            added = _unpack(rows[path]["lines"]) if path in rows else set()
+            added = files[sha].get(path, (set(), 0))[0]
             if not added:
                 continue
             # The chat that wrote a line last before the commit gets it. Lines a chat only
@@ -479,33 +515,56 @@ def link(con, repo: str) -> int:
                 for c in live:
                     got = (getattr(c, tier) & added) - taken
                     taken |= got
-                    x = found.setdefault((sha, c.session), {"lines": 0, "chat": 0, "files": [], "ask": "", "last": 0})
+                    x = found.setdefault((sha, c.session), {"got": set(), "chat": 0, "files": [], "ask": "", "last": 0})
                     x["total"] = total
-                    x["lines"] += len(got)
+                    x["got"] |= got
                     if tier == "strong":
                         x["chat"] += len(c.strong | c.weak)
                         if c.last >= x["last"]:
                             x["last"], x["ask"] = c.last, c.ask
                     if got and path not in x["files"]:
                         x["files"].append(path)
-    ran = _ran(con, repo, commits)
-    rows = []
-    for (sha, sid), x in found.items():
-        share = x["lines"] / x["total"] if x["total"] else 0.0
-        kept = x["lines"] / x["chat"] if x["chat"] else 0.0
-        made = (sha, sid) in ran
-        if not made and not (x["lines"] >= MIN_LINES and (share >= MIN_SHARE or kept >= MIN_KEPT)):
-            continue
-        score = 1.0 if made else round(min(1.0, max(share, kept)) * min(1.0, x["lines"] / 10), 3)
-        how = "ran" if made else "wrote"
-        rows.append((repo, sha, sid, score, how, x["lines"], x["total"], x["chat"], json.dumps(x["files"]), x["ask"]))
-    for sha, sid in ran - set(found):
-        rows.append((repo, sha, sid, 1.0, "ran", 0, commits[sha]["n"] or 0, 0, "[]", ""))
-    con.execute("delete from commit_links where repo=?", (repo,))
-    con.executemany("insert or replace into commit_links values (?,?,?,?,?,?,?,?,?,?)", rows)
-    con.execute("insert or replace into link_repos values (?, 0, ?)", (repo, time.time()))
-    con.commit()
-    return len(rows)
+    _drop_moved(found, commits)
+    for (sha, _), x in found.items():
+        got = x.pop("got")
+        x["lines"], x["distinct"] = len(got), sum(seen_in[h] <= COMMON for h in got)
+        x["share"] = x["lines"] / x["total"] if x["total"] else 0.0
+        x["kept"] = x["lines"] / x["chat"] if x["chat"] else 0.0
+        x["gap"] = commits[sha]["at"] - x["last"]  # seconds from the chat's last edit to the commit
+    return found, _ran(con, repo, commits), commits
+
+
+def _drop_moved(found: dict, commits: dict) -> None:
+    """A line a chat wrote that an earlier commit on the same history already added was
+    moved or re-indented by this one, not written for it: credit only its first commit. A
+    squash merge or a rebase copies lines onto another history, so it keeps them."""
+    mine: dict[str, list[str]] = {}
+    for sha, sid in found:
+        mine.setdefault(sid, []).append(sha)
+    known: dict[tuple[str, str], bool] = {}
+    for sid, shas in mine.items():
+        shas.sort(key=lambda s: commits[s]["at"])
+        for i, sha in enumerate(shas):
+            got = found[(sha, sid)]["got"]
+            for prev in shas[:i]:
+                dup = got & found[(prev, sid)]["got"]
+                if dup and _ancestor(commits[sha]["gitdir"], prev, sha, known):
+                    got -= dup
+
+
+def _ancestor(gitdir: str, a: str, b: str, known: dict) -> bool:
+    if (a, b) not in known:
+        try:
+            r = subprocess.run(
+                ["git", *_GIT, "--git-dir", gitdir, "merge-base", "--is-ancestor", a, b],
+                capture_output=True,
+                timeout=30,
+                env=_ENV,
+            )
+            known[(a, b)] = r.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            known[(a, b)] = False
+    return known[(a, b)]
 
 
 def _ran(con, repo: str, commits: dict) -> set[tuple[str, str]]:
@@ -520,10 +579,16 @@ def _ran(con, repo: str, commits: dict) -> set[tuple[str, str]]:
     subjects = [x for x in subjects if len(x[1]) >= 12]
     for r in con.execute("select session_id, at, text, detail from link_events where kind='commit'"):
         at = r["at"] or 0
-        for tok in set(_SHA.findall(r["detail"] or "")):
+        said = " ".join((r["detail"] or "").split())
+        for tok in set(_SHA.findall(said)):
             sha = by_prefix.get(tok[:7])
-            # Made by this command, so not before it started: output often lists older commits too.
-            if sha and sha.startswith(tok) and at - 120 <= commits[sha]["at"] <= at + 3600:
+            # Made by this command, so not before it started, and printed with its subject
+            # ("[main 4c613c9] Fix the login" or "4c613c9 Fix the login"): output often lists
+            # other commits too.
+            if not sha or not sha.startswith(tok) or not at - 120 <= commits[sha]["at"] <= at + 3600:
+                continue
+            subject = " ".join((commits[sha]["subject"] or "").split())
+            if re.search(rf"\[[^\]]* {tok}\]", said) or (len(subject) >= 8 and subject[:24] in said):
                 out.add((sha, r["session_id"]))
         if r["session_id"] in here:
             cmd = " ".join((r["text"] or "").split())
