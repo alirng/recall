@@ -106,8 +106,16 @@ def plan(items, profile: Profile) -> tuple[list[list[Unit]], list]:
 
 def run_batch(client: Client, batch: list[Unit]) -> list[tuple[Unit, list[dict]]]:
     """One model call over a batch; returns each chunk with its candidate memories."""
-    text = "\n\n".join(f"=== CHAT {i}\n{_scrub(u.chunk)}" for i, u in enumerate(batch, 1))
-    per_chat = memories(client.json("extract", SYSTEM, text, SCHEMA), len(batch))
+    return answers(batch, client.json("extract", SYSTEM, prompt(batch), SCHEMA))
+
+
+def prompt(batch: list[Unit]) -> str:
+    return "\n\n".join(f"=== CHAT {i}\n{_scrub(u.chunk)}" for i, u in enumerate(batch, 1))
+
+
+def answers(batch: list[Unit], data: dict) -> list[tuple[Unit, list[dict]]]:
+    """A batch's answer as each chunk with its candidate memories."""
+    per_chat = memories(data, len(batch))
     return [(u, _clean(per_chat[i], u)) for i, u in enumerate(batch, 1)]
 
 
