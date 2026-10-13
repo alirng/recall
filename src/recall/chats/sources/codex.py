@@ -35,7 +35,10 @@ def items():
     paths = glob.glob(os.path.join(ROOT, "sessions", "**", "*.jsonl"), recursive=True)
     paths += glob.glob(os.path.join(ROOT, "archived_sessions", "**", "*.jsonl"), recursive=True)
     for path in paths:
-        st = os.stat(path)
+        try:
+            st = os.stat(path)
+        except OSError:  # moved or deleted since the listing; the index and the archive keep its chat
+            continue
 
         def load_one(p=path):
             nonlocal catalog

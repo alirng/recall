@@ -111,7 +111,10 @@ def _transcript_paths():
 
 def transcript_items():
     for path in _transcript_paths():
-        st = os.stat(path)
+        try:
+            st = os.stat(path)
+        except OSError:  # deleted since the listing; the index and the archive keep its chat
+            continue
         yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path: load_transcript(p))
 
 

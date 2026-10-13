@@ -19,7 +19,10 @@ def detect() -> int | None:
 def items():
     # Only top-level session files; subagent transcripts live in nested folders.
     for path in glob.glob(os.path.join(ROOT, "*", "*.jsonl")):
-        st = os.stat(path)
+        try:
+            st = os.stat(path)
+        except OSError:  # deleted since the listing; the index and the archive keep its chat
+            continue
         yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path: load(p))
 
 
