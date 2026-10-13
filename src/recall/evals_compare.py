@@ -15,9 +15,13 @@ Per metric it reports:
   base, cand, Δ     the arm scores over the cases both arms scored, and cand minus base
   95% CI            paired bootstrap over cases (2,000 resamples, fixed seed): does the gain
                     hold for cases like these, run noise included
-  W/L/T             cases where cand is above, below or equal to base
-  detectable        the smallest difference these runs would detect 80% of the time
-                    (2.8 x the bootstrap standard error)
+  W/L/T             cases where cand is better than, worse than or equal to base (for a
+                    metric with no better direction, above or below)
+  detectable        the smallest difference these runs would detect 80% of the time: 2.8 x the
+                    bootstrap standard error, or the replicate spread's floor where that is
+                    larger (noise one run shares across cases, which the bootstrap misses)
+  verdict           better or worse when the CI excludes 0 and Δ is beyond the run-to-run
+                    spread of the replicates; else within noise
   run-to-run        each replicate's score on the paired cases, the spread per arm, and the
                     differences between replicates of the same arm (what no change looks like)
   repeats needed    how many replicates per arm would make the observed Δ (or --target)
@@ -425,8 +429,9 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
         res["detectable"] = Z80 * res["se"]
     va = [p[0] / p[1] for p in pa]
     vb = [p[0] / p[1] for p in pb]
-    res["wins"] = sum(y > x + EPS for x, y in zip(va, vb, strict=True))
-    res["losses"] = sum(y < x - EPS for x, y in zip(va, vb, strict=True))
+    sign = -1 if metric[3] < 0 else 1  # a win is a case where cand is better
+    res["wins"] = sum(sign * (y - x) > EPS for x, y in zip(va, vb, strict=True))
+    res["losses"] = sum(sign * (y - x) < -EPS for x, y in zip(va, vb, strict=True))
     res["ties"] = len(units) - res["wins"] - res["losses"]
     res["cand_replicates"] = replicates(b, units)
     sds = []
@@ -443,12 +448,18 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
     dec = decompose(a, b, units)
     res["decompose"] = dec
     res["repeats"] = repeats_needed(dec, target if target is not None else res["delta"])
+    # The case bootstrap assumes run noise is independent across cases. Where one run's noise is
+    # shared (memory_v2 reads several cases' chats in one extraction call), the replicates'
+    # spread is the larger, so it sets the floor too.
+    if res.get("run_floor") is not None and res.get("detectable") is not None and res["run_floor"] > res["detectable"]:
+        res["detectable"], res["detectable_from"] = res["run_floor"], "replicate spread"
     lo, hi = res.get("ci") or (0, 0)
-    if lo > 0 or hi < 0:
+    run_ok = res.get("run_floor") is None or abs(res["delta"]) > 1.96 * res["run_floor"] / Z80
+    if (lo > 0 or hi < 0) and run_ok:
         good = (lo > 0) == (metric[3] >= 0)
         res["verdict"] = ("better" if good else "worse") if metric[3] else "different"
     else:
-        res["verdict"] = "within noise"
+        res["verdict"] = "within noise" if not (lo > 0 or hi < 0) else "within run noise"
     return res
 
 
