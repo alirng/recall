@@ -17,6 +17,10 @@ A memory matches when, for every group in "all", its text contains one of the gr
 Personal eval sets name real chats, so they live in recall's data folder, never in
 the repository; evals/*.example.jsonl shows the format.
 
+Under the shared run wrapper ($RECALL_RUN_DIR set), each of these also writes one line per case
+to cases.jsonl in that folder, with a meta.json naming the eval, as the v2 evals do, so
+`recall eval compare` can pair two runs case by case.
+
 Session start: what the hook injects when an agent opens in a folder. Each case is a folder
 with every note labelled for it, e.g.
   {"id": "p-recall", "cwd": "/path/to/recall", "agent": "claude", "split": "train",
@@ -34,6 +38,7 @@ metrics. Data: longmemeval_s_cleaned.json from huggingface.co/datasets/xiaowu016
 
 import json
 import math
+import os
 import random
 import re
 import time
@@ -61,9 +66,9 @@ def run_search(con, cases_path: str | None, sample: int, paraphrased: str | None
     where semantic search earns its keep; same format as the hand-written cases."""
     out = {}
     if cases_path:
-        out["hand_written"] = _score_search(con, _read_jsonl(cases_path))
+        out["hand_written"] = _score_search(con, _read_jsonl(cases_path), "hand_written")
     if paraphrased:
-        out["paraphrased"] = _score_search(con, _read_jsonl(paraphrased))
+        out["paraphrased"] = _score_search(con, _read_jsonl(paraphrased), "paraphrased")
     rng = random.Random(7)
     rows = con.execute("select id, agent, first_prompt from sessions where n_messages >= 4 order by id").fetchall()
     cases = []
@@ -73,7 +78,7 @@ def run_search(con, cases_path: str | None, sample: int, paraphrased: str | None
             cases.append({"query": query, "agent": r["agent"], "expect": r["id"]})
         if len(cases) == sample:
             break
-    out["known_item"] = _score_search(con, cases)
+    out["known_item"] = _score_search(con, cases, "known_item")
     print(json.dumps(out, indent=2))
     return out
 
@@ -119,7 +124,14 @@ def run_memory(con, gold_path: str, model: str | None = None, fresh: bool = Fals
             found += 1
             type_ok += e["type"] in ("any", match["type"])
             scope_ok += e["scope"] in ("any", match["scope"]) or (e["scope"], match["scope"]) == ("project", "unfiled")
-        leaks += sum(_mentions(m, [group]) for group in g.get("forbid", []) for m in memories)
+        chat_leaks = sum(_mentions(m, [group]) for group in g.get("forbid", []) for m in memories)
+        leaks += chat_leaks
+        n_expect = len(g.get("expect", []))
+        log_case(
+            "memory_v1",
+            {"id": g["chat"], "expected": n_expect, "found": n_expect - len(misses), "memories": len(memories)}
+            | {"leaks": chat_leaks, "model": client.provider.label},
+        )
         if verbose:
             print(f"\n## {g['chat']}  ({g.get('note', '')})  -> {len(memories)} memories, missed {misses or 'none'}")
             for m in memories:
@@ -192,6 +204,11 @@ def run_longmemeval(
             ideal = sum(1 / math.log2(i + 2) for i in range(min(len(evidence), k)))
             totals[f"ndcg_any@{k}"] = totals.get(f"ndcg_any@{k}", 0) + (dcg / ideal if ideal else 0)
         by_type.setdefault(q["question_type"], []).append(float(evidence <= set(ranked[:5])))
+        row = {"id": q["question_id"], "tags": [q["question_type"]]}
+        for k in (5, 10):
+            row[f"recall_any@{k}"] = bool(evidence & set(ranked[:k]))
+            row[f"recall_all@{k}"] = evidence <= set(ranked[:k])
+        log_case("longmemeval" + ("-hybrid" if embedder is not None else ""), row)
         con.close()
     result = {
         "questions": n,
@@ -334,6 +351,8 @@ def run_longmemeval_qa(
 
     with ThreadPoolExecutor(workers) as pool:
         calls = list(pool.map(one, jobs))
+    for c in calls:
+        log_case(f"longmemeval-qa-{context}", {"id": c["question_id"], "tags": [c["type"]], "correct": c["correct"]})
     if out_path:
         with open(out_path, "w") as f:
             f.writelines(json.dumps(c) + "\n" for c in calls)
@@ -487,6 +506,11 @@ def run_locomo(path: str, search=None, embedder=None, cache=None) -> dict:
                 totals[f"recall_any@{k}"] = totals.get(f"recall_any@{k}", 0) + bool(found)
                 totals[f"recall_all@{k}"] = totals.get(f"recall_all@{k}", 0) + (found == evidence)
             by_cat.setdefault(qa["category"], []).append(float(bool(evidence & set(ranked[:5]))))
+            row = {"id": f"q{n}", "tags": [f"category-{qa['category']}"]}  # n counts scored questions in file order
+            for k in (5, 10):
+                row[f"recall_any@{k}"] = bool(evidence & set(ranked[:k]))
+                row[f"recall_all@{k}"] = evidence <= set(ranked[:k])
+            log_case("locomo" + ("-hybrid" if vectors else ""), row)
         con.close()
     result = {
         "questions": n,
@@ -495,6 +519,19 @@ def run_locomo(path: str, search=None, embedder=None, cache=None) -> dict:
     }
     print(json.dumps(result, indent=2))
     return result
+
+
+def log_case(name: str, row: dict) -> None:
+    """One case's result, appended to $RECALL_RUN_DIR/cases.jsonl when the run wrapper set it."""
+    folder = os.environ.get("RECALL_RUN_DIR")
+    if not folder:
+        return
+    meta = os.path.join(folder, "meta.json")
+    if not os.path.exists(meta):
+        with open(meta, "w") as f:
+            json.dump({"eval": name, "split": "all", "started": datetime.now().isoformat(timespec="seconds")}, f)
+    with open(os.path.join(folder, "cases.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps({"split": "all", "status": "ok", **row}) + "\n")
 
 
 def _locomo_time(text: str | None) -> float | None:
@@ -589,9 +626,9 @@ def _shown(titles: dict[str, str], block: str) -> set[str]:
     return loaded
 
 
-def _score_search(con, cases) -> dict:
+def _score_search(con, cases, part: str = "") -> dict:
     ranks, misses = [], []
-    for c in cases:
+    for i, c in enumerate(cases, 1):
         rows = store.search(con, c["query"], c.get("agent"), c.get("project"), None, limit=10)
         expect = c["expect"].lower()
         rank = next(
@@ -605,6 +642,11 @@ def _score_search(con, cases) -> dict:
         ranks.append(rank)
         if rank is None or rank > 5:
             misses.append(c)
+        log_case(
+            "search",
+            {"id": c.get("id") or f"{part}-{i}", "tags": [part], "rank": rank, "hit@1": rank == 1}
+            | {"hit@5": rank is not None and rank <= 5, "rr": 1 / rank if rank else 0.0},
+        )
     n = len(ranks) or 1
     return {
         "cases": len(ranks),

@@ -114,6 +114,20 @@ SPECS = [
         },
     ),
     ("amb", "id", {"hit@5": ("hit@5", None, "mean", 1, None), "mrr": ("rr", None, "mean", 1, None)}),
+    (
+        "search",
+        "id",
+        {
+            "hit@5": ("hit@5", None, "mean", 1, None),
+            "hit@1": ("hit@1", None, "mean", 1, None),
+            "mrr": ("rr", None, "mean", 1, None),
+        },
+    ),
+    (
+        "memory_v1",
+        "id",
+        {"recall": ("found", "expected", "ratio", 1, None), "leaks": ("leaks", None, "mean", -1, None)},
+    ),
     ("longmemeval-qa", "id", {"accuracy": ("correct", None, "mean", 1, None)}),
     (
         "longmemeval",
