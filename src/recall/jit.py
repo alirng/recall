@@ -93,6 +93,7 @@ COMMON_NAMES = {
     "__init__.py", "__main__.py", "main.py", "index.ts", "index.tsx", "index.js", "app.tsx", "app.ts",
     "app.js", "utils.py", "utils.ts", "types.ts", "config.py", "config.ts", ".env", ".gitignore", "uv.lock",
 }  # fmt: skip
+TAG = re.compile(r"</?[A-Za-z][\w-]*(\s[^<>]*)?>")
 NOISE = re.compile(r"(^|/)(node_modules|\.git|\.venv|venv|dist|build|__pycache__|\.next|DerivedData)/")
 
 
@@ -244,7 +245,8 @@ def render(items: list[Item]) -> str:
     every chat parser strips, so memory never re-learns itself."""
     parts = []
     for kind in ("rule", "note", "chat"):
-        lines = [i.line for i in items if i.kind == kind]
+        # Quoted chat text is data: tag-like text in it must not close or open a block.
+        lines = [TAG.sub("", i.line) for i in items if i.kind == kind]
         if lines:
             parts.append(HEADERS[kind] + "\n" + "\n".join(lines))
     return "<recall-memory>\n" + "\n".join(parts) + "\n</recall-memory>" if parts else ""
@@ -327,7 +329,6 @@ def match_prompt(
     found = candidates(con, query, cwd, own=own, chats=chats, now=now, project=project, vector=vector)
     for c in found:
         c.p = probability(c.features, gate)
-    for c in found:
         c.passed = c.p >= gate["threshold"]
     found.sort(key=lambda c: -c.p)
     return found if keep_all else [c for c in found if c.passed]
