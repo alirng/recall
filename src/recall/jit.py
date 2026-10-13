@@ -381,9 +381,9 @@ def candidates(
         project = _project(con, cwd)
     out = []
     if chats:
-        out += _chat_candidates(con, query, project, own, until, now, vector, words)
+        out += _chat_candidates(con, query, project, own, until, now, words)
     if notes:
-        out += _note_candidates(con, query, project, now, vector, words, allowed_notes)
+        out += _note_candidates(con, query, project, now, words, allowed_notes)
     named = files_named(query)
     vector = vector() if callable(vector) else vector
     for c in out:
@@ -486,7 +486,7 @@ def embed_query(text: str, timeout: float = 2.0) -> list[float] | None:
     return [x / norm for x in v]
 
 
-def _chat_candidates(con, query, project, own, until, now, vector, words) -> list[Item]:
+def _chat_candidates(con, query, project, own, until, now, words) -> list[Item]:
     from .chats import store
 
     explain: dict = {}
@@ -532,8 +532,8 @@ def _chat_candidates(con, query, project, own, until, now, vector, words) -> lis
 
 
 def rank_features(cid: str, order: list[str], explain: dict) -> dict:
-    """How sure the fused ranking is about one chat: its score as a share of the best possible,
-    its lead over the next chat, and where the keyword and meaning rankings put it."""
+    """How sure the fused ranking is about one item: its score as a share of the best possible,
+    its lead over the next one, and where the keyword, title and every-word rankings put it."""
     from .chats.store import FUSION_K
 
     scores, rankings, weights = explain["scores"], explain["rankings"], explain["weights"]
@@ -548,21 +548,19 @@ def rank_features(cid: str, order: list[str], explain: dict) -> dict:
 
     kw = [x for x in (rank("best"), rank("sum")) if x is not None]
     kw_rank = min(kw) if kw else None
-    dense_rank, title, every = rank("dense"), rank("title"), rank("all")
+    title, every = rank("title"), rank("all")
     return {
         "score": scores[cid] / best,
         "margin": (scores[cid] - nxt) / best,
         "kw": 1 / (1 + kw_rank) if kw_rank is not None else 0.0,
-        "dense": 1 / (1 + dense_rank) if dense_rank is not None else 0.0,
-        "agree": float(kw_rank is not None and dense_rank is not None and kw_rank < 3 and dense_rank < 3),
         "title": float(title is not None and title < 3),
         "all": float(every is not None and every < 3),
     }
 
 
-def _note_candidates(con, query, project, now, vector, words, allowed) -> list[Item]:
-    """Notes for the current project and global ones, fused from keyword rank and (when
-    vectors are at hand) meaning rank, with the same features as chats."""
+def _note_candidates(con, query, project, now, words, allowed) -> list[Item]:
+    """Notes for the current project and global ones, ranked by keywords and title words, with
+    the same features as chats."""
     from .chats import store
 
     q = store.fts_query(query, "or")
@@ -587,9 +585,8 @@ def _note_candidates(con, query, project, now, vector, words, allowed) -> list[I
         return []
     by_kw = [r[0] for r in rows]
     by_title = [r[0] for r in rows if set(content_words(r[1])) & set(content_words(query))]
-    by_dense = []  # as for chats, meaning scores the candidates rather than ranking them
-    rankings = {"best": by_kw, "sum": [], "title": by_title, "all": [], "dense": by_dense}
-    weights = {"best": 1.0, "sum": 0.0, "title": 1.0, "all": 0.0, "dense": 1.0 if by_dense else 0.0}
+    rankings = {"best": by_kw, "title": by_title}
+    weights = {"best": 1.0, "title": 1.0}
     scores: dict[str, float] = {}
     for name, ranking in rankings.items():
         for rank, nid in enumerate(ranking):
