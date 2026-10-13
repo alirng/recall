@@ -87,6 +87,37 @@ def cmd_show(a) -> None:
         print(f"── {m['seq']} {m['role']} {m['time'] or ''}\n{m['text']}\n")
 
 
+def cmd_forget(a) -> None:
+    from . import forget
+
+    if not (a.chat_id or a.project):
+        sys.exit("name a chat id, or --project NAME")
+    con = store.connect()
+    ids = forget.resolve(con, a.chat_id, a.project)
+    if not ids:
+        sys.exit("no such chat in recall's index or archive")
+    chats = forget.describe(con, ids)
+    for c in chats:
+        print(f"{c['chat_id']}  {c['title'] or ''}  ({c['messages']} messages, {c['archive_copies']} archive copies)")
+    if not a.yes:
+        if not sys.stdin.isatty():
+            sys.exit("pass --yes to forget without asking")
+        if not input(f"Forget {len(ids)} chat(s) everywhere recall holds them? (y/n) ").strip().lower().startswith("y"):
+            return
+    counts = forget.purge(con, ids)
+    print("forgot: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in counts.items()))
+    files = sorted({f for c in chats for f in c["files"]})
+    if files:
+        print(f"recall will not read them again; the agents' own files are untouched ({len(files)}):")
+        print("\n".join(f"  {f}" for f in files))
+    notes = forget.notes_citing(ids)
+    if notes:
+        print(f"\n{len(notes)} memory note(s) cite these chats; recall leaves notes to you:")
+        print("\n".join(f"  {n}" for n in notes))
+        print("Edit or delete them. To also remove them from the notes' git history (needs git-filter-repo):")
+        print(f"  {forget.history_command(notes)}")
+
+
 def cmd_stats(a) -> None:
     print(json.dumps(store.stats(store.connect()), indent=2))
 
@@ -416,6 +447,9 @@ def cmd_install(a) -> None:
     parts = tuple(a.only.split(",")) if a.only else agents.COMPONENTS
     dry_run = getattr(a, "dry_run", False)
     lines = agents.install(parts, dry_run) if a.cmd == "install" else agents.uninstall(parts)
+    if a.cmd == "install":  # --only retention is a yes; otherwise ask whoever is at the terminal
+        ask = (lambda _: True) if "retention" in parts else None if dry_run else agents.ask_terminal
+        lines += agents.retention(ask, dry_run)
     print("\n".join(("[dry run] " if dry_run else "") + line for line in lines))
     if a.cmd == "install" and not dry_run:
         print("Restart open Codex and Cursor windows to pick up the changes.")
@@ -596,6 +630,10 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--offset", type=int)
     sp.add_argument("--limit", type=int, default=30)
     command("stats", cmd_stats, "what's in the index")
+    sp = command("forget", cmd_forget, "remove a chat, or a project's chats, from everything recall holds")
+    sp.add_argument("chat_id", nargs="?")
+    sp.add_argument("--project", help="every chat in this project")
+    sp.add_argument("--yes", action="store_true", help="do not ask first")
 
     sp = command("dream", cmd_dream, "distil new chats into memory notes (runs nightly)")
     sp.add_argument("--model", help="one-off override, e.g. claude:haiku or local:qwen3:4b")
@@ -649,7 +687,7 @@ def _parser() -> argparse.ArgumentParser:
 
     for name, help_text in (("install", "connect recall to your agents"), ("uninstall", "disconnect them")):
         sp = command(name, cmd_install, help_text)
-        sp.add_argument("--only", help="comma-separated subset of: mcp,skill,hook")
+        sp.add_argument("--only", help="comma-separated subset of: mcp,skill,hook (install: also retention)")
         if name == "install":
             sp.add_argument("--dry-run", action="store_true")
     sp = command("schedule", cmd_schedule, "run the memory update nightly")

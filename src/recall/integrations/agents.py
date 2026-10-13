@@ -280,6 +280,62 @@ def _is_ours(hook: dict) -> bool:
     return words[1] == "hook" or (words[1] in ("context", "status") and "--hook" in words)
 
 
+# --- how long agents keep chats ------------------------------------------------
+
+CLAUDE_KEEP_DAYS = 3650
+
+
+def retention(ask=None, dry_run: bool = False) -> list[str]:
+    """How long each agent keeps its chats. When Claude Code would delete them within a
+    year and no organisation sets the period, ask(question) decides whether to raise
+    `cleanupPeriodDays`; without ask, nothing changes. uninstall never lowers it again,
+    because Claude Code would then delete every older chat at its next start."""
+    from .. import retention as policy
+
+    report = []
+    if os.path.isdir(os.path.dirname(CLAUDE_SETTINGS)):
+        managed, days = policy.claude_managed(), policy.claude_user_days()
+        current = days or policy.CLAUDE_DEFAULT_DAYS
+        if managed:
+            report.append(
+                f"Claude Code  your organisation keeps chats {managed[0]} days ({managed[1]}); "
+                "recall keeps them no longer"
+            )
+        elif current >= 365:
+            report.append(f"Claude Code  keeps chats {current} days")
+        elif ask and ask(
+            f"Claude Code deletes chats after {current} days. Keep them {CLAUDE_KEEP_DAYS // 365} years "
+            f"instead (cleanupPeriodDays = {CLAUDE_KEEP_DAYS})?"
+        ):
+            report.append(f"Claude Code  keeps chats {CLAUDE_KEEP_DAYS} days, was {current}: {_keep_claude(dry_run)}")
+        else:
+            report.append(
+                f"Claude Code  deletes chats after {current} days (recall keeps its own copy of each chat "
+                f"it indexed); `recall install --only retention` raises it to {CLAUDE_KEEP_DAYS}"
+            )
+    if os.path.isdir(os.path.dirname(CODEX_CONFIG)):
+        report.append("Codex        no setting deletes old sessions")
+    if os.path.isdir(os.path.dirname(CURSOR_MCP)):
+        report.append("Cursor       no setting deletes old chats")
+    return report
+
+
+def ask_terminal(question: str) -> bool:
+    """A yes/no question when a person is at the terminal; no one there means no."""
+    return sys.stdin.isatty() and input(f"{question} (y/n) [y]: ").strip().lower() in ("", "y", "yes")
+
+
+def _keep_claude(dry_run: bool) -> str:
+    try:
+        config = json.loads(_read(CLAUDE_SETTINGS) or "{}")
+    except json.JSONDecodeError:
+        return f"{CLAUDE_SETTINGS} is not valid JSON, skipped"
+    config["cleanupPeriodDays"] = CLAUDE_KEEP_DAYS
+    if not dry_run:
+        _write(CLAUDE_SETTINGS, json.dumps(config, indent=2))
+    return f"set in {CLAUDE_SETTINGS}, backed up first"
+
+
 # --- helpers ------------------------------------------------------------------
 
 
