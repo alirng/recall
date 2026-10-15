@@ -40,6 +40,7 @@ from datetime import datetime
 
 from . import config, paths
 from .chats.projects import resolve
+from .chats.sources import compressed
 from .chats.work import READERS, Work
 
 KEPT = ("link_chats", "link_edits", "link_events", "link_checkouts")
@@ -268,16 +269,15 @@ def prune(con) -> None:
 
 
 def _fingerprint(source: str) -> tuple[str, int] | None:
-    try:
-        st = os.stat(source)
-    except OSError:
+    got = compressed.fingerprint(source)  # "<mtime_ns>:<size>", whichever form Codex keeps the file in
+    if got is None:
         return None
-    fp = f"{READ_VERSION}:{st.st_mtime_ns}:{st.st_size}"
+    fp = f"{READ_VERSION}:{got}"
     if source.endswith(".jsonl"):  # Claude Code keeps a chat's subagents beside it
         subs = glob.glob(os.path.join(source[:-6], "subagents", "*.jsonl"))
         if subs:
             fp += f":{len(subs)}:{max(os.stat(s).st_mtime_ns for s in subs)}"
-    return fp, st.st_size
+    return fp, int(got.rsplit(":", 1)[1])
 
 
 def read_chats(con, log=None) -> int:
@@ -923,7 +923,7 @@ def _line_ask(con, sid: str, rel: str, lines: list[str]) -> dict | None:
     transcript (the index keeps one request per file)."""
     r = con.execute("select agent, source from sessions where id=?", (sid,)).fetchone()
     reader = READERS.get(r["agent"]) if r else None
-    if not reader or not r["source"] or not os.path.exists(r["source"]):
+    if not reader or not r["source"] or not compressed.resolve(r["source"]):
         return None
     want = _hashes(lines)
     with contextlib.suppress(Exception):
