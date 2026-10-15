@@ -30,7 +30,7 @@ import sqlite3
 import sys
 import time
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from .. import paths
 from .sources import compressed
@@ -82,10 +82,16 @@ def pack(s: Session, messages: list[Message]) -> bytes:
     return zlib.compress(json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode())
 
 
+_SESSION_FIELDS = {f.name for f in fields(Session)} - {"messages"}
+
+
 def unpack(blob: bytes) -> Session:
+    """A copy's session. It reads only what it knows, so a copy written by a later (or a
+    reverted) version still loads: unknown keys are dropped, and a message row's fields past
+    the Kept flag are ignored. Add fields to a blob freely; never repurpose one."""
     d = json.loads(zlib.decompress(blob))
-    messages = [(Kept if rest else Message)(role, text, ts) for role, ts, text, *rest in d.pop("messages")]
-    return Session(**d, messages=messages)
+    messages = [(Kept if rest and rest[0] else Message)(role, text, ts) for role, ts, text, *rest in d["messages"]]
+    return Session(**{k: v for k, v in d.items() if k in _SESSION_FIELDS}, messages=messages)
 
 
 def messages(row: sqlite3.Row, parser: str) -> list[Message]:
@@ -111,7 +117,9 @@ def copies(con: sqlite3.Connection, sid: str) -> list[sqlite3.Row]:
 
 def save(con, s: Session, messages: list[Message], parser: str, size: int | None) -> None:
     con.execute(
-        "insert or replace into chat_archive values (?,?,?,?,?,?,?,?,?,?,?)",
+        "insert or replace into chat_archive"
+        "(id, source, agent, parser, source_size, n_messages, updated_at, archived_at, restored_at, kept, data)"
+        " values (?,?,?,?,?,?,?,?,?,?,?)",
         (
             s.id,
             s.source,
