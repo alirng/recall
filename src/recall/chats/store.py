@@ -11,7 +11,7 @@ from .. import paths
 from . import archive, scrub
 from .errors import ToolError, anchor, identity
 from .projects import resolve
-from .redact import redact, redact_many
+from .redact import Chat, redact, redact_many
 from .transcript import Message, Session, conversation_fingerprint
 
 MAX_MESSAGE_CHARS = 20_000
@@ -181,14 +181,14 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     if archive.enabled(con) and con.execute("select 1 from forgotten_chats where id = ?", (s.id,)).fetchone():
         return
     keep = [i for i, m in enumerate(s.messages) if m.text.strip()]
-    # The chat's texts go through redaction together, so a key pasted again further down, bare, goes too.
+    # The chat's texts go through redaction together, so a key pasted again further down, bare, goes too,
+    # in the words of its failed tool calls as well.
+    chat = Chat([s.messages[i].text[: MAX_MESSAGE_CHARS + REDACT_MARGIN] for i in keep])
     stored = [
         Message(s.messages[i].role, t[:MAX_MESSAGE_CHARS], s.messages[i].ts)
-        for i, t in zip(
-            keep, redact_many([s.messages[i].text[: MAX_MESSAGE_CHARS + REDACT_MARGIN] for i in keep]), strict=True
-        )
+        for i, t in zip(keep, chat.texts, strict=True)
     ]
-    errs = archive.merge_errors(anchor(s.tool_errors, s.messages, keep, stored))  # a resumed chat repeats a call
+    errs = archive.merge_errors(anchor(s.tool_errors, s.messages, keep, stored, chat))  # a resumed chat repeats a call
     if not archive.enabled(con):
         _write(con, s, s.messages, stored, errs)
         return
