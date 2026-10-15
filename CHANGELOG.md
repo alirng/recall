@@ -89,7 +89,10 @@ All notable changes to recall are listed here. The format follows
   `recall install`. Per root, `[roots.NAME]` sets `mine` (a second account's chats become memory only
   when you opt in), `index` and `connect`. `recall install` and `uninstall` cover every folder found
   (`--root NAME` one), and `uninstall` turns autopilot off and also reaches folders it connected that
-  are no longer found. `docs/benchmarks/setup_eval.py` checks all of it in a sandbox home.
+  are no longer found. Hooks that run another existing recall (a checkout's `uv run recall` beside the
+  installed one) are left on it; `recall install` and `recall doctor` say which recall they run, and
+  `recall install --repoint` moves them (autopilot never does). `docs/benchmarks/setup_eval.py`
+  checks all of it in a sandbox home.
 - **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor
   chats active in the last 12 hours, the branch each is on and the files it edited, and flags a
   file that two chats in one repo both have open changes to: whether the two would conflict if

@@ -150,7 +150,7 @@ merges their `Reply`s into the one answer that agent accepts.
    person said yes to it; a kind you add shows in `recall doctor` as "new hooks available" until
    they run `recall install`. A hook that already runs an existing `recall hook --agent <agent>` is
    never rewritten or reordered (Codex ties its trust to the entry); change a field only when the
-   release needs it.
+   release needs it. Only a person's `recall install --repoint` moves one onto another recall.
 4. If the kind is new, teach `parse` to recognise it and `render` to answer it for each
    agent. Use formats confirmed in that agent's docs or source; a kind not confirmed for an
    agent stays silent there. Codex rejects replies with fields it does not know, Cursor's
