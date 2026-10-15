@@ -584,7 +584,7 @@ Install and run scripts with bun. Why: the repo ships bun.lock and CI uses bun.
 | Agent Skills | Metadata about 100 tokens per skill; body under 5,000 tokens | [agent-skills-spec] |
 
 **Proposed budgets (judgment, inside those limits):**
-- **Session-start block (global plus project plus framing): 6,000 characters target, 8,000 hard cap** (about 1,500 to 2,000 tokens). It sits under the Claude Code and Codex injection caps, leaves room for the framing text, and is of the same order as the 6,000-character always-on size Windsurf allows for global rules.
+- **Session-start block (global plus project plus framing): a 4,500-character body, about 5,000 with framing** (about 1,200 to 1,300 tokens). It sits well under the Claude Code and Codex injection caps. It was 6,000 until October 2026; `recall eval session` showed a smaller block loads fewer notes that do not apply, at a small cost in ones that do (on held-out folders, 4,500 kept 0.62 of the notes that should load against 0.65 at 6,000, and cut the lines that should not load from 0.38 to 0.34).
   - Framing: 500 characters at most, placed first.
   - Global preferences: 2,000 characters (about 12 lines).
   - Project: 5,500 characters (at most 6 preferences, 12 facts, 8 decisions, 6 lessons, 3 open threads).

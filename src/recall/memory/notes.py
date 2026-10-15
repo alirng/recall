@@ -137,6 +137,11 @@ class NoteStore:
         os.replace(tmp, path)
         note.path = path
 
+    def reread(self, note: Note) -> Note | None:
+        """The note as its file is now, for a step that changes one field after a long run: a
+        hand edit made since the notes were loaded survives."""
+        return read_note_file(note.path) if note.path else None
+
     def footer(self, note: Note) -> str:
         """Wikilinks to the note's related notes, titled so they read well in Obsidian."""
         if not note.related:
@@ -316,8 +321,8 @@ def _link_text(title: str) -> str:
 
 
 def _by_context(prefs: list[Note]) -> list[tuple[str, list[Note]]]:
-    """Group working preferences by where they apply. One that holds everywhere (its reach, or
-    failing that, chats in two or more contexts) loads in every folder; one tied to a context
+    """Group working preferences by where they apply. One judged to hold everywhere, or not yet
+    judged (memory/reach.py), loads in every folder, as before contexts; one tied to a context
     loads only in the contexts its chats ran in; one whose chats ran outside every context's
     folders cannot be placed, so it loads nowhere by itself and stays searchable."""
     table = contexts.roots()
@@ -325,10 +330,10 @@ def _by_context(prefs: list[Note]) -> list[tuple[str, list[Note]]]:
         return [("How you work", prefs)]
     groups: dict[str, list[Note]] = {"How you work": []}
     for n in prefs:
-        seen = contexts.of_chats(n.sources, table)
-        if n.reach == "everywhere" or (n.reach is None and len(seen) > 1):
+        if n.reach != "context":
             headings = ["How you work"]
         else:
+            seen = contexts.of_chats(n.sources, table)
             headings = [f"How you work: {c}" for c in sorted(seen)] or ["How you work: unplaced"]
         for heading in headings:
             groups.setdefault(heading, []).append(n)
