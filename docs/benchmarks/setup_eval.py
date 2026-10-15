@@ -787,15 +787,16 @@ def upgrade_check(sb: str, ctx: dict) -> list[str]:
     return errs
 
 
-def vanished_build(sb: str) -> None:
+def vanished_build(sb: str, autopilot: bool = True) -> None:
     put(os.path.join(sb, ".zshrc"), "alias claude-acme='CLAUDE_CONFIG_DIR=\"$HOME/acme-claude\" claude'\n")
     claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
     claude_folder(sb, "acme-claude", EMAILS["work"], "acme-claude/.claude.json", "an acme chat")
-    turn_on(sb)
+    turn_on(sb, autopilot)
 
 
-def vanished_act(sb: str, ctx: dict) -> None:
-    seg(sb, ctx, "connect", lambda: autopilot_run(sb))
+def vanished_act(sb: str, ctx: dict, by_install: bool = False) -> None:
+    # connected by autopilot, or by the person's own `recall install` with autopilot never turned on
+    seg(sb, ctx, "connect", lambda: run(sb, "install")[1] if by_install else autopilot_run(sb))
     ctx["connected_first"] = (
         "recall" in json.loads(slurp(os.path.join(sb, "acme-claude", ".claude.json")))["mcpServers"]
     )
@@ -830,6 +831,14 @@ def vanished_check(sb: str, ctx: dict) -> list[str]:
     if "connect = false" not in slurp(os.path.join(sb, ".agents", "recall", "config.toml")).decode():
         errs.append("uninstall did not turn autopilot off")
     return errs
+
+
+def vanished_install_build(sb: str) -> None:
+    vanished_build(sb, autopilot=False)
+
+
+def vanished_install_act(sb: str, ctx: dict) -> None:
+    vanished_act(sb, ctx, by_install=True)
 
 
 def midrun_build(sb: str) -> None:
@@ -1099,6 +1108,9 @@ def mining_act(sb: str, ctx: dict) -> None:
     ctx["excluded"] = run_py(sb, PENDING).strip().splitlines()[-1]
     ctx["doctor"] = run(sb, "doctor")[1]
     put(cfg, "[roots.claude-private]\nindex = false\n")
+    # the work account's folder is renamed: no longer found, its chats are still in the index
+    os.rename(os.path.join(sb, ".claude-work"), os.path.join(sb, "moved-work"))
+    ctx["vanished"] = run_py(sb, PENDING).strip().splitlines()[-1]
 
 
 def mining_check(sb: str, ctx: dict) -> list[str]:
@@ -1110,6 +1122,8 @@ def mining_check(sb: str, ctx: dict) -> list[str]:
     ):
         if ctx[key] != want:
             errs.append(f"dream would read {ctx[key]} ({key}), expected {want}")
+    if ctx["vanished"] != "['claude']":
+        errs.append(f"dream would read {ctx['vanished']} once the work folder is not found any more, expected claude")
     if "not mined" not in ctx["doctor"]:
         errs.append("doctor does not say claude-work is indexed but not mined")
     return errs
@@ -1274,6 +1288,12 @@ SCENARIOS = {
         upgrade_act,
         upgrade_check,
     ),
+    "uninstall-vanished-install": (
+        "the same, connected by `recall install` with autopilot off",
+        vanished_install_build,
+        vanished_install_act,
+        vanished_check,
+    ),
     "uninstall-vanished": (
         "uninstall reaches a root the rc no longer names",
         vanished_build,
@@ -1318,6 +1338,7 @@ OPTIONS = {
     "claude-backup": {"roots": {".claude-work"}},
     "schema-upgrade": {"no_index": True, "no_connected": True},
     "uninstall-vanished": {"roots": {"acme-claude"}, "no_index": True, "no_connected": True},
+    "uninstall-vanished-install": {"roots": {"acme-claude"}, "no_index": True, "no_connected": True},
     "off-mid-run": {"no_index": True, "no_connected": True},
     "consent-prompt": {"no_index": True, "no_connected": True},
     "new-hook-kinds": {},
