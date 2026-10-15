@@ -355,7 +355,7 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
                 else:
                     note.rules += _new_rules(b, note, [text], candidates)
                 done = True
-            if not done:
+            if not done and refused:  # every text was a retired rule an older chat tried to bring back
                 stats["refused, older than the rule"] += 1
                 log(f"  refused add of {refused.id}: candidate from {when}, rule retired {refused.retired}")
                 for c in candidates:
