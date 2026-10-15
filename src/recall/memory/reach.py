@@ -39,9 +39,11 @@ def run(client: Client, store: NoteStore, notes: dict[str, Note]) -> int:
         batch = {n.id: n for n in pending[i : i + BATCH]}
         prompt = "\n\n".join(f"note_id: {n.id}\ntitle: {n.title}\n{n.body}" for n in batch.values())
         for answer in client.json("reach", SYSTEM, prompt, SCHEMA)["notes"]:
-            note = batch.get(answer["note_id"])
-            if note and not note.reach:
+            # The file as it is now, so a hand edit made while the model answered survives.
+            note = store.reread(batch[answer["note_id"]]) if answer["note_id"] in batch else None
+            if note and note.status == "active" and note.scope == "global" and not note.reach:
                 note.reach = answer["reach"]
                 store.write(note)
+                notes[note.id] = note
                 judged += 1
     return judged

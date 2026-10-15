@@ -537,7 +537,7 @@ def run_session(cases_path: str, split: str | None = None, verbose: bool = True)
         rows = []
         for c in cases:
             text = session_context(c["cwd"], notes=notes, agent=c.get("agent", "claude"))
-            loaded = {i for i, t in titles.items() if _shown(t, text)}
+            loaded = _shown(titles, text)
             must, ok, no = set(c.get("must", [])), set(c.get("ok", [])), set(c.get("no", []))
             rows.append(
                 {
@@ -576,9 +576,17 @@ def run_session(cases_path: str, split: str | None = None, verbose: bool = True)
     return {"summary": summary, "cases": rows}
 
 
-def _shown(title: str, block: str) -> bool:
-    """A note counts as loaded when its title is one of the block's lines."""
-    return re.search(rf"^- (\*\*)?{re.escape(title)}(\*\*)?(:|$)", block, re.M) is not None
+def _shown(titles: dict[str, str], block: str) -> set[str]:
+    """The notes whose title is one of the block's lines. Notes sharing a title count once per
+    line that shows it, taken in id order, so a duplicate title cannot inflate the count."""
+    by_title: dict[str, list[str]] = {}
+    for note_id, title in sorted(titles.items()):
+        by_title.setdefault(title, []).append(note_id)
+    loaded = set()
+    for title, ids in by_title.items():
+        lines = len(re.findall(rf"^- (?:\*\*)?{re.escape(title)}(?:\*\*)?(?::|$)", block, re.M))
+        loaded.update(ids[:lines])
+    return loaded
 
 
 def _score_search(con, cases) -> dict:

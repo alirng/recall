@@ -29,7 +29,16 @@ def load() -> dict:
             stored = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         stored = {}
-    return {k: ({**v, **stored.get(k, {})} if isinstance(v, dict) else stored.get(k, v)) for k, v in DEFAULTS.items()}
+    # A table written as a plain value (contexts = 3) falls back to its default instead of
+    # breaking every command, the session-start hook among them.
+    return {
+        k: (
+            {**v, **(t if isinstance(t := stored.get(k, {}), dict) else {})}
+            if isinstance(v, dict)
+            else stored.get(k, v)
+        )
+        for k, v in DEFAULTS.items()
+    }
 
 
 def save(cfg: dict) -> None:

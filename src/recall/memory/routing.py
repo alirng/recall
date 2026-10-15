@@ -65,21 +65,26 @@ def reroute_mentions(con) -> int:
 
 def refile(con, store, notes) -> int:
     """File a note learned in chats with no known folder under its project, once the chat
-    index can tell which one, e.g. after a parser learns where an agent records the folder."""
+    index places every one of those chats in that same project, e.g. after a parser learns
+    where an agent records the folder."""
     moved = 0
-    for n in notes.values():
-        if n.status != "active" or n.scope == "global" or n.project:
+    for n in list(notes.values()):
+        if n.status != "active" or n.scope == "global" or n.project or not n.sources:
             continue
-        found = {
-            (r["project_key"], r["project_name"])
+        rows = [
+            con.execute("select project_key, project_name from sessions where id = ?", (chat,)).fetchone()
             for chat in n.sources
-            for r in con.execute("select project_key, project_name from sessions where id = ?", (chat,))
-            if r["project_key"]
-        }
-        if len(found) == 1:
-            (n.project, n.project_name), n.scope = found.pop(), "project"
-            store.write(n)
-            moved += 1
+        ]
+        found = {(r["project_key"], r["project_name"]) for r in rows if r and r["project_key"]}
+        if len(found) != 1 or not all(r and r["project_key"] for r in rows):
+            continue
+        note = store.reread(n)
+        if not note or note.status != "active" or note.scope == "global" or note.project:
+            continue  # changed by hand since the run loaded it
+        (note.project, note.project_name), note.scope = found.pop(), "project"
+        store.write(note)
+        notes[note.id] = note
+        moved += 1
     return moved
 
 
