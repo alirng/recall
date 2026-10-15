@@ -360,8 +360,11 @@ other chats until recall reads their history or hooks into them.
   agent gets a line saying when and where you worked on it and how that chat ended. When it
   reads a file, it gets the rules scoped to that file that it would not load itself, notes
   that name the file, and the last chat that talked about it. Each item comes at most once
-  per session, at most 1,200 characters at a time. A preference tied to one context reaches
-  only that context's sessions, as at session start. The gate for prompts is fitted on one
+  per session, at most 1,200 characters at a time. A preference or a past chat tied to one
+  context reaches only that context's sessions (a chat outside every context only sessions
+  outside every context), as at session start; searching chats is not narrowed. The hooks
+  read the index without writing to it, and stay quiet while an upgrade has it to rebuild.
+  The gate for prompts is fitted on one
   developer's history and fires rarely (about one prompt in eight in a held-out test);
   `recall eval jit --write` fits it to yours. It reads the prompt's meaning only with a local
   embedding model, so a hosted one never receives your prompts from a hook. Claude Code and

@@ -317,7 +317,9 @@ def _deliver(event, waking: bool = False) -> str | None:
 def on_turn(event):
     """prompt and stop (hooks.py): unread messages for this chat. At the end of a turn they keep
     the agent going so it can answer (take() caps how often). Cursor's prompt event is skipped:
-    its context reply is undocumented, and a message marked read there could be lost."""
+    its additional_context is accepted by the 3.23 app but not documented, nor tried live
+    (hooks.py), and a message is marked read as it is handed over, so one the app dropped
+    would be lost. jit.py does use that reply: what it hands over stays in the index if the app drops it."""
     from .integrations.hooks import Reply
 
     if event.agent == "cursor" and event.kind == "prompt":
