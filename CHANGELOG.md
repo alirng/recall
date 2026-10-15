@@ -63,8 +63,9 @@ All notable changes to recall are listed here. The format follows
   applies: when the prompt closely matches an earlier chat, and when it reads a file (scoped
   rules it does not load itself, notes naming the file, the last chat that talked about it).
   A gate fitted on one developer's history abstains unless it is sure; each item comes once
-  per session, 1,200 characters at most per injection; hooks send a prompt only to a local
-  embedding model, never a hosted one. Claude Code, Codex and Cursor. Failed commands and compaction are wired too but
+  per session, 1,200 characters at most per injection; a preference tied to one context
+  (`[contexts]`) is handed only to that context's sessions; hooks send a prompt only to a
+  local embedding model, never a hosted one. Claude Code, Codex and Cursor. Failed commands and compaction are wired too but
   rarely fire until the index keeps tool errors. `recall jit` shows what would fire and why;
   `recall usage` counts what did; `recall eval jit` fits the gate to your history and `--live`
   measures its precision on real injections.
