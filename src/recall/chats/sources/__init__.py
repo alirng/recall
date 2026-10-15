@@ -12,6 +12,8 @@ from datetime import datetime
 from ..transcript import Message, Session
 from . import compressed
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 
 @dataclass
 class Item:

@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 HOME = os.path.expanduser("~")
 _SCRATCH = [
     re.compile(p)

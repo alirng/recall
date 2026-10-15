@@ -21,6 +21,8 @@ from ..errors import Calls, ToolError, position, signature
 from ..transcript import Session, clean_user_text
 from . import Item, append, iso_ts, read_jsonl, text_blocks
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 PROJECTS = os.path.expanduser("~/.cursor/projects")  # one folder for every Cursor build (roots.py)
 USER_DIR = os.path.expanduser("~/Library/Application Support/Cursor/User")  # the default build's
 STATE_DB = os.path.join(USER_DIR, "globalStorage", "state.vscdb")
