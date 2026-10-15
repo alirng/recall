@@ -8,7 +8,7 @@ from .. import contexts, rules
 from ..chats import store
 from ..chats.projects import resolve
 from . import links
-from .notes import Note, NoteStore
+from .notes import Note, NoteStore, audience
 
 # Well inside Claude Code's 10k hook limit and Codex's ~2.5k-token budget: a smaller, selected
 # block loads fewer notes that do not apply, at a small cost in ones that do (recall eval session).
@@ -91,16 +91,21 @@ def index_notes(con, notes: dict[str, Note]) -> None:
         """
         drop table if exists notes; drop table if exists notes_fts;
         create table notes (id text primary key, path text, type text, scope text, project text,
-          project_name text, title text, body text, confidence text, last_seen text, n_sources int);
+          project_name text, title text, body text, confidence text, last_seen text, n_sources int,
+          audience text);
         create virtual table notes_fts using fts5(id unindexed, title, body, project_name,
           tokenize='porter unicode61');
         """
     )
+    try:
+        table = contexts.roots()
+    except Exception:  # a config.toml recall cannot read: everything is one context
+        table = {}
     for n in notes.values():
         if n.status != "active":
             continue
         con.execute(
-            "insert into notes values (?,?,?,?,?,?,?,?,?,?,?)",
+            "insert into notes values (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 n.id,
                 n.path,
@@ -113,6 +118,7 @@ def index_notes(con, notes: dict[str, Note]) -> None:
                 n.confidence,
                 n.last_seen,
                 len(n.sources),
+                audience(n, table),
             ),
         )
         con.execute("insert into notes_fts values (?,?,?,?)", (n.id, n.title, n.body, n.project_name or ""))
