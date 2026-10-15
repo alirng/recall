@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import statistics
@@ -1024,6 +1025,79 @@ def twin_check(sb: str, ctx: dict) -> list[str]:
     return errs
 
 
+def repoint_act(sb: str, ctx: dict) -> None:
+    """A person's own `recall install` from a second binary says where the hooks run and moves nothing;
+    only `--repoint` moves them, in place; autopilot, from either binary, never does."""
+    seg(sb, ctx, "installed release", lambda: autopilot_run(sb))
+    codex = os.path.join(sb, ".codex", "hooks.json")
+    d = json.loads(slurp(codex))
+    d["hooks"]["SessionStart"].append({"hooks": [{"type": "command", "command": "echo mine-last"}]})
+    jput(codex, d)
+    repo = os.path.join(sb, "repo", "bin", "recall")
+    put(repo, f'#!/bin/sh\nexec "{sys.executable}" -m recall "$@"\n')
+    os.chmod(repo, 0o755)
+    env = {"RECALL_BIN": repo}
+    files = (".codex/hooks.json", ".claude/settings.json")
+
+    def hooks() -> dict:
+        return {p: hook_commands(sb, p) for p in files}
+
+    def step(name: str, *args: str) -> str:
+        seg(sb, ctx, name, lambda: run(sb, *args, env=env)[1])
+        return ctx["segments"][-1]["out"]
+
+    ctx["before"] = hooks()
+    ctx["install"] = step("install from the repo", "install", "--only", "hook")
+    ctx["doctor"] = step("doctor from the repo", "doctor")
+    ctx["held"] = hooks()
+    ctx["dry"] = step("install --repoint --dry-run", "install", "--only", "hook", "--repoint", "--dry-run")
+    ctx["after_dry"] = hooks()
+    ctx["repoint"] = step("install --repoint", "install", "--only", "hook", "--repoint")
+    ctx["moved"] = hooks()
+    ctx["codex_last"] = json.loads(slurp(codex))["hooks"]["SessionStart"]
+    ctx["again"] = step("install --repoint, again", "install", "--only", "hook", "--repoint")
+    p = os.path.join(sb, ".claude.json")  # a run with something to do, from the release the hooks left
+    d = json.loads(slurp(p))
+    d["mcpServers"].pop("recall")
+    jput(p, d)
+    seg(sb, ctx, "installed release, hooks elsewhere", lambda: autopilot_run(sb))
+    ctx["final"] = hooks()
+
+
+def repoint_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    ours = next(c for _, c in ctx["before"][".claude/settings.json"] if " hook --agent " in c)
+    old = shlex.split(ours)[0]  # the installed release's recall
+    if ctx["held"] != ctx["before"]:
+        errs.append("`recall install` from another recall moved the hooks without --repoint")
+    for what in ("install", "doctor"):
+        out = ctx[what]
+        if f"hooks run {old}, not this recall (" not in out or "repo/bin/recall)" not in out:
+            errs.append(f"`recall {what}` does not say which recall the hooks run: {out[:300]!r}")
+    if "already installed" in ctx["install"]:
+        errs.append("`recall install` says 'already installed' while the hooks run another recall")
+    if "recall install --repoint" not in ctx["install"]:
+        errs.append("`recall install` does not say how to repoint")
+    if ctx["after_dry"] != ctx["held"] or "repointed" not in ctx["dry"]:
+        errs.append("--repoint --dry-run changed the hooks, or did not say what it would do")
+    for p, commands in ctx["moved"].items():
+        ours = [c for _, c in commands if " hook --agent " in c]
+        if not ours or any("repo/bin/recall hook" not in c for c in ours):
+            errs.append(f"{p}: hooks not moved to the repo's recall by --repoint")
+        if [e for e, _ in commands] != [e for e, _ in ctx["before"][p]]:
+            errs.append(f"{p}: --repoint reordered the entries")
+    last = [x["command"] for g in ctx["codex_last"] for x in g["hooks"]]
+    if len(last) != 3 or last[0] != "echo mine-first" or last[2] != "echo mine-last":
+        errs.append(f"--repoint reordered or rewrote Codex's SessionStart entries: {last}")
+    if "trust them again" not in ctx["repoint"]:
+        errs.append("Codex's hooks moved but the output does not ask for trust again")
+    if "hooks run" in ctx["again"] or "repointed" in ctx["again"]:
+        errs.append(f"--repoint rewrote hooks that already run this recall: {ctx['again'][:200]!r}")
+    if ctx["final"] != ctx["moved"]:
+        errs.append("autopilot from the installed release took the hooks back")
+    return errs
+
+
 def approval_build(sb: str) -> None:
     shell_rc(sb, alias=False)
     cursor_home(sb)
@@ -1309,6 +1383,12 @@ SCENARIOS = {
     ),
     "new-hook-kinds": ("a yes covers the hooks it was given for", kinds_build, kinds_act, kinds_check),
     "two-binaries": ("a recall run from a repo leaves another's hooks alone", twin_build, twin_act, twin_check),
+    "install-repoint": (
+        "`recall install --repoint` moves hooks to this recall; nothing else does",
+        twin_build,
+        repoint_act,
+        repoint_check,
+    ),
     "cursor-approval": ("Cursor loads the server only once approved", approval_build, approval_act, approval_check),
     "mining-gate": ("a second account is indexed, mined only when opted in", mining_build, mining_act, mining_check),
     "root-skipped": ("a root the person disconnected stays disconnected", skip_build, skip_act, skip_check),
@@ -1343,6 +1423,7 @@ OPTIONS = {
     "consent-prompt": {"no_index": True, "no_connected": True},
     "new-hook-kinds": {},
     "two-binaries": {"no_readback": True},
+    "install-repoint": {"no_readback": True},
     "cursor-approval": {"no_readback": True},
     "mining-gate": {
         "roots": {".claude-work", ".claude-private"},
