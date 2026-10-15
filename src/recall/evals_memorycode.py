@@ -395,8 +395,10 @@ def from_args(a) -> dict:
         queries=a.queries,
         timeout=a.timeout,
         embedder=embedder.model if embedder else None,
+        unprompted=a.unprompted,
     )
-    run = h.Run(f"memorycode-agent-{a.arm}{search}-{model}", a.split, settings, a.who, a.runs_dir)
+    name = f"memorycode-agent-{a.arm}{search}{'-unprompted' if a.unprompted else ''}-{model}"
+    run = h.Run(name, a.split, settings, a.who, a.runs_dir)
     return run_agent(
         histories,
         run,
@@ -411,6 +413,7 @@ def from_args(a) -> dict:
         cache,
         a.against,
         {x.id: x for x in every},
+        a.unprompted,
     )
 
 
@@ -936,6 +939,14 @@ REQUEST = (
     "Write a {query}. Do not provide example usage. You must follow all the latest coding guidelines "
     "provided by your mentor {mentor} in your past sessions, including any possible updates."
 )
+# --unprompted: the same request as a plain task, with no word about past sessions or a mentor's
+# guidelines, so the agent has to decide on its own to look in recall.
+SYSTEM_PLAIN = (
+    "You are {mentee}, a software engineer{at}.\n"
+    "Do not acknowledge. Only generate Python code and nothing else before or after. Do not explain the "
+    "code. Do not ask for more information but directly give the answer."
+)
+PLAIN = "Write a {query}. Do not provide example usage."
 # The paper's history prompt (generate_model_output.py), for the full arm
 FULL = (
     "This is a thread of dialogues between you and your mentor {mentor}:\n {history} \nBased on information "
@@ -958,9 +969,11 @@ def run_agent(
     cache=None,
     against: str | None = None,
     every: dict | None = None,
+    unprompted: bool = False,
 ) -> dict:
     """Claude Code writes the code each history ends with; the benchmark's checks grade it.
-    arm: a name in ARMS. every: all histories by id, for arms that borrow from other histories."""
+    arm: a name in ARMS. every: all histories by id, for arms that borrow from other histories.
+    unprompted: ask as a plain task (PLAIN, SYSTEM_PLAIN), never mentioning past sessions."""
     from . import evals_agent
 
     if not shutil.which("claude"):
@@ -996,9 +1009,13 @@ def run_agent(
         if info.get("skip"):
             run.record(case, {**row, "status": info["skip"], "detail": info.get("detail")}, {})
             return
-        system = SYSTEM.format(mentee=x.mentee, mentor=x.mentor, at=f" at {x.company}" if x.company else "")
+        system = (SYSTEM_PLAIN if unprompted else SYSTEM).format(
+            mentee=x.mentee, mentor=x.mentor, at=f" at {x.company}" if x.company else ""
+        )
         context = evals_agent.session_prompt({"asked_on": end.date().isoformat(), "cwd": x.folder})
         prompt, extra = arm.request(x, query, info)
+        if unprompted and arm.name != "full":  # the full arm's prompt is the history itself
+            prompt = PLAIN.format(query=query)
         if extra:
             context += "\n\n" + extra
         attempt = evals_agent.run_agent(
@@ -1006,6 +1023,7 @@ def run_agent(
         )
         answer, transcript = attempt["answer"], attempt["transcript"]
         row.update(attempt["row"])
+        row["used_recall"] = int(row["tool_calls"] > 0)  # tool_calls counts recall's tools only
         if not arm.tools and row["status"] == "mcp_error" and row.get("detail") == "[]":
             row.update(status=h.OK, detail=None)  # no MCP server is the point of these arms
         checks = []
@@ -1052,6 +1070,7 @@ def run_agent(
     summary = {
         "model": model,
         "arm": arm.name,
+        "unprompted": unprompted,
         **metrics,
         "checks_updated": h.ratio_ci([(v["updated_ok"], v["updated_n"]) for v in checks.values()]),
         "checks_unchanged": h.ratio_ci([(v["unchanged_ok"], v["unchanged_n"]) for v in checks.values()]),
@@ -1064,6 +1083,7 @@ def run_agent(
         "tool_calls": {**h.spread([r["tool_calls"] for r in scored]), "by_tool": dict(sorted(tools.items()))},
         "tool_search_calls": h.spread([r["tool_search_calls"] for r in scored]),
         "tool_result_chars": h.spread([r["tool_chars"] for r in scored]),
+        "used_recall": round(statistics.fmean([r["used_recall"] for r in scored]), 3) if scored else None,
         "seconds": h.spread([r["seconds"] for r in scored]),
         "cost_usd_api_equivalent": round(sum(r["cost_usd"] for r in scored), 2),
         "requests": len(jobs),
@@ -1096,7 +1116,8 @@ def run_agent(
     headline = (
         f"acc={h.fmt(metrics['accuracy'])} short={metrics['short']['mean']} long={metrics['long']['mean']} "
         f"updated={summary['checks_updated']['mean']} tokens_in_median={summary['tokens_in'].get('median')} "
-        f"tools_median={summary['tool_calls'].get('median')} arm={arm.name} model={model}"
+        f"tools_median={summary['tool_calls'].get('median')} used_recall={summary['used_recall']} arm={arm.name} "
+        f"model={model}" + (" unprompted" if unprompted else "")
     )
     if repeats > 1:
         headline += f" acc_by_repeat={summary['variance']['accuracy_by_repeat']}"
