@@ -36,6 +36,11 @@ def cmd_index(a) -> None:
         else:
             print(f"{name:14} {r['indexed']:5} indexed  {r['unchanged']:5} unchanged")
     print(f"done in {time.time() - started:.1f}s → {paths.DB}")
+    if not a.source or "codex" in a.source:
+        from .chats.sources import codex
+
+        if note := codex.unreadable_note():
+            print(f"recall: {note}", file=sys.stderr)
 
 
 def cmd_embed(a) -> None:
@@ -141,7 +146,12 @@ def cmd_forget(a) -> None:
 
 
 def cmd_stats(a) -> None:
-    print(json.dumps(store.stats(store.connect()), indent=2))
+    from .chats.sources import codex, compressed
+
+    out = store.stats(store.connect())
+    if n := codex.unreadable():  # zstd-compressed rollouts nothing here can decode: not in the numbers above
+        out.setdefault("codex", {})["unreadable"] = {"chats": n, "fix": compressed.fix_hint()}
+    print(json.dumps(out, indent=2))
 
 
 def cmd_why(a) -> None:
@@ -451,7 +461,11 @@ def cmd_status(a) -> None:
 
     if a.hook:  # the edit hook's first command; `recall hook` answers it now
         return cmd_hook(a)
+    from .chats.sources import codex, compressed
+
     s = status.status(store.parse_since(a.since))
+    if n := codex.unreadable():
+        s["unreadable"] = {"agent": "codex", "chats": n, "fix": compressed.fix_hint()}
     if a.json:
         print(json.dumps(s, indent=2))
         return
@@ -470,6 +484,8 @@ def cmd_status(a) -> None:
         repos.setdefault(x["repo"] or "no folder", []).append(x)
     for repo, xs in repos.items():
         print(f"  {repo:14} {', '.join(dict.fromkeys(x['branch'] or '?' for x in xs))}")
+    if note := codex.unreadable_note():
+        print(f"\n{note}")
 
 
 def cmd_resolve(a) -> None:

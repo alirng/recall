@@ -105,6 +105,9 @@ An agent source reads one agent's chat history and gives the index a list of cha
      it is needed.
 2. Register the source in `src/recall/chats/sources/__init__.py`.
 3. Read the agent's files and never write to them. Open SQLite databases with `mode=ro`.
+   Read JSONL through `read_jsonl`, which also reads a file the agent has compressed to
+   `.jsonl.zst` (Codex does). Key such a chat by its plain `.jsonl` path in both forms
+   (`sources/compressed.py`), so compressing it later does not make it look new.
 4. Drop what the index should not hold: tool output, reasoning, and text the tool injects,
    such as system reminders. The existing sources show how.
 5. If a parser change alters what the index should hold, bump `CHAT_SCHEMA_VERSION` in
