@@ -237,7 +237,12 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
             if isinstance(answer, BaseException):
                 handle(batch, None, answer)
             else:
-                handle(batch, extract.answers(batch, answer), None)
+                try:
+                    parsed = extract.answers(batch, answer)
+                except (KeyError, TypeError, ValueError, AttributeError) as e:  # a malformed answer fails its batch
+                    handle(batch, None, LLMError(f"malformed extraction answer: {e!r}"))
+                else:
+                    handle(batch, parsed, None)
     else:
         pool = ThreadPoolExecutor(client.provider.profile.workers)
         futures = {pool.submit(extract.run_batch, client, b): b for b in batches}
