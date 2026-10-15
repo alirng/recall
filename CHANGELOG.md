@@ -7,7 +7,8 @@ All notable changes to recall are listed here. The format follows
 
 ### Added
 
-- **recall never loses a chat it has indexed.** Every chat is kept compressed in its own
+- **recall never loses a chat it has indexed**, except the two ways you ask for it: `recall forget`,
+  and a retention period your organisation sets. Every chat is kept compressed in its own
   table, one copy per file it came from, which a rebuild never drops. When the parser changes,
   chats are re-read from their files, and those whose files are gone (Claude Code deletes
   transcripts after 30 days by default) come back from the archive, marked restored. When a
@@ -16,12 +17,18 @@ All notable changes to recall are listed here. The format follows
   project folder, Codex one in `sessions/` and one in `archived_sessions/`) now shows every
   message from all of them, where before only the file read last counted.
 - **`recall forget <chat id>` and `--project NAME`** remove chats from the index, the archive,
-  embeddings, extraction records and cached model answers, and keep them from being indexed
-  again. Notes that cite them are listed with the git command that removes them from history.
+  embeddings and extraction records, and keep them from being indexed again; the database
+  file is rewritten afterwards so the words are not left in free pages. Cached model answers
+  go only when they quote the chat (a paraphrase is not recognised). Notes that cite the
+  chats are listed, not edited, with the git command that removes them from history. The
+  usage log (queries and chat ids) is left alone.
 - **Retention.** `recall install` and `recall setup` offer to raise Claude Code's
   `cleanupPeriodDays` when it is under a year (backed up first; uninstall never lowers it).
   When an organisation sets that period through managed settings, recall forgets Claude Code
-  chats older than it.
+  chats older than it. Unverified: the format of the server-managed cache
+  `~/.claude/remote-settings.json`. Claude Code's documentation confirms the path, not what
+  is in the file; recall reads it as a settings object with `cleanupPeriodDays` at the top
+  level, as it reads a `managed-settings.json` file or an MDM profile.
 
 ### Fixed
 

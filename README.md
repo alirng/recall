@@ -601,7 +601,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall setup [--yes] [--model SPEC] [--embeddings NAME]` | the guided first run; the flags answer its questions up front |
 | `recall model [--show]` | choose, or show, the model that writes memories |
 | `recall search <words>` · `show <id>` · `recent` | chat history |
-| `recall forget <id> \| --project NAME [--yes]` | remove chats from the index, archive, vectors and cached answers; lists notes that cite them |
+| `recall forget <id> \| --project NAME [--yes]` | remove chats from the index, archive, vectors and the cached answers that quote them; lists the notes that cite them |
 | `recall embed` | embed messages for semantic search (needs `[embeddings]` in config.toml) |
 | `recall dream [--max-minutes N] [--max-calls N]` | update memory now |
 | `recall memory [search <words> \| show <id> \| link]` | browse notes; `link` recomputes links now |
@@ -659,8 +659,10 @@ to a fraction of its size. recall keeps a compressed copy of every chat it has i
 16 MB for 2,900 chats), and when a file loses messages it already indexed, it keeps them.
 `recall install` offers to raise Claude Code's period to ten years. When your organisation
 sets that period through managed settings, recall keeps those chats no longer than the policy
-allows. `recall forget <chat id>` (or `--project NAME`) removes a chat from everything recall
-holds, and lists the notes that cite it.
+allows. `recall forget <chat id>` (or `--project NAME`) removes a chat from recall's index,
+archive, embeddings and extraction records, and from the cached model answers that quote it;
+it lists the notes that cite the chat but leaves them to you, and the usage log keeps only
+the words you asked and chat ids.
 
 **Will memory pick up something wrong?**
 Sometimes. Every note carries its sources and a confidence level, newer chats supersede
