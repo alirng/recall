@@ -30,6 +30,7 @@ from datetime import datetime
 import yaml
 
 from .. import contexts, paths
+from ..chats.redact import redact
 
 TYPES = ("preference", "fact", "decision", "lesson", "open")
 SECTIONS = {
@@ -122,6 +123,7 @@ class NoteStore:
         return notes
 
     def write(self, note: Note) -> None:
+        note.title, note.body = redact(note.title), redact(note.body)  # a note never keeps a credential
         directory = self._dir_for(note)
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, f"{note.id}.md")
