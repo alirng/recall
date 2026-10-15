@@ -17,6 +17,14 @@ A memory matches when, for every group in "all", its text contains one of the gr
 Personal eval sets name real chats, so they live in recall's data folder, never in
 the repository; evals/*.example.jsonl shows the format.
 
+Session start: what the hook injects when an agent opens in a folder. Each case is a folder
+with every note labelled for it, e.g.
+  {"id": "p-recall", "cwd": "/path/to/recall", "agent": "claude", "split": "train",
+   "must": ["<note id>", ...], "ok": [...], "no": [...]}
+`must` notes should be loaded there, `no` notes must not be (another context or project, or
+noise). The block is built by the current code from a throwaway copy of the notes, so the
+grade is exact and the same on every run.
+
 LongMemEval (Wu et al., ICLR 2025) is the public check on search: 500 questions, each over
 its own history of about 50 chat sessions, with the sessions that hold the answer marked.
 Finding those sessions is what search_chats does, so `recall eval longmemeval` indexes each
@@ -43,6 +51,9 @@ STOPWORDS = frozenset(
     "using have has had will would could should about into then than them they their also all any some more "
     "most very get got let lets one".split()
 )
+# Characters a session-start block may take: a 4,500-character body plus its header and footer.
+# Fixed here, not read from the hook's own limit, so changing the hook cannot move the bar.
+SESSION_BUDGET = 5100
 
 
 def run_search(con, cases_path: str | None, sample: int, paraphrased: str | None = None) -> dict:
@@ -498,6 +509,76 @@ def _lme_time(date: str) -> float | None:
         return datetime.strptime(date, "%Y/%m/%d (%a) %H:%M").timestamp()
     except (TypeError, ValueError):
         return None
+
+
+def run_session(cases_path: str, split: str | None = None, verbose: bool = True) -> dict:
+    """Grade the session-start block in each case's folder against its labelled notes."""
+    import os
+    import shutil
+    import tempfile
+
+    from . import paths
+    from .memory.context import session_context
+    from .memory.notes import NoteStore
+
+    with open(cases_path) as f:
+        cases = json.load(f)
+    if split:
+        cases = [c for c in cases if c.get("split") == split]
+    with tempfile.TemporaryDirectory() as tmp:
+        # Compile indexes with the code under test, never into the real memory folder.
+        root = os.path.join(tmp, "memory")
+        shutil.copytree(paths.MEMORY, root, ignore=shutil.ignore_patterns(".git"))
+        os.makedirs(os.path.join(root, ".git"))
+        notes = NoteStore(root)
+        active = notes.load()
+        notes.compile(active)
+        titles = {n.id: n.title for n in active.values() if n.status == "active"}
+        rows = []
+        for c in cases:
+            text = session_context(c["cwd"], notes=notes, agent=c.get("agent", "claude"))
+            loaded = {i for i, t in titles.items() if _shown(t, text)}
+            must, ok, no = set(c.get("must", [])), set(c.get("ok", [])), set(c.get("no", []))
+            rows.append(
+                {
+                    "id": c["id"],
+                    "split": c.get("split"),
+                    "chars": len(text),
+                    "loaded": len(loaded),
+                    "must": len(must),
+                    "must_hit": len(loaded & must),
+                    "ok_hit": len(loaded & ok),
+                    "leaks": sorted(loaded & no),
+                    "unlabelled": sorted(loaded - must - ok - no),
+                    "missed": sorted(must - loaded),
+                }
+            )
+    with_must = [r for r in rows if r["must"]]
+    loaded = sum(r["loaded"] for r in rows) or 1
+    summary = {
+        "cases": len(rows),
+        "must_recall": round(sum(r["must_hit"] / r["must"] for r in with_must) / (len(with_must) or 1), 3),
+        "leak_rate": round(sum(len(r["leaks"]) for r in rows) / loaded, 3),
+        "leaks": sum(len(r["leaks"]) for r in rows),
+        "precision": round(sum(r["must_hit"] + r["ok_hit"] for r in rows) / loaded, 3),
+        "unlabelled": sum(len(r["unlabelled"]) for r in rows),
+        "max_chars": max((r["chars"] for r in rows), default=0),
+        "over_budget": sum(r["chars"] > SESSION_BUDGET for r in rows),
+    }
+    if verbose:
+        print(f"{'case':22} {'split':5} {'chars':>5} {'loaded':>6} {'must':>7} {'leaks':>5}")
+        for r in rows:
+            print(
+                f"{r['id']:22} {r['split'] or '':5} {r['chars']:>5} {r['loaded']:>6} "
+                f"{r['must_hit']:>3}/{r['must']:<3} {len(r['leaks']):>5}"
+            )
+        print(json.dumps(summary))
+    return {"summary": summary, "cases": rows}
+
+
+def _shown(title: str, block: str) -> bool:
+    """A note counts as loaded when its title is one of the block's lines."""
+    return re.search(rf"^- (\*\*)?{re.escape(title)}(\*\*)?(:|$)", block, re.M) is not None
 
 
 def _score_search(con, cases) -> dict:
