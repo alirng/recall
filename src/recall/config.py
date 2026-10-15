@@ -16,6 +16,9 @@ DEFAULTS = {
     # When an agent edits a file another chat has open changes to: ask, worktree, tell or off
     # per situation. These are the recommended rules; see status.py and `recall setup`.
     "coordination": {"same_copy": "ask", "conflict": "tell", "apart": "tell", "overlap": "off"},
+    # Exploration subagents' reports are always recorded; serve = true also hands the matching
+    # earlier report to a new exploration at its start. Off: no measured gain; see explore.py.
+    "explore": {"serve": False},
 }
 
 

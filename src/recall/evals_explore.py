@@ -386,6 +386,8 @@ def _run_one(earlier: list[dict], c: dict, arm: str, rep: int, model: str, timeo
             )
         db.commit()
         db.close()
+        with open(os.path.join(home, "config.toml"), "w") as f:  # serving is off by default
+            f.write("[explore]\nserve = true\n")
         # This checkout's code answers the hook, with its own data folder.
         src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         hook = " ".join(
