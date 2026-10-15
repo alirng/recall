@@ -198,6 +198,11 @@ def cmd_explore(a) -> None:
         text, info = explore.brief(folder, " ".join(a.terms), con)
         if text:
             print(text)
+            if not explore.serving():
+                print(
+                    "(not handed to new explorations: serving is off, set serve = true under [explore])",
+                    file=sys.stderr,
+                )
         elif info.get("candidates"):
             print(
                 f"no match: the best of {info['candidates']} earlier explorations scored {info['top']}, "
@@ -600,7 +605,9 @@ def _parser() -> argparse.ArgumentParser:
     sp = command("hook", cmd_hook, "answer an agent's hook, reading its JSON input (recall install sets this up)")
     sp.add_argument("--agent", default="claude", help="claude, codex, cursor, gemini or opencode")
 
-    sp = command("explore", cmd_explore, "earlier exploration reports per repo, served to exploration subagents")
+    sp = command(
+        "explore", cmd_explore, "earlier exploration reports per repo, and what a new exploration would be handed"
+    )
     sp.add_argument("action", nargs="?", choices=["list", "lookup", "backfill"], default="list")
     sp.add_argument("terms", nargs="*", help="lookup: the exploration prompt")
     sp.add_argument("--cwd", help="the repo folder (default: the current directory)")
