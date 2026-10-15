@@ -221,9 +221,16 @@ def mismatch(run_dir: str, meta: dict) -> list[str]:
         return [f"{run_dir} has no readable meta.json"]
     return [
         f"the --against run differs in {k}: {other.get(k)} there, {meta.get(k)} here"
-        for k in ("eval", "judge", "judge_version", "keyword_only")
+        for k in ("eval", "judge", "judge_version", "keyword_only", "agent_harness")
         if other.get(k) != meta.get(k)
     ]
+
+
+def check_candidates_repeat(k: int | None, source: dict) -> None:
+    """--candidates-repeat K names a repeat the --from-candidates run has; past it the replay
+    would wrap round to another repeat without saying so."""
+    if k is not None and not 1 <= k <= source["repeats"]:
+        sys.exit(f"--candidates-repeat {k}: {source['dir']} has repeats 1 to {source['repeats']}")
 
 
 def judge_client(spec: str, cache: bool = True):

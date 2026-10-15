@@ -60,15 +60,22 @@ To tell a gain from noise, compare the runs case by case:
 `recall eval compare BEFORE_RUN... vs AFTER_RUN...`. It prints the paired difference with a
 bootstrap interval, how many cases got better or worse, each run's spread, and the smallest
 difference those runs can detect. A change smaller than that needs more repeats or more cases,
-and the command says which. `--flips` lists the cases whose outcome changes from run to run,
-so you can repeat only those. Two habits keep the comparison honest:
+and the command says which. It gives no better or worse verdict under 10 paired cases, says
+"run noise unmeasured" while an arm has fewer than 3 full replicates, and warns when only some
+cases pair or the runs used different agent harnesses. `--flips` lists the cases whose outcome
+changes from run to run, so you can repeat only those. Two habits keep the comparison honest:
 
 - **Change one stage, freeze the rest.** For a consolidation change, replay an earlier run's
   extracted candidates (`--from-candidates RUN_DIR`) instead of extracting again.
-- **Control for priming.** Loading any notes can help an agent, whatever they say. For a claim
-  that notes help, the MemoryCode agent eval has a `placebo` arm, which loads another
-  history's notes of the same size. Notes help by their content only as far as `hook` beats
-  `placebo`.
+- **Check what the notes add beyond having notes.** Loading any notes can help an agent,
+  whatever they say. The MemoryCode agent eval has a `placebo` arm for this: it loads the
+  notes of another history of about the same size, one that shares no convention object or
+  token with this history, and a history with no such donor is skipped. Read it with care:
+  hook minus placebo is an upper bound on what the notes' content is worth, and placebo minus
+  tools is the effect of loading notes that are not this history's, which includes any harm
+  from misleading ones. It is not a pure priming control. MemoryCode has only 77 distinct
+  convention tokens in 360 histories, so without the filter donors often held this history's
+  conventions or contradicted them.
 
 Personal eval sets name real chats, so they stay in `~/.agents/recall/evals/`. See Privacy
 below.
