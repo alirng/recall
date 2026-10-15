@@ -12,7 +12,8 @@ How recall reads chats, writes notes, and hands them to agents.
 ```
 
 1. **Index.** Each agent's history is parsed into your turns and the agent's turns. Tool
-   output and text the tools inject (system reminders, plan-mode boilerplate) are dropped,
+   output and text the tools inject (system reminders, plan-mode boilerplate) are dropped
+   (a failed tool call keeps one redacted, searchable line saying what went wrong),
    and secrets are redacted before anything is stored. Headless runs and Codex subagents stay
    searchable but are never mined for memory; Claude Code's subagent transcripts are not
    indexed. Clones and worktrees of one repo share a
@@ -123,8 +124,8 @@ other chats until recall reads their history or hooks into them.
   embedding model, so a hosted one never receives your prompts from a hook. Claude Code and
   Codex get prompts and reads (Codex reads are shell commands such as `cat` and `sed -n`);
   Cursor gets them too, its prompt answer read from the 3.23 app rather than its docs. Past
-  errors and notes after compaction are wired but rarely fire yet: the index does not keep
-  tool errors, and notes seldom clear the gate. `recall jit "<prompt>"` shows what would fire
+  errors and notes after compaction are wired but rarely fire yet: matching a failure against
+  the index's tool errors is off until it is more precise, and notes seldom clear the gate. `recall jit "<prompt>"` shows what would fire
   and why.
 - **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
   `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and

@@ -38,7 +38,7 @@ recall distils chats with a language model. Pick the one that fits your privacy 
 | --- | --- | --- |
 | **Local model** | Ollama, LM Studio or llama.cpp on this machine | nowhere: they stay on this machine |
 | **ChatGPT** | your ChatGPT plan, through the Codex CLI | OpenAI, under your plan's data terms |
-| **Claude** | your Claude plan, through Claude Code | Anthropic, under your plan's data terms |
+| **Claude** | your Claude plan, through Claude Code (`haiku`, `sonnet` and `opus` run the 5.5 models) | Anthropic, under your plan's data terms |
 | **API key** | OpenAI, Anthropic or OpenRouter | that provider, billed to your key |
 | **Your server** | any OpenAI-compatible endpoint, such as vLLM or Ollama on another box | your server |
 

@@ -403,8 +403,7 @@
         "split": "test",
         "runs": 3,
         "harness": "tool search",
-        "overall": 0.024,
-        "run": "20261013-181906-tools-mc-none-test-before"
+        "overall": 0.024
       },
       {
         "arm": "tools only",
@@ -413,8 +412,7 @@
         "harness": "tool search",
         "overall": 0.732,
         "long": 0.395,
-        "short": 0.935,
-        "run": "20261013-172513-tools-mc-tools-test-before"
+        "short": 0.935
       },
       {
         "arm": "0.3.0 notes at session start + tools",
@@ -423,8 +421,7 @@
         "harness": "tool search",
         "overall": 0.775,
         "long": 0.619,
-        "short": 0.868,
-        "run": "20261013-172506-tools-mc-hook-test-before"
+        "short": 0.868
       },
       {
         "arm": "no memory",
