@@ -310,10 +310,29 @@ def _declared() -> list[tuple[str, str, str]]:
     return out
 
 
+def _continued(lines: list[str]) -> list[str]:
+    """The file's lines with each trailing backslash joined to the line after it, as the shell does
+    (`export \\` then `CLAUDE_CONFIG_DIR=...` on the next line). A comment does not continue."""
+    out, cur = [], None
+    for line in lines:
+        text = line if cur is None else cur + line
+        odd = (len(text) - len(text.rstrip("\\"))) % 2
+        if odd and not text.lstrip().startswith("#"):
+            cur = text[:-1]
+        else:
+            out.append(text)
+            cur = None
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
 def _statements(lines: list[str]):
-    """The statements in a shell file as lists of words, quotes resolved. A quoted string may run over
-    several lines, so a line that leaves a quote open is joined with the next ones; comments are cut
-    off where they start; ; && || | and brackets end a statement."""
+    """The statements in a shell file as lists of words, quotes resolved. A line that ends in a
+    backslash is joined with the next one, and a quoted string may run over several lines, so a line
+    that leaves a quote open is joined with the next ones; comments are cut off where they start;
+    ; && || | and brackets end a statement."""
+    lines = _continued(lines)
     i = 0
     while i < len(lines):
         chunk, j, words = lines[i], i + 1, None
