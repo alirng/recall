@@ -16,8 +16,8 @@ from .llm.base import http_json
 SMALL_MODEL_HINTS = ("luna", "mini", "nano", "haiku", "flash", "small", "lite", "4b", "3b")
 API_KEY_ENV = keys.ENV
 API_CREDITS = (
-    "   Claude Max and Team plans also include monthly API credits, enough for recall's nightly run\n"
-    "   through the Batch API at half price. Give recall its own Console workspace with a spend limit."
+    "   Claude Max and Team plans include monthly API credits that cover recall's nightly run (Batch API,\n"
+    "   half price). Give recall its own Console workspace with a spend limit."
 )
 
 
@@ -201,7 +201,6 @@ def _claude_settings(ask: Prompter, _servers) -> dict:
     problem = Claude().check()
     if problem:
         raise ValueError(problem)
-    print(API_CREDITS + ' To use them, choose "API key", then Anthropic.')
     return {"provider": "claude", "name": ask.ask("Model (haiku, sonnet or opus)", "haiku")}
 
 
@@ -225,7 +224,7 @@ def _api_settings(ask: Prompter, _servers) -> dict:
     except (FatalError, LLMError):
         models = []
     settings["name"] = ask.ask("Model", _small_first(models))
-    if provider.supports_batch:
+    if provider.supports_batch and kind != "anthropic":
         print("   The nightly run sends its calls through the Batch API, at half the price.")
     # A signed-in plan can take over when the key's credits run out.
     plan = {"anthropic": ("claude:haiku", Claude()), "openai": ("chatgpt", ChatGPT(""))}.get(kind)
