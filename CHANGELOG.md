@@ -137,12 +137,14 @@ All notable changes to recall are listed here. The format follows
 
 ### Changed
 
-- **A shorter README.** It now covers what recall does, how to install it and the headline
-  results; the detail moved into pages under `docs/` (benchmarks, how it works, projects and
-  rules, coordination, commit links, exploration reports, accounts, reference). Figures were
-  rechecked against their runs: the MemoryCode agent result now comes from the runs that load
-  recall's tools as Claude Code does by default, and search times from the dedicated timing run.
-
+- **The Claude provider's `haiku`, `sonnet` and `opus` now run the 5.5 models.** Claude Code's
+  own aliases had resolved `haiku` to Haiku 4.5, so `claude:haiku` (the setup default for the
+  Claude plan) ran a model a generation older than its name. recall now passes
+  `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, so an existing `name = "haiku"`
+  needs no edit, and a full id still passes through unchanged. The label and the response
+  cache follow the pinned id. When Claude Code serves another model than the one asked for
+  (an old install, or a plan that serves something else), recall says so once on stderr.
+  Haiku 5.5 thinks before it answers, so each call uses more of the plan than Haiku 4.5 did.
 - **Archive copies load whatever a later version added to them.** Reading a copy ignores
   keys and message fields it does not know, so a change that adds a field to the archive can
   be reverted without breaking every index run.
@@ -159,6 +161,12 @@ All notable changes to recall are listed here. The format follows
   note not yet judged loads everywhere, as before. Notes from chats with no folder move to
   their project once every one of those chats resolves to it. `recall eval session` grades
   the block against labelled notes for real folders.
+- **The MCP server reports recall's version** when an agent connects; it reported none.
+- **A shorter README.** It now covers what recall does, how to install it and the headline
+  results; the detail moved into pages under `docs/` (benchmarks, how it works, projects and
+  rules, coordination, commit links, exploration reports, accounts, reference). Figures were
+  rechecked against their runs: the MemoryCode agent result now comes from the runs that load
+  recall's tools as Claude Code does by default, and search times from the dedicated timing run.
 
 ### Fixed
 
