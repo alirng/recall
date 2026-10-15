@@ -219,7 +219,7 @@ def fts_query(text: str, mode: str) -> str | None:
     return (" OR " if mode == "or" else " ").join(f'"{w}"' for w in words)
 
 
-def _filters(con, agent, project, since, alias="s", *, until=None, exclude=None):
+def _filters(con, agent, project, since, alias="s", *, until=None, exclude=None, where=None):
     sql, args = "", []
     if agent:
         sql += f" and {alias}.agent = ?"
@@ -246,6 +246,9 @@ def _filters(con, agent, project, since, alias="s", *, until=None, exclude=None)
     if exclude:
         sql += f" and {alias}.id not in ({','.join('?' * len(exclude))})"
         args += list(exclude)
+    if where:
+        sql += " " + where[0]
+        args += list(where[1])
     return sql, args
 
 
@@ -306,6 +309,7 @@ def search(
     exclude=None,
     vector=None,
     explain: dict | None = None,
+    where: tuple[str, list] | None = None,
 ) -> list[dict]:
     """Rank chats for a query, each with its best few matching messages.
 
@@ -315,6 +319,8 @@ def search(
     are on (see embeddings.py). False searches by keywords only.
     explain: a dict to fill with each chat's fused score, the separate rankings and their
     weights, for callers that judge how sure the ranking is (jit.py).
+    where: (SQL starting with "and" over the sessions table as `s`, its arguments) that narrows
+    the chats before any ranking, so that the ones left out cannot take a place or a margin.
     """
     q = fts_query(query, "or")
     if not q:
@@ -323,7 +329,7 @@ def search(
         from .. import embeddings
 
         vector = embeddings.query_vector(query)
-    fsql, fargs = _filters(con, agent, project, since, until=until, exclude=exclude)
+    fsql, fargs = _filters(con, agent, project, since, until=until, exclude=exclude, where=where)
     msql, margs = _message_window(since, until)
     rows = con.execute(
         f"""select m.id mid, m.session_id sid, m.seq seq, bm25(messages_fts) score
