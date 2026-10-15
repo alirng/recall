@@ -55,7 +55,7 @@ GLOBAL_INDEX_LINES = 40
 PROJECT_INDEX_LINES = {"preference": 12, "fact": 30, "decision": 20, "lesson": 20, "open": 10}
 RELATED_MARK = "<!-- recall: related notes, rewritten on each run -->"
 REMOVED_BY_HAND = "removed by hand"  # the only reason that feeds consolidation's never-recreate list
-MERGED_BY_HAND = "merged by hand"  # its words still stand in the body, inside another rule
+MERGED_BY_HAND = "merged by hand"  # the developer folded it into another rule, which replaced it
 HOOK_CHARS = 160
 README = (
     "# Agent memory\n\nMaintained by recall from your coding-agent chats. Start at MEMORY.md. "
@@ -497,24 +497,30 @@ def _edit_date(path: str) -> str:
 _BULLET = re.compile(r"^(?:[-*+]|\d{1,3}[.)]) +")
 
 
-def _items(body: str) -> list[str]:
-    """A body as rule texts, as written: the items of a bullet or numbered list, with the lines
-    before the first item as one more; a body with no list is a single item."""
+def _split(body: str) -> tuple[str, list[str]]:
+    """A body as the text above its list and the list's items; a body with no list is a single
+    item with nothing above it."""
     text = body.strip()
     if not text:
-        return []
+        return "", []
     lines = text.split("\n")
     first = next((i for i, line in enumerate(lines) if _BULLET.match(line)), None)
     if first is None:
-        return [text]
+        return "", [text]
     out: list[str] = []
     for line in lines[first:]:
         if _BULLET.match(line):
             out.append(_BULLET.sub("", line, count=1))
         else:
             out[-1] += "\n" + (line[2:] if line.startswith("  ") else line)
-    lead = "\n".join(lines[:first]).strip()
-    return ([lead] if lead else []) + [t for t in (t.strip() for t in out) if t]
+    return "\n".join(lines[:first]).strip(), [t for t in (t.strip() for t in out) if t]
+
+
+def _items(body: str) -> list[str]:
+    """A body as rule texts, as written: the items of a bullet or numbered list, with the lines
+    before the first item as one more; a body with no list is a single item."""
+    lead, items = _split(body)
+    return ([lead] if lead else []) + items
 
 
 def _same(a: str, b: str) -> bool:
@@ -545,22 +551,30 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
     id, sources and dates whenever its text still stands. Each item of the body (_items) is
     matched to a rule, in this order:
     - the same words: the rule is kept as it is; a retired rule's words written back revive it;
-    - a rule that is a bullet list of its own (a note from before rules) is split into one
-      rule per bullet first, each keeping the parent's sources and dates, and matched alike;
+    - a rule that is a list of two or more bullets of its own (a note from before rules) is
+      split into one rule per bullet, and one for any text above the bullets, first, each
+      keeping the parent's sources and dates, and matched alike;
     - an item that contains a rule's words (a paragraph or intro added, bullets turned to
       prose) is that rule, with the new text. If it holds several rules' words they are merged
-      into the first, which keeps their sources, and the others are retired as merged;
+      into the first, which keeps their sources, and the others are retired as merged. Text
+      added above the list of a note that had several rules is the developer's own: if it quotes
+      one rule inside more than twice as many words (an explanation of why a bullet was
+      deleted) it is a new rule, not that rule's new text;
     - a changed line close to a rule (similarity of at least a half) is that rule, reworded;
     - any other item is a new rule in the developer's words.
-    A rule left over is retired. Only one whose words are nowhere in the body is retired as
-    removed by hand, the reason that stops it being learned again; one that went into another
-    rule's words is retired as merged. An emptied body removes every rule.
+    A rule left over is retired. One that went into the words of a rule the edit changed is
+    retired as merged, with that rule as its replacement and its sources folded in. Any other
+    was deleted, even when its words stand in a rule that stayed as it was (a shorter version
+    of it), and is retired as removed by hand, the reason that stops it being learned again.
+    An emptied body removes every rule.
     A hand-written rule is marked said_by developer unless it is risky (said.py); an edit that
     only adds to a rule keeps the mark only when every rule behind it had it. Returns the rules
     and whether the body had been edited."""
     if _same(render(rules), note.body):
         return rules, False
-    items = _items(note.body)
+    lead, bullets = _split(note.body)
+    items = ([lead] if lead else []) + bullets
+    several = sum(r.active for r in rules) > 1  # the body was a list, so text above it is new
     taken = {r.id for r in rules}
     free = [r for r in rules if r.active]
     held: dict[int, Rule] = {}  # item index -> the rule it is
@@ -586,10 +600,11 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
         if back and back.id not in {r.id for r in held.values()}:
             back.status, back.retired, back.reason, back.replaced_by, back.edited = "active", "", "", None, date
             held[i] = back
-    for r in [r for r in free if _BULLET.match(r.text)]:  # a legacy list: one rule per bullet
-        pieces = _items(r.text)
-        if len(pieces) < 2:
+    for r in list(free):  # a legacy list: one rule per bullet, and one for the text above it
+        top, bullets_of = _split(r.text)
+        if len(bullets_of) < 2:  # a bullet or two under a rule is its detail, not a list
             continue
+        pieces = ([top] if top else []) + bullets_of
         units = [
             replace(
                 r,
@@ -605,10 +620,18 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
         rules = [u for x in rules for u in (units if x is r else [x])]
         free = [u for x in free for u in (units if x is r else [x])]
     exact()
+    stayed = set(held)  # items that are a rule exactly as it was
+    quoting: set[int] = set()  # items that only quote a rule: a new rule, not that rule reworded
     for i, t in enumerate(items):  # an item that holds a rule's words
         inside = [r for r in free if _inside(r.text, t)] if i not in held else []
         if not inside:
             continue
+        only = inside[0] if len(inside) == 1 else None
+        if only and i == 0 and lead and several and 2 * len(_words(only.text).split()) < len(_words(t).split()):
+            quoting.add(i)  # text added above the list that quotes one rule inside much else
+            continue
+        at = _words(t)
+        inside.sort(key=lambda r: f" {at} ".find(f" {_words(r.text)} "))  # the rule the item opens with is the host
         host, others = inside[0], inside[1:]
         host.said_by = "developer" if all(r.said_by == "developer" for r in inside) and not risky(t) else None
         host.text, host.edited = t if has_marker(host.text) else clean_rule(t), date
@@ -618,15 +641,14 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
             hosts[host.id] = t
         held[i] = host
         free = [r for r in free if r is not host and not any(r is o for o in others)]
-    for r in list(free):  # a duplicate of a rule whose item holds its words
-        host = next((h for i, h in held.items() if _inside(r.text, items[i])), None)
-        if host:
-            retire(r, MERGED_BY_HAND, host)
+    for r in list(free):  # its words stand in a rule that stayed as it was: this one was deleted
+        if any(_inside(r.text, items[i]) for i in stayed):
+            retire(r, REMOVED_BY_HAND)
             free.remove(r)
     for i, t in enumerate(items):
         if i in held:
             continue
-        close = max(free, key=lambda r: _close(r.text, t), default=None)
+        close = None if i in quoting else max(free, key=lambda r: _close(r.text, t), default=None)
         if close and _close(close.text, t) >= 0.5:  # a changed line: the developer reworded the rule
             close.text, close.edited, close.evidence = t if has_marker(close.text) else clean_rule(t), date, ""
             close.said_by = None if risky(close.text) else "developer"
@@ -644,7 +666,7 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
         if host:
             retire(r, MERGED_BY_HAND, host)
         else:
-            retire(r, MERGED_BY_HAND if _inside(r.text, note.body) else REMOVED_BY_HAND)
+            retire(r, REMOVED_BY_HAND)
     order = [held[i] for i in range(len(items)) if i in held]
     return order + [r for r in rules if not any(r is o for o in order)], True
 
