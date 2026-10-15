@@ -639,6 +639,8 @@ def cmd_doctor(a) -> None:
         f"\nautopilot: {'on' if on else 'off'}"
         + ("" if on else " (`recall autopilot on` connects new folders by itself)")
     )
+    for line in autopilot.recent():
+        print(f"  {line}")
 
 
 def _ago(ts: float | None) -> str:

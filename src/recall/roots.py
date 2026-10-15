@@ -28,10 +28,11 @@ from dataclasses import dataclass
 
 AGENTS = ("claude", "codex", "cursor")
 ENV_VARS = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
-# A folder named ~/.claude-work counts as a config dir only if it holds something Claude keeps.
+# A folder named ~/.claude-work counts as a config dir only if it holds what the agent itself writes
+# once used (other tools keep a settings.json in folders with similar names, so that alone is not enough).
 MARKERS = {
-    "claude": ("projects", "settings.json", ".claude.json", "history.jsonl", "CLAUDE.md"),
-    "codex": ("sessions", "config.toml", "auth.json", "hooks.json", "archived_sessions"),
+    "claude": ("projects", ".claude.json", "history.jsonl"),
+    "codex": ("sessions", "auth.json", "archived_sessions"),
 }
 RC_FILES = (
     ".zshenv",
@@ -158,7 +159,7 @@ def _expand(value: str) -> str | None:
     """$HOME, ${HOME} and ~ and any variable the environment sets; nothing else, and nothing is run."""
     h = home()
     value = value.replace("${HOME}", h).replace("$HOME", h)
-    if value.startswith("~"):
+    if value == "~" or value.startswith("~/"):
         value = h + value[1:]
     value = os.path.expandvars(value)
     if re.search(r"[$`(]", value) or not os.path.isabs(value):
