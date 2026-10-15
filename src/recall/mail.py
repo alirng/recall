@@ -8,6 +8,7 @@ agent's hook may report a different id from the one its transcript carries.
 """
 
 import contextlib
+import fcntl
 import json
 import os
 import time
@@ -20,10 +21,23 @@ MAIL = os.path.join(paths.HOME, "cache", "mail.jsonl")
 # does not send twice. A key whose overlap has gone is dropped by status().
 RESOLVED = os.path.join(paths.HOME, "cache", "resolved.json")
 READ = os.path.join(paths.HOME, "cache", "mail-read.json")
+LOCK = os.path.join(paths.HOME, "cache", "mail.lock")
 KEEP_SECONDS = 2 * 86400
 # A finishing agent is kept going to answer at most this many messages from one chat an hour,
 # so two agents cannot keep each other talking.
 MAX_WAKES_PER_HOUR = 3
+
+
+@contextlib.contextmanager
+def _locked():
+    """Hooks of several chats run at once; the mailbox and read marks change under one lock."""
+    os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+    with open(LOCK, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def post(to: str, sender: str, sender_title: str, text: str, to_source: str | None = None, **about) -> dict:
@@ -37,8 +51,7 @@ def post(to: str, sender: str, sender_title: str, text: str, to_source: str | No
         "text": text.strip(),
         **{k: v for k, v in about.items() if v},
     }
-    with contextlib.suppress(OSError):
-        os.makedirs(os.path.dirname(MAIL), exist_ok=True)
+    with contextlib.suppress(OSError), _locked():
         if os.path.exists(MAIL) and os.path.getsize(MAIL) > 512_000:
             keep = [m for m in _all() if m.get("at", 0) > time.time() - KEEP_SECONDS][-1000:]
             with open(MAIL + ".tmp", "w") as f:
@@ -84,7 +97,12 @@ def take(chat: str, source: str | None = None, waking: bool = False) -> list[dic
     """Unread messages for a chat, marked read. With waking (the chat is about to finish its
     turn and would be kept going to answer), messages past the hourly cap stay unread for the
     next prompt or edit instead."""
-    source = os.path.realpath(source) if source else None
+    with contextlib.suppress(OSError), _locked():
+        return _take(chat, os.path.realpath(source) if source else None, waking)
+    return []
+
+
+def _take(chat: str, source: str | None, waking: bool) -> list[dict]:
     state = _state()
     mine = state.get(chat, {"read": [], "wakes": []})
     unread = [
@@ -159,7 +177,8 @@ def on_edit(event):
     return Reply(context=text) if text else None
 
 
-def resolved() -> dict[str, float]:
+def resolved() -> dict[str, dict]:
+    """Resolve marks: overlap key (repo and file) -> {"at": when, "sessions": the chats sent to}."""
     try:
         with open(RESOLVED) as f:
             return json.load(f)
@@ -174,7 +193,7 @@ def forget_resolved(keep: set[str]) -> None:
         _write_resolved({k: v for k, v in marks.items() if k in keep})
 
 
-def _write_resolved(marks: dict[str, float]) -> None:
+def _write_resolved(marks: dict[str, dict]) -> None:
     with contextlib.suppress(OSError):
         os.makedirs(os.path.dirname(RESOLVED), exist_ok=True)
         with open(RESOLVED + ".tmp", "w") as f:
@@ -185,17 +204,19 @@ def _write_resolved(marks: dict[str, float]) -> None:
 def resolve(repo: str, file: str, since: float) -> dict:
     """The person pressed Resolve on an overlap: every chat in it gets a note, queued for its
     next edit, turn end or prompt (never interrupting), asking it to agree with the others who
-    goes first. Pressing it again for the same overlap sends nothing more."""
+    goes first. Pressing it again sends only to chats that joined the overlap since."""
     from . import status
 
     found = next((o for o in status.status(since)["overlaps"] if o["repo"] == repo and o["file"] == file), None)
     if not found:
         return {"sent": 0, "reason": "no such overlap any more"}
     marks = resolved()
-    if found["key"] in marks:
-        return {"sent": 0, "reason": "already sent", "sent_at": marks[found["key"]]}
+    mark = marks.get(found["key"]) or {"at": None, "sessions": []}
+    new = [sid for sid in found["sessions"] if sid not in mark["sessions"]]
+    if not new:
+        return {"sent": 0, "reason": "already sent", "sent_at": mark["at"]}
     sources = {s["session"]: s.get("source") for s in found["sides"]}
-    for sid in found["sessions"]:
+    for sid in new:
         others = [o for o in found["sessions"] if o != sid]
         text = (
             f"The user pressed Resolve in recall for {file}. {found['notes'].get(sid, '')}\n"
@@ -205,6 +226,6 @@ def resolve(repo: str, file: str, since: float) -> dict:
         post(
             sid, "recall", "recall, for the user", text, to_source=sources.get(sid), file=file, repo=repo, others=others
         )
-    marks[found["key"]] = time.time()
+    marks[found["key"]] = {"at": time.time(), "sessions": mark["sessions"] + new}
     _write_resolved(marks)
-    return {"sent": len(found["sessions"]), "sent_at": marks[found["key"]]}
+    return {"sent": len(new), "sent_at": marks[found["key"]]["at"]}

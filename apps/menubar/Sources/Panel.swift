@@ -312,7 +312,8 @@ struct Conversation: View {
                 ForEach(letters, id: \.at) { m in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
-                            Text(agentNames[byId[m.from]?.agent ?? ""] ?? "chat").foregroundStyle(p.agent(byId[m.from]?.agent ?? ""))
+                            Text(m.from == "recall" ? "recall" : agentNames[byId[m.from]?.agent ?? ""] ?? "chat")
+                                .foregroundStyle(m.from == "recall" ? p.accentText : p.agent(byId[m.from]?.agent ?? ""))
                             Text("→").foregroundStyle(p.faint)
                             Text(agentNames[byId[m.to]?.agent ?? ""] ?? "chat").foregroundStyle(p.agent(byId[m.to]?.agent ?? ""))
                             Text("· " + ago(Int(now - m.at))).foregroundStyle(p.muted)

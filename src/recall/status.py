@@ -603,7 +603,7 @@ def status(since: float) -> dict:
     checkouts = _place(sessions)
     letters = mail.recent(since)
     # Messages name a chat by id or transcript; either finds it.
-    alias = {k: s.id for s in sessions for k in (s.id, s.source) if k}
+    alias = {k: s.id for s in sessions for k in (s.id, s.source) if k} | {"recall": "recall"}
 
     # A file that two sessions in one repo both edited and that is still open where each
     # edited it; work already in the default branch drops out. Its level:
@@ -659,11 +659,11 @@ def status(since: float) -> dict:
                 "messages": [
                     {"at": m["at"], "from": sender, "to": recipient, "text": m["text"]}
                     for m in letters
-                    if (sender := alias.get(m.get("from")) or alias.get(m.get("sender_source"))) in group
+                    if (sender := alias.get(m.get("from")) or alias.get(m.get("sender_source"))) in {*group, "recall"}
                     and (recipient := alias.get(m.get("to")) or alias.get(m.get("to_source"))) in group
                 ],
                 # For each session, a note to paste into it about the others.
-                "key": f"{repo}:{f}:{','.join(sorted(group))}",
+                "key": f"{repo}:{f}",
                 "notes": {
                     sid: "\n".join(
                         _about(o, checkouts[side[oid]], situation, [f], side[oid] == side[sid])
@@ -695,11 +695,14 @@ def status(since: float) -> dict:
                 "files": sorted({f for _, f, _ in s.touched}),
             }
         )
-    # Overlaps the person pressed Resolve on; records for overlaps that are gone are dropped.
+    # Overlaps the person pressed Resolve on, while every chat in them has been sent the note;
+    # in the menu's full window, marks for overlaps that are gone are dropped.
     marks = mail.resolved()
     for o in overlaps:
-        o["sent_at"] = marks.get(o["key"])
-    mail.forget_resolved({o["key"] for o in overlaps})
+        mark = marks.get(o["key"])
+        o["sent_at"] = mark["at"] if mark and set(o["sessions"]) <= set(mark["sessions"]) else None
+    if since <= now - 12 * 3600:
+        mail.forget_resolved({o["key"] for o in overlaps})
     levels = {o["level"] for o in overlaps}
     return {
         "generated_at": now,
