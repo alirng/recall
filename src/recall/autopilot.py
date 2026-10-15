@@ -18,17 +18,12 @@ and connected after its folder appears. Chat history is never written. Each chan
 usage.jsonl, and the last ones are kept in autopilot.json for `recall doctor`.
 """
 
-import contextlib
-import fcntl
 import json
 import os
-import sqlite3
-import subprocess
 import sys
 import time
 
-from . import config, paths, roots, usage
-from .integrations import agents
+from . import config, paths
 
 STATE = os.path.join(paths.HOME, "autopilot.json")
 LOCK = os.path.join(paths.HOME, "autopilot.lock")
@@ -52,6 +47,9 @@ def set_enabled(on: bool) -> None:
 def report() -> list[dict]:
     """One row per root: its parts, account hint and when it was last indexed. Reads the index
     read-only, so it never creates or migrates it."""
+    from . import roots
+    from .integrations import agents
+
     found = roots.discover()
     indexed = _indexed()
     try:
@@ -81,6 +79,9 @@ def report() -> list[dict]:
 
 def _indexed() -> dict[str, dict]:
     """root -> {chats, last_chat, indexed_at}, from the index opened read-only."""
+    import contextlib
+    import sqlite3
+
     out: dict[str, dict] = {}
     try:
         con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True, timeout=1)
@@ -119,6 +120,10 @@ def run(trigger: str = "manual", dry_run: bool = False, log=None) -> list[dict]:
     that would be). Never raises; a failure is a line in the log, not a crash in a hook or the nightly run."""
     if not enabled():
         return []
+    import fcntl
+
+    from . import usage
+
     os.makedirs(paths.HOME, exist_ok=True)
     with open(LOCK, "w") as lock:
         try:
@@ -135,6 +140,9 @@ def run(trigger: str = "manual", dry_run: bool = False, log=None) -> list[dict]:
 
 
 def _run(trigger: str, dry_run: bool, log) -> list[dict]:
+    from . import roots
+    from .integrations import agents
+
     state = _load()
     first_run = "roots" not in state
     known = state.setdefault("roots", {})
@@ -202,6 +210,8 @@ def _run(trigger: str, dry_run: bool, log) -> list[dict]:
 def _note(r, tool: str, trigger: str, log: bool = True, **extra) -> dict:
     change = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "tool": tool, "root": r.name, "trigger": trigger, **extra}
     if log:
+        from . import usage
+
         extra = {k: v for k, v in change.items() if k not in ("at", "tool", "root")}
         usage.record("autopilot", tool, {"root": r.name}, client="autopilot", **extra)
     return change
@@ -231,6 +241,11 @@ def on_session_start(e) -> None:
         state = _load()
         if time.time() - state.get("spawned_at", 0) < RETRY_AFTER:
             return None
+        import subprocess
+
+        from . import roots
+        from .integrations import agents
+
         cmd = agents._recall_bin()
         if all(all(v for v in agents.parts(r, cmd).values()) for r in agents.connectable(roots.discover())):
             return None
