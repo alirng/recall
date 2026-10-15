@@ -93,7 +93,10 @@ def cmd_forget(a) -> None:
     if not (a.chat_id or a.project):
         sys.exit("name a chat id, or --project NAME")
     con = store.connect()
-    ids = forget.resolve(con, a.chat_id, a.project)
+    try:
+        ids = forget.resolve(con, a.chat_id, a.project)
+    except forget.Ambiguous as e:
+        sys.exit(str(e))
     if not ids:
         sys.exit("no such chat in recall's index or archive")
     chats = forget.describe(con, ids)
@@ -104,9 +107,11 @@ def cmd_forget(a) -> None:
             sys.exit("pass --yes to forget without asking")
         if not input(f"Forget {len(ids)} chat(s) everywhere recall holds them? (y/n) ").strip().lower().startswith("y"):
             return
-    counts = forget.purge(con, ids, scrub=False)
+    with indexer.exclusive("an index run is in progress: waiting for it to finish"):
+        counts = forget.purge(con, ids, scrub=False)
+        clean = forget.scrub_db(con)
     print("forgot: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in counts.items()))
-    if not forget.scrub_db(con):
+    if not clean:
         print(
             "another recall process has the index open (an agent's MCP server, likely), so the index's\n"
             "-wal file still holds the old pages. SQLite clears it when that process closes the index:\n"
