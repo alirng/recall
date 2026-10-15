@@ -23,6 +23,10 @@ RESOLVED = os.path.join(paths.HOME, "cache", "resolved.json")
 READ = os.path.join(paths.HOME, "cache", "mail-read.json")
 LOCK = os.path.join(paths.HOME, "cache", "mail.lock")
 KEEP_SECONDS = 2 * 86400
+# A message is delivered within a day or not at all: read marks are forgotten after
+# KEEP_SECONDS, so anything older could arrive twice, and a day-old note about an overlap is
+# stale anyway.
+TTL_SECONDS = 86400
 # A finishing agent is kept going to answer at most this many messages from one chat an hour,
 # so two agents cannot keep each other talking.
 MAX_WAKES_PER_HOUR = 3
@@ -105,10 +109,12 @@ def take(chat: str, source: str | None = None, waking: bool = False) -> list[dic
 def _take(chat: str, source: str | None, waking: bool) -> list[dict]:
     state = _state()
     mine = state.get(chat, {"read": [], "wakes": []})
+    fresh = time.time() - TTL_SECONDS
     unread = [
         m
         for m in _all()
-        if (m.get("to") == chat or (source and m.get("to_source") == source))
+        if m.get("at", 0) >= fresh
+        and (m.get("to") == chat or (source and m.get("to_source") == source))
         and m["id"] not in mine["read"]
         and m.get("from") != chat
     ]
@@ -188,9 +194,10 @@ def resolved() -> dict[str, dict]:
 
 def forget_resolved(keep: set[str]) -> None:
     """Drop Resolve records for overlaps that are gone, so a new one on that file starts fresh."""
-    marks = resolved()
-    if set(marks) - keep:
-        _write_resolved({k: v for k, v in marks.items() if k in keep})
+    with contextlib.suppress(OSError), _locked():
+        marks = resolved()
+        if set(marks) - keep:
+            _write_resolved({k: v for k, v in marks.items() if k in keep})
 
 
 def _write_resolved(marks: dict[str, dict]) -> None:
@@ -210,11 +217,14 @@ def resolve(repo: str, file: str, since: float) -> dict:
     found = next((o for o in status.status(since)["overlaps"] if o["repo"] == repo and o["file"] == file), None)
     if not found:
         return {"sent": 0, "reason": "no such overlap any more"}
-    marks = resolved()
-    mark = marks.get(found["key"]) or {"at": None, "sessions": []}
-    new = [sid for sid in found["sessions"] if sid not in mark["sessions"]]
-    if not new:
-        return {"sent": 0, "reason": "already sent", "sent_at": mark["at"]}
+    with _locked():
+        marks = resolved()
+        mark = marks.get(found["key"]) or {"at": None, "sessions": []}
+        new = [sid for sid in found["sessions"] if sid not in mark["sessions"]]
+        if not new:
+            return {"sent": 0, "reason": "already sent", "sent_at": mark["at"]}
+        marks[found["key"]] = {"at": time.time(), "sessions": mark["sessions"] + new}
+        _write_resolved(marks)
     sources = {s["session"]: s.get("source") for s in found["sides"]}
     for sid in new:
         others = [o for o in found["sessions"] if o != sid]
@@ -226,6 +236,4 @@ def resolve(repo: str, file: str, since: float) -> dict:
         post(
             sid, "recall", "recall, for the user", text, to_source=sources.get(sid), file=file, repo=repo, others=others
         )
-    marks[found["key"]] = {"at": time.time(), "sessions": mark["sessions"] + new}
-    _write_resolved(marks)
     return {"sent": len(new), "sent_at": marks[found["key"]]["at"]}
