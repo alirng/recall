@@ -589,8 +589,10 @@ def cmd_install(a) -> None:
             if not roots.option(r, "connect") and not dry_run:
                 roots.set_option(r, "connect", True)
         lines = agents.install(parts, dry_run, chosen or found)
-        if not dry_run and "hook" in parts and autopilot.consented() is not None:
-            autopilot.grant_consent(extend=True)  # the person installed these hooks themselves
+        if not dry_run:
+            autopilot.record_connected(found)  # so uninstall finds these roots even if discovery later loses them
+            if "hook" in parts and autopilot.consented() is not None:
+                autopilot.grant_consent(extend=True)  # the person installed these hooks themselves
         if not a.only or "retention" in parts:  # --only mcp,skill,hook never asks
             # --only retention is a yes; otherwise ask whoever is at the terminal
             ask = (lambda _: True) if "retention" in parts else None if dry_run else agents.ask_terminal
