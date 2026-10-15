@@ -86,9 +86,15 @@ def project_indexes(cwd: str | None, notes: NoteStore) -> tuple[str | None, list
 
 
 def index_notes(con, notes: dict[str, Note]) -> None:
-    """Rebuild the notes search index from the markdown files, hand edits included."""
+    """Rebuild the notes search index from the markdown files, hand edits included. Each note's
+    audience is worked out against the contexts configured now, and the index records which
+    (contexts.fingerprint), so that a reader (jit.py) hands over no global note when the
+    config changed since, or could not be read while the index was built. The record goes in
+    last: a rebuild that stops half way leaves none, which a reader treats the same."""
     con.executescript(
-        """
+        f"""
+        create table if not exists meta (k text primary key, v text);
+        delete from meta where k = '{contexts.STAMP}';
         drop table if exists notes; drop table if exists notes_fts;
         create table notes (id text primary key, path text, type text, scope text, project text,
           project_name text, title text, body text, confidence text, last_seen text, n_sources int,
@@ -98,9 +104,9 @@ def index_notes(con, notes: dict[str, Note]) -> None:
         """
     )
     try:
-        table = contexts.roots()
-    except Exception:  # a config.toml recall cannot read: everything is one context
-        table = {}
+        table, stamp = contexts.read()
+    except Exception:  # not a config.toml recall can make sense of
+        table, stamp = {}, contexts.UNKNOWN
     for n in notes.values():
         if n.status != "active":
             continue
@@ -122,6 +128,7 @@ def index_notes(con, notes: dict[str, Note]) -> None:
             ),
         )
         con.execute("insert into notes_fts values (?,?,?,?)", (n.id, n.title, n.body, n.project_name or ""))
+    con.execute("insert or replace into meta values (?, ?)", (contexts.STAMP, stamp))
     con.commit()
 
 

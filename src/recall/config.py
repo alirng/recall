@@ -27,11 +27,21 @@ DEFAULTS = {
 
 
 def load() -> dict:
+    return load_checked()[0]
+
+
+def load_checked() -> tuple[dict, bool]:
+    """load(), and whether config.toml could be read. A missing file reads as empty (True); one
+    that exists but cannot be read or parsed gives the defaults and False, so a caller whose
+    output depends on a setting can tell "not set" from "could not read"."""
+    readable = True
     try:
         with open(paths.CONFIG, "rb") as f:
             stored = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
+    except FileNotFoundError:
         stored = {}
+    except (OSError, tomllib.TOMLDecodeError):
+        stored, readable = {}, False
     # A table written as a plain value (contexts = 3) falls back to its default instead of
     # breaking every command, the session-start hook among them.
     return {
@@ -41,7 +51,7 @@ def load() -> dict:
             else stored.get(k, v)
         )
         for k, v in DEFAULTS.items()
-    }
+    }, readable
 
 
 def save(cfg: dict) -> None:
