@@ -148,11 +148,11 @@ def merge(old: list[Message], new: list[Message], only_kept: bool = False, mark:
     """The new parse, plus every message of the old copy it no longer has.
 
     An old message is still there when the new parse has a message from the same speaker,
-    at the same place, whose text equals it, starts with it or holds it as a whole
-    "\\n\\n"-separated part: a turn that grew, or two turns that merged once the message
-    between them went. The lists are aligned on (speaker,
-    text) with difflib; old-only messages stay where they were, new ones go where the parse
-    puts them, and a message in both appears once.
+    at the same place, whose text equals it, starts with it (_within: for a short message,
+    only at a word boundary) or holds it as a whole "\\n\\n"-separated part: a turn that
+    grew, or two turns that merged once the message between them went. The lists are aligned
+    on (speaker, text) with difflib; old-only messages stay where they were, new ones go
+    where the parse puts them, and a message in both appears once.
 
     only_kept: carry over only messages already marked Kept, for a copy made by another
     parser version, whose other messages may differ just because the parser changed.
@@ -195,12 +195,21 @@ def _covers(candidates: list[Message], m: Message) -> bool:
     return any(c.role == m.role and _within(m.text, c.text) for c in candidates)
 
 
+_MIN_PREFIX = 20  # characters from which a shared start counts as the same turn
+
+
 def _within(old: str, new: str) -> bool:
     """Whether a turn is still in a (possibly longer) one: it equals it, it is the start of
     it (the turn grew), or it is one of its "\\n\\n"-separated parts (turns merged once the
     message between them went). A bare substring would find a short turn such as "yes" or
-    "ok" in almost any longer one, and the guard would drop it."""
-    return old == new or new.startswith(old) or f"\n\n{old}\n\n" in f"\n\n{new}\n\n"
+    "ok" in almost any longer one, and the guard would drop it. For the same reason a short
+    turn counts as the start of a longer one only if whitespace follows it there ("ok" is
+    not in "okay, book the room"); from 20 characters on, a shared start is evidence enough."""
+    if old == new:
+        return True
+    if new.startswith(old) and (len(old) >= _MIN_PREFIX or new[len(old)].isspace()):
+        return True
+    return f"\n\n{old}\n\n" in f"\n\n{new}\n\n"
 
 
 def log(line: str) -> None:
