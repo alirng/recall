@@ -437,8 +437,7 @@ def on_session_start(e) -> None:
         cfg = config.load()
         if cfg["autopilot"].get("connect") is not True:
             return None
-        state = _load()
-        if time.time() - state.get("spawned_at", 0) < RETRY_AFTER:
+        if time.time() - _load().get("spawned_at", 0) < RETRY_AFTER:
             return None
         import subprocess
 
@@ -450,8 +449,8 @@ def on_session_start(e) -> None:
         todo = [r for r in agents.connectable(roots.discover()) if roots.option(r, "connect", cfg)]
         if all(all(v for v in agents.parts(r, cmd, allow).values()) for r in todo):
             return None
-        state["spawned_at"] = time.time()
-        _save(state)
+        if not _stamp_spawn():
+            return None
         env = {**os.environ, "RECALL_BIN": cmd}
         subprocess.Popen(
             [sys.executable, "-m", "recall", "autopilot", "--quiet"],
@@ -464,6 +463,25 @@ def on_session_start(e) -> None:
     except (Exception, SystemExit):  # recall not on PATH ends in sys.exit; a hook must not
         pass
     return None
+
+
+def _stamp_spawn() -> bool:
+    """Record that a background run is being started, as a read-modify-write under the lock every
+    run holds, so a run's own save or a yes given meanwhile is never overwritten by a stale copy.
+    False when the lock is taken (a run or an uninstall is on it) or another session started a run
+    in the last hour. The lock is let go before this returns: the run it starts needs it."""
+    os.makedirs(paths.HOME, exist_ok=True)
+    with open(LOCK, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        now = time.time()
+        state = _load()
+        if now - state.get("spawned_at", 0) < RETRY_AFTER:
+            return False
+        _save({**state, "spawned_at": now})
+        return True
 
 
 def _load() -> dict:
