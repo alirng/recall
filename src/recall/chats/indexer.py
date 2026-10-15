@@ -90,7 +90,7 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
 
 
 def _index(con, only, force, max_age, log) -> dict:
-    from .. import config, forget, retention
+    from .. import config, forget, retention, roots
 
     forget.sweep(con)  # before reading anything: an older release may have brought forgotten chats back
     selected = config.load()["sources"]
@@ -99,6 +99,8 @@ def _index(con, only, force, max_age, log) -> dict:
     restored = store.restore(con, _read_since_rebuild(con, selected))
     if restored:
         result["archive"] = {"indexed": 0, "unchanged": 0, "restored": restored}
+    # After the restore: chats indexed before roots existed, and restored ones, come back without a root.
+    store.backfill_roots(con, roots.discover())
     return result
 
 
@@ -145,11 +147,14 @@ def _read_since_rebuild(con, selected) -> list[str]:
 
 
 def _scan(con, selected, only, force, max_age, log) -> dict:
-    from .. import roots
+    from .. import config, roots
 
     result = {}
+    cfg = config.load()
     found = roots.discover()
-    for name, items in all_sources(selected, found).items():
+    wanted = [r for r in found if roots.option(r, "index", cfg)]  # [roots.NAME] index = false skips one
+    store.reparse_shared_cursor(con, found)
+    for name, items in all_sources(selected, wanted).items():
         if only and name not in only:
             continue
         stamp_key = f"indexed_at:{name}"
@@ -185,7 +190,7 @@ def _scan(con, selected, only, force, max_age, log) -> dict:
         now = str(time.time())
         con.execute("insert or replace into meta values (?,?)", (stamp_key, now))
         con.execute("insert or replace into meta values (?,?)", (f"scanned:{name}", now))
-        for r in found:  # when each root was last read, for `recall doctor`
+        for r in wanted:  # when each root was last read, for `recall doctor`
             if r.agent == name.split("-")[0]:
                 con.execute("insert or replace into meta values (?,?)", (f"indexed_at_root:{r.name}", now))
         con.commit()

@@ -3,6 +3,7 @@ editing it by hand is fine too."""
 
 import json
 import os
+import re
 import tomllib
 
 from . import paths
@@ -16,6 +17,8 @@ DEFAULTS = {
     # connect = true: recall keeps every Claude Code, Codex and Cursor folder connected (see autopilot.py).
     # Unset until `recall setup` asks, once.
     "autopilot": {},
+    # Per harness root (see roots.py): [roots.claude-work] connect / index / mine = true or false.
+    "roots": {},
     "usage_log": True,  # recall logs its own use to usage.jsonl; see usage.py
     # When an agent edits a file another chat has open changes to: ask, worktree, tell or off
     # per situation. These are the recommended rules; see status.py and `recall setup`.
@@ -65,10 +68,20 @@ def save(cfg: dict) -> None:
             lines.append(f"{key} = {_toml(value)}")
     for key, table in cfg.items():
         if isinstance(table, dict) and table:
-            lines += ["", f"[{key}]"]
-            lines += [f"{k} = {_toml(v)}" for k, v in table.items() if v not in (None, "")]
+            plain = {k: v for k, v in table.items() if not isinstance(v, dict) and v not in (None, "")}
+            if plain or not any(isinstance(v, dict) for v in table.values()):
+                lines += ["", f"[{key}]"]
+                lines += [f"{k} = {_toml(v)}" for k, v in plain.items()]
+            for sub, values in table.items():  # a table of tables: [roots.claude-work]
+                if isinstance(values, dict) and values:
+                    lines += ["", f"[{key}.{_key(sub)}]"]
+                    lines += [f"{k} = {_toml(v)}" for k, v in values.items() if v not in (None, "")]
     with open(paths.CONFIG, "w") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _key(name) -> str:
+    return str(name) if re.fullmatch(r"[A-Za-z0-9_-]+", str(name)) else json.dumps(str(name))
 
 
 def _toml(value) -> str:
