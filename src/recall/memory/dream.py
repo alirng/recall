@@ -185,9 +185,14 @@ def pending_chats(con) -> list:
 
 
 def _read(con, client: Client, max_chats: int | None, deadline: float | None, log, batcher=None) -> Counter:
+    batched = batcher is not None and client.provider.for_purpose("extract").supports_batch
     chats = pending_chats(con)
     if max_chats:
         chats = chats[:max_chats]
+    if batched:
+        # Oldest first: chats that arrive before the next run join the last call instead of shifting
+        # every call's chats, so answers a left-running batch gave are still the next run's cache hits.
+        chats = sorted(chats, key=lambda s: s["updated_at"])
     items = [
         (s, con.execute("select seq, role, text from messages where session_id=? order by seq", (s["id"],)).fetchall())
         for s in chats
@@ -225,7 +230,7 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
                 if complete:
                     finish(*complete)
 
-    if batcher is not None and client.provider.for_purpose("extract").supports_batch:
+    if batched:
         batches = batches[:MAX_BATCHED_CALLS]  # one batch; the batcher keeps the time budget
         calls = [Call("extract", extract.SYSTEM, extract.prompt(b), extract.SCHEMA) for b in batches]
         for batch, answer in zip(batches, batcher.ask(calls), strict=True):
