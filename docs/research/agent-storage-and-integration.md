@@ -340,6 +340,7 @@ Sidecar keys observed [observed] (key shapes only; counts when not on every file
 
 ### 2. History location
 - Already verified by lead: rollouts `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` and desktop `~/.codex/sqlite/codex-dev.db` `local_thread_catalog` [observed: verified by the lead].
+- Cold rollouts become `rollout-*.jsonl.zst`: the Codex rollout compression worker (`codex-rs/rollout/src/compression.rs`, PR #25089 and follow-ups; `local_thread_store_compression`, default off, or the app-server `rollout/compress` RPC) zstd-compresses (level 3, content size recorded in the frame header) any rollout untouched for 7 days, in `sessions/` as well as `archived_sessions/`, keeps its modified time, and removes the plain file. Resuming the thread decompresses it back to `.jsonl`. Readers prefer the plain file when both exist [src; observed: 220 of 256 rollouts here, all with ctime in one minute on 2026-10-14, each at least 7.4 days after its mtime].
 - NEW: `archived_sessions/` (flat, same names; `threads.archived=1`); the open-source index is `state_5.sqlite` table `threads` (~210 rows; every `rollout_path` resolves on disk) [observed; src: codex-rs/state/migrations/0001_threads.sql]. Same layout on Linux/Windows under `$CODEX_HOME` [src: home-dir lib.rs].
 
 ### 3. Storage format

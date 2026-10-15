@@ -1,11 +1,14 @@
-"""Codex history: rollout JSONL files under ~/.codex/sessions, titled from the Codex app's thread catalogue."""
+"""Codex history: rollout JSONL files under ~/.codex/sessions, titled from the Codex app's thread catalogue.
+
+Codex compresses rollouts it has not touched for a week to `.jsonl.zst` (compressed.py). A chat is
+keyed by its plain `.jsonl` path whichever form is on disk, so compressing it changes nothing."""
 
 import glob
 import os
 import sqlite3
 
 from ..transcript import Message, Session, clean_assistant_text, clean_user_text
-from . import Item, append, iso_ts, read_jsonl, text_blocks
+from . import Item, append, compressed, iso_ts, read_jsonl, text_blocks
 
 ROOT = os.path.expanduser("~/.codex")
 CATALOG = os.path.join(ROOT, "sqlite", "codex-dev.db")
@@ -21,37 +24,62 @@ def _catalog() -> dict[str, dict]:
     return {r[0]: {"title": r[1], "cwd": r[2], "branch": r[3]} for r in rows}
 
 
+def _threads() -> dict[str, str]:
+    """Every rollout on disk: its plain .jsonl path -> the file that holds it now. A chat in both
+    forms (Codex is mid-way between them) counts once, as the plain file."""
+    found: dict[str, str] = {}
+    for d in ("sessions", "archived_sessions"):
+        base = os.path.join(ROOT, d, "**")
+        for path in glob.glob(os.path.join(base, "*.jsonl"), recursive=True):
+            found[path] = path
+        for path in glob.glob(os.path.join(base, "*.jsonl" + compressed.SUFFIX), recursive=True):
+            found.setdefault(compressed.plain_path(path), path)
+    return found
+
+
 def detect() -> int | None:
     if not os.path.isdir(os.path.join(ROOT, "sessions")):
         return None
-    return sum(
-        len(glob.glob(os.path.join(ROOT, d, "**", "*.jsonl"), recursive=True))
-        for d in ("sessions", "archived_sessions")
-    )
+    return len(_threads())
+
+
+def unreadable() -> int:
+    """Chats that exist only as .jsonl.zst while nothing here can decode zstd."""
+    if compressed.backend():
+        return 0
+    return sum(1 for stable, path in _threads().items() if path != stable)
+
+
+def unreadable_note() -> str | None:
+    n = unreadable()
+    if not n:
+        return None
+    return f"{n:,} Codex chats are zstd-compressed and cannot be read: {compressed.fix_hint()}"
 
 
 def items():
     catalog = None
-    paths = glob.glob(os.path.join(ROOT, "sessions", "**", "*.jsonl"), recursive=True)
-    paths += glob.glob(os.path.join(ROOT, "archived_sessions", "**", "*.jsonl"), recursive=True)
-    for path in paths:
-        try:
-            st = os.stat(path)
-        except OSError:  # moved or deleted since the listing; the index and the archive keep its chat
-            continue
+    readable = compressed.backend() is not None
+    for stable, path in _threads().items():
+        if path != stable and not readable:
+            continue  # not yielded, so no "seen" row stops it being read once a decoder exists
+        fingerprint = compressed.fingerprint(stable)
+        if fingerprint is None:
+            continue  # gone since the listing
 
-        def load_one(p=path):
+        def load_one(p=stable):
             nonlocal catalog
             if catalog is None:
                 catalog = _catalog()
             return load(p, catalog)
 
-        yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", load_one)
+        yield Item(stable, fingerprint, load_one)
 
 
 def load(path: str, catalog: dict[str, dict]) -> Session | None:
     s = None
     messages: list[Message] = []
+    path = compressed.plain_path(path)
     for d in read_jsonl(path):
         payload = d.get("payload") or {}
         ts = iso_ts(d.get("timestamp"))
