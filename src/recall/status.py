@@ -8,8 +8,10 @@ so a file changed through a shell command does not show up.
 """
 
 import contextlib
+import functools
 import glob
 import json
+import math
 import os
 import re
 import subprocess
@@ -79,6 +81,7 @@ class Checkout:
     base: str | None  # where it forked from the default branch
     open: set[str]  # uncommitted, or changed on this branch and not yet in the default branch
     dirty: int
+    untracked: set[str] = field(default_factory=set)
 
 
 # --- reading the agents' history ------------------------------------------------
@@ -260,8 +263,20 @@ def _logged(since: float) -> dict[str, dict]:
 # names a file the same way the agents do.
 _GIT = ("-c", "core.quotePath=false")
 # recall only reads repos, while agents may be committing in them: no index refresh or lock
-# (GIT_OPTIONAL_LOCKS), no network, no prompts, nothing inherited from a git hook's GIT_* env.
-_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | {
+# (GIT_OPTIONAL_LOCKS), no network, no prompts, and no repo location inherited from a git hook.
+# Only the variables that point git at another repo are dropped; config ones (GIT_CONFIG_*,
+# safe.directory through them) stay.
+_REPO_VARS = {
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+}
+_ENV = {k: v for k, v in os.environ.items() if k not in _REPO_VARS} | {
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_NO_LAZY_FETCH": "1",
     "GIT_TERMINAL_PROMPT": "0",
@@ -337,7 +352,8 @@ def _checkout(top: str) -> Checkout | None:
         untracked = {line[3:] for line in porcelain if line.startswith("??")}
         open_ = (open_ & set(differs)) | untracked
     branch = info[1] if info[1] != "HEAD" else None
-    return Checkout(top, os.path.realpath(os.path.join(top, info[0])), branch, base, open_, len(porcelain))
+    untracked = {line[3:] for line in porcelain if line.startswith("??")}
+    return Checkout(top, os.path.realpath(os.path.join(top, info[0])), branch, base, open_, len(porcelain), untracked)
 
 
 def _committed_since(c: Checkout, rel: str, when: float | None) -> bool:
@@ -349,27 +365,44 @@ def _committed_since(c: Checkout, rel: str, when: float | None) -> bool:
     return bool(out and out[0].isdigit() and int(out[0]) >= when)
 
 
-def _hunks(top: str, base: str, rel: str) -> list[tuple[float, float]]:
-    """The lines of `rel` in `base` that a checkout's working copy has changed, from
-    `git diff -U0`; an insertion sits between two lines."""
+@functools.cache
+def _hunks(top: str, base: str, rel: str, untracked: bool) -> tuple[tuple[float, float], ...]:
+    """What a checkout's working copy changed in `rel` since `base`, as spans on a line axis
+    where line k covers [k - 0.5, k + 0.5] and an insertion after line k is the point k + 0.5.
+    A binary or untracked new file counts as changed throughout."""
     out = []
     for line in _git(top, "diff", "--no-textconv", "--no-ext-diff", "-U0", base, "--", rel) or []:
+        if line.startswith("Binary files"):
+            return ((0, math.inf),)
         if m := re.match(r"@@ -(\d+)(?:,(\d+))? ", line):
             start, count = int(m[1]), int(m[2] or 1)
-            out.append((start + 0.5, start + 0.5) if count == 0 else (start, start + count - 1))
-    return out
+            out.append((start + 0.5, start + 0.5) if count == 0 else (start - 0.5, start + count - 0.5))
+    return ((0, math.inf),) if not out and untracked else tuple(out)
+
+
+@functools.cache
+def _merge_base(a: str, b: str) -> str | None:
+    heads = [(_git(top, "rev-parse", "HEAD") or [None])[0] for top in (a, b)]
+    return (_git(a, "merge-base", *heads) or [None])[0] if None not in heads else None
+
+
+def _fresh() -> None:
+    """Forget cached git answers: the MCP server is long-lived and repos move."""
+    _hunks.cache_clear()
+    _merge_base.cache_clear()
 
 
 def _conflict(a: Checkout, b: Checkout, rel: str) -> bool:
-    """Whether merging two checkouts as they stand would conflict on `rel`: both changed the
-    same or adjacent lines of it since their common base, the test git's own merge applies.
-    Read-only, unlike git merge-tree and stash create, which write objects into the repo."""
-    heads = [(_git(c.top, "rev-parse", "HEAD") or [None])[0] for c in (a, b)]
-    base = (_git(a.top, "merge-base", *heads) or [None])[0] if None not in heads else None
+    """Whether merging two checkouts as they stand would conflict on `rel`: their changes since
+    the common base touch or overlap, with no unchanged line between them, the test git's own
+    merge applies. Read-only, unlike git merge-tree and stash create, which write objects into
+    the repo. (A rename on one side reads as a deletion there, so it counts as a conflict.)"""
+    base = _merge_base(a.top, b.top)
     if not base:
         return False
-    mine, theirs = _hunks(a.top, base, rel), _hunks(b.top, base, rel)
-    return any(x0 <= y1 + 1 and y0 <= x1 + 1 for x0, x1 in mine for y0, y1 in theirs)
+    mine = _hunks(a.top, base, rel, rel in a.untracked)
+    theirs = _hunks(b.top, base, rel, rel in b.untracked)
+    return any(x0 <= y1 and y0 <= x1 for x0, x1 in mine for y0, y1 in theirs)
 
 
 def _resolve(s: Live, tops: dict[str, str | None]) -> list[tuple[str, str, float | None]]:
@@ -478,6 +511,7 @@ def _instruction(action: str, file: str, repo: str, default: str) -> str:
 
 
 def status(since: float) -> dict:
+    _fresh()
     now = time.time()
     sessions = sorted(_sessions(since), key=lambda s: -s.updated_at)
     checkouts = _place(sessions)
@@ -572,6 +606,7 @@ def status(since: float) -> dict:
 def elsewhere(path: str, since: float) -> str:
     """For agents without an edit hook: every chat with open changes in the repo at `path`,
     the files, and which of them would conflict with the checkout `path` is in."""
+    _fresh()
     top = _top(os.path.realpath(path), {})
     if not top:
         return f"{path} is not in a git repo."
@@ -626,6 +661,7 @@ def check_edit(
     worst situation found, if it is one of `acts` (an agent hook may only be able to refuse
     before an edit and to inform after it). Each other chat is raised once, listing every
     file the two share, and again only if things get worse."""
+    _fresh()
     path = os.path.realpath(path if os.path.isabs(path) or not cwd else os.path.join(cwd, path))
     _log(agent, session_id, path, cwd, transcript)
     tops: dict[str, str | None] = {}
