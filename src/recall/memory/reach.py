@@ -33,7 +33,12 @@ SCHEMA = {
 
 def run(client: Client, store: NoteStore, notes: dict[str, Note]) -> int:
     """Judge every active global note that has no reach yet. Returns how many were judged."""
-    pending = [n for n in notes.values() if n.status == "active" and n.scope == "global" and not n.reach]
+    # A note edited by hand waits: consolidation writes it first and logs what the edit did (consolidate.py).
+    pending = [
+        n
+        for n in notes.values()
+        if n.status == "active" and n.scope == "global" and not n.reach and not n.edited_by_hand
+    ]
     judged = 0
     for i in range(0, len(pending), BATCH):
         batch = {n.id: n for n in pending[i : i + BATCH]}
@@ -41,7 +46,13 @@ def run(client: Client, store: NoteStore, notes: dict[str, Note]) -> int:
         for answer in client.json("reach", SYSTEM, prompt, SCHEMA)["notes"]:
             # The file as it is now, so a hand edit made while the model answered survives.
             note = store.reread(batch[answer["note_id"]]) if answer["note_id"] in batch else None
-            if note and note.status == "active" and note.scope == "global" and not note.reach:
+            if (
+                note
+                and note.status == "active"
+                and note.scope == "global"
+                and not note.reach
+                and not note.edited_by_hand
+            ):
                 note.reach = answer["reach"]
                 store.write(note)
                 notes[note.id] = note
