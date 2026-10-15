@@ -171,13 +171,17 @@ All notable changes to recall are listed here. The format follows
   title and a list of rules, each with an id, the dates and chats that stated it, and a quote.
   The model answers with operations on named rules (confirm, refine, retire, add, create), and
   code checks each one: a rule leaves a note only through a retire that names it, a chat older
-  than a rule's last sighting cannot retire or refine it, and nothing is written until every
-  operation in the batch is checked. Consolidation prompt v3. The note's body is rendered from its active rules, and
-  a hand edit of the body is read back into them. A rule carries `said_by: developer` only
-  when the developer typed its quote outside any paste and the rule asks for no command, URL
-  or network, destructive or exfiltrating action; otherwise it is unset. It is a hint, not
-  authentication, and no reader shows it yet. Notes written this way still read as plain
-  notes in an older release, which drops the rule fields if it rewrites the note.
+  than a rule's last sighting cannot retire or refine it (or one older than its retirement add
+  it back), a note you edited mid-run is not overwritten, and nothing is written until every
+  operation in the batch is checked. Consolidation prompt v3. The note's body is rendered from
+  its active rules, and a hand edit of the body is read back into them: a rule whose words
+  still stand keeps its id and sources, and only a rule whose words are gone is remembered as
+  removed by hand. A rule carries `said_by: developer` only when the developer typed a quote
+  that supports that rule outside any paste and the rule asks for no command, URL, network,
+  destructive or exfiltrating action, or to switch off a sandbox, permission or review;
+  otherwise it is unset. It is a hint, not authentication, and no reader shows it yet. Notes
+  written this way still read as plain notes in an older release, which drops the rule fields
+  if it rewrites the note.
 
 ### Fixed
 

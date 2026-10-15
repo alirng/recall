@@ -32,7 +32,7 @@ import re
 import subprocess
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from difflib import SequenceMatcher
 
@@ -40,7 +40,7 @@ import yaml
 
 from .. import contexts, paths
 from ..chats.redact import redact
-from .said import clean_rule, risky
+from .said import clean_rule, has_marker, risky
 
 TYPES = ("preference", "fact", "decision", "lesson", "open")
 SECTIONS = {
@@ -54,7 +54,8 @@ CONFIDENCE = {"high": 1.0, "medium": 0.7, "low": 0.4}
 GLOBAL_INDEX_LINES = 40
 PROJECT_INDEX_LINES = {"preference": 12, "fact": 30, "decision": 20, "lesson": 20, "open": 10}
 RELATED_MARK = "<!-- recall: related notes, rewritten on each run -->"
-REMOVED_BY_HAND = "removed by hand"
+REMOVED_BY_HAND = "removed by hand"  # the only reason that feeds consolidation's never-recreate list
+MERGED_BY_HAND = "merged by hand"  # its words still stand in the body, inside another rule
 HOOK_CHARS = 160
 README = (
     "# Agent memory\n\nMaintained by recall from your coding-agent chats. Start at MEMORY.md. "
@@ -114,6 +115,7 @@ class Note:
     related: list[str] = field(default_factory=list)  # note ids, kept by links.relink
     reach: str | None = None  # global notes: "everywhere" or "context" (see reach.py)
     footer: str = field(default="", repr=False)  # the related-notes footer as last written
+    stamp: str = field(default="", repr=False)  # hash of the file as last read or written (see NoteStore.changed)
     path: str = ""
 
     @property
@@ -201,17 +203,36 @@ class NoteStore:
         note.edited_by_hand = False
         self.titles[note.id] = note.title
         note.footer = self.footer(note)
+        text = (
+            "---\n"
+            + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, width=100)
+            + "---\n"
+            + note.body.strip()
+            + (f"\n\n{note.footer}" if note.footer else "")
+            + "\n"
+        )
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            f.write("---\n" + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, width=100))
-            f.write("---\n" + note.body.strip() + (f"\n\n{note.footer}" if note.footer else "") + "\n")
+            f.write(text)
         os.replace(tmp, path)
-        note.path = path
+        note.path, note.stamp = path, _stamp(text)
 
     def reread(self, note: Note) -> Note | None:
         """The note as its file is now, for a step that changes one field after a long run: a
         hand edit made since the notes were loaded survives."""
         return read_note_file(note.path) if note.path else None
+
+    def changed(self, note: Note) -> bool:
+        """Has the note's file changed (or gone) since it was read or written? A step that
+        holds a note for a long run asks before writing it, so a hand edit made meanwhile is
+        not overwritten with the stale copy. A note with no stamp (built in memory) cannot say."""
+        if not (note.path and note.stamp):
+            return False
+        try:
+            with open(note.path, encoding="utf-8") as f:
+                return _stamp(f.read()) != note.stamp
+        except OSError:
+            return True
 
     def footer(self, note: Note) -> str:
         """Wikilinks to the note's related notes, titled so they read well in Obsidian."""
@@ -381,7 +402,9 @@ def parse_note(text: str, path: str) -> Note | None:
             fields[k] = str(fields[k])  # YAML reads bare dates as date objects
     body, mark, footer = m.group(2).partition(RELATED_MARK)
     related = [i.strip() for i in re.findall(r"\[\[([^\]|#]+)", footer)]
-    note = Note(**fields, body=body.strip(), related=related, footer=(mark + footer).strip(), path=path)
+    note = Note(
+        **fields, body=body.strip(), related=related, footer=(mark + footer).strip(), stamp=_stamp(text), path=path
+    )
     rules = [r for r in map(_rule_from, meta.get("rules") or []) if r]
     if rules:
         note.rules, note.edited_by_hand = _edits(note, rules, _edit_date(path))
@@ -398,7 +421,11 @@ def parse_note(text: str, path: str) -> Note | None:
     return note
 
 
-_NOT_FRONTMATTER = ("body", "path", "related", "footer", "rules", "edited_by_hand")  # rules: see _rule_meta
+_NOT_FRONTMATTER = ("body", "path", "related", "footer", "rules", "edited_by_hand", "stamp")  # rules: see _rule_meta
+
+
+def _stamp(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
 # --- rules ----------------------------------------------------------------------
@@ -419,8 +446,8 @@ def render(rules: list[Rule]) -> str:
     left in force (archived) shows the rules it last held, so the archive still reads."""
     shown = [r for r in rules if r.active] or rules
     if len(shown) == 1:
-        return clean_rule(shown[0].text).strip()
-    return "\n".join("- " + clean_rule(r.text).strip().replace("\n", "\n  ") for r in shown)
+        return shown[0].text.strip()
+    return "\n".join("- " + r.text.strip().replace("\n", "\n  ") for r in shown)
 
 
 def sync(note: Note) -> None:
@@ -439,9 +466,6 @@ def sync(note: Note) -> None:
 
 def _rule_meta(rule: Rule) -> dict:
     meta = {k: v for k, v in asdict(rule).items() if v not in (None, [], "")}
-    for k in ("text", "evidence"):  # a literal said_by marker never reaches the file
-        if k in meta:
-            meta[k] = clean_rule(meta[k])
     meta["status"] = rule.status
     return meta
 
@@ -453,8 +477,8 @@ def _rule_from(entry) -> Rule | None:
     for k in ("first_seen", "last_seen", "retired", "edited"):
         if k in known:
             known[k] = str(known[k]) if known[k] else ""
-    known["text"] = clean_rule(str(known["text"]).strip())
-    known["evidence"] = clean_rule(str(known.get("evidence") or ""))
+    known["text"] = str(known["text"]).strip()
+    known["evidence"] = str(known.get("evidence") or "")
     if risky(known["text"]) and known.get("said_by") == "developer":
         known["said_by"] = None  # edited into a command or a URL: no longer vouched for
     known["sources"] = [str(s) for s in known.get("sources") or []]
@@ -470,65 +494,159 @@ def _edit_date(path: str) -> str:
         return today()
 
 
-_BULLET = re.compile(r"^[-*+] +")
+_BULLET = re.compile(r"^(?:[-*+]|\d{1,3}[.)]) +")
 
 
 def _items(body: str) -> list[str]:
-    """A body as rule texts: the items of a bullet list, else the whole body as one."""
-    lines = body.strip().split("\n")
-    if not _BULLET.match(lines[0]):
-        return [clean_rule(body.strip())] if body.strip() else []
+    """A body as rule texts, as written: the items of a bullet or numbered list, with the lines
+    before the first item as one more; a body with no list is a single item."""
+    text = body.strip()
+    if not text:
+        return []
+    lines = text.split("\n")
+    first = next((i for i, line in enumerate(lines) if _BULLET.match(line)), None)
+    if first is None:
+        return [text]
     out: list[str] = []
-    for line in lines:
+    for line in lines[first:]:
         if _BULLET.match(line):
             out.append(_BULLET.sub("", line, count=1))
-        elif out:
+        else:
             out[-1] += "\n" + (line[2:] if line.startswith("  ") else line)
-    return [t for t in (clean_rule(t.strip()) for t in out) if t]
+    lead = "\n".join(lines[:first]).strip()
+    return ([lead] if lead else []) + [t for t in (t.strip() for t in out) if t]
 
 
 def _same(a: str, b: str) -> bool:
     return " ".join(a.split()) == " ".join(b.split())
 
 
+def _words(text: str) -> str:
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def _inside(text: str, item: str) -> bool:
+    """Do the words of `text`, ignoring case and punctuation, stand in `item` in that order?"""
+    words = _words(text)
+    return bool(words) and f" {words} " in f" {_words(item)} "
+
+
+def _overlap(words: set[str], item: str) -> float:
+    """The share of `words` that are in `item`."""
+    return len(words & set(_words(item).split())) / len(words)
+
+
+def _close(a: str, b: str) -> float:
+    return SequenceMatcher(None, " ".join(a.lower().split()), " ".join(b.lower().split())).ratio()
+
+
 def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
-    """Read a hand edit of the body back into the rules. A line that matches a rule keeps it,
-    a changed line updates the rule it is closest to, a new line is a new rule in the
-    developer's words, and a rule whose line is gone is retired as removed by hand.
-    Returns the rules and whether the body had been edited."""
+    """Read a hand edit of the body back into the rules, losing no words and keeping a rule's
+    id, sources and dates whenever its text still stands. Each item of the body (_items) is
+    matched to a rule, in this order:
+    - the same words: the rule is kept as it is; a retired rule's words written back revive it;
+    - a rule that is a bullet list of its own (a note from before rules) is split into one
+      rule per bullet first, each keeping the parent's sources and dates, and matched alike;
+    - an item that contains a rule's words (a paragraph or intro added, bullets turned to
+      prose) is that rule, with the new text. If it holds several rules' words they are merged
+      into the first, which keeps their sources, and the others are retired as merged;
+    - a changed line close to a rule (similarity of at least a half) is that rule, reworded;
+    - any other item is a new rule in the developer's words.
+    A rule left over is retired. Only one whose words are nowhere in the body is retired as
+    removed by hand, the reason that stops it being learned again; one that went into another
+    rule's words is retired as merged. An emptied body removes every rule.
+    A hand-written rule is marked said_by developer unless it is risky (said.py); an edit that
+    only adds to a rule keeps the mark only when every rule behind it had it. Returns the rules
+    and whether the body had been edited."""
     if _same(render(rules), note.body):
         return rules, False
-    texts = _items(note.body)
-    free = [r for r in rules if r.active]
-    placed: dict[int, Rule] = {}
-    for i, t in enumerate(texts):
-        match = next((r for r in free if _same(r.text, t)), None)
-        if match:
-            placed[i] = match
-            free.remove(match)
-    for i, t in enumerate(texts):  # a retired rule's text written back brings it back
-        back = None if i in placed else next((r for r in rules if not r.active and _same(r.text, t)), None)
-        if back and back not in placed.values():
-            back.status, back.retired, back.reason, back.replaced_by, back.edited = "active", "", "", None, date
-            placed[i] = back
+    items = _items(note.body)
     taken = {r.id for r in rules}
-    for i, t in enumerate(texts):
-        if i in placed:
+    free = [r for r in rules if r.active]
+    held: dict[int, Rule] = {}  # item index -> the rule it is
+    hosts: dict[str, str] = {}  # rule id -> the item text of a rule that merged others
+
+    def exact() -> None:
+        for i, t in enumerate(items):
+            if i not in held and (hit := next((r for r in free if _same(r.text, t)), None)):
+                held[i] = hit
+                free.remove(hit)
+
+    def retire(rule: Rule, reason: str, host: Rule | None = None) -> None:
+        rule.status, rule.retired, rule.reason = "retired", date, reason
+        if host:
+            rule.replaced_by = host.id
+            host.sources = sorted({*host.sources, *rule.sources})
+            host.first_seen = min([d for d in (host.first_seen, rule.first_seen) if d], default="")
+            host.last_seen = max(host.last_seen, rule.last_seen)
+
+    exact()
+    for i, t in enumerate(items):  # a retired rule's words written back bring it back
+        back = None if i in held else next((r for r in rules if not r.active and _same(r.text, t)), None)
+        if back and back.id not in {r.id for r in held.values()}:
+            back.status, back.retired, back.reason, back.replaced_by, back.edited = "active", "", "", None, date
+            held[i] = back
+    for r in [r for r in free if _BULLET.match(r.text)]:  # a legacy list: one rule per bullet
+        pieces = _items(r.text)
+        if len(pieces) < 2:
             continue
-        close = max(free, key=lambda r: SequenceMatcher(None, r.text, t).ratio(), default=None)
-        if close and SequenceMatcher(None, close.text, t).ratio() >= 0.5:
-            close.text, close.edited, close.evidence = t, date, ""
-            close.said_by = None if risky(t) else "developer"
+        units = [
+            replace(
+                r,
+                id=r.id if k == 0 else rule_id(note.id, piece, taken),
+                text=piece,
+                sources=list(r.sources),
+                evidence=r.evidence if k == 0 else "",
+                said_by=None if risky(piece) else r.said_by,
+            )
+            for k, piece in enumerate(pieces)
+        ]
+        taken.update(u.id for u in units)
+        rules = [u for x in rules for u in (units if x is r else [x])]
+        free = [u for x in free for u in (units if x is r else [x])]
+    exact()
+    for i, t in enumerate(items):  # an item that holds a rule's words
+        inside = [r for r in free if _inside(r.text, t)] if i not in held else []
+        if not inside:
+            continue
+        host, others = inside[0], inside[1:]
+        host.said_by = "developer" if all(r.said_by == "developer" for r in inside) and not risky(t) else None
+        host.text, host.edited = t if has_marker(host.text) else clean_rule(t), date
+        for r in others:
+            retire(r, MERGED_BY_HAND, host)
+        if others:
+            hosts[host.id] = t
+        held[i] = host
+        free = [r for r in free if r is not host and not any(r is o for o in others)]
+    for r in list(free):  # a duplicate of a rule whose item holds its words
+        host = next((h for i, h in held.items() if _inside(r.text, items[i])), None)
+        if host:
+            retire(r, MERGED_BY_HAND, host)
+            free.remove(r)
+    for i, t in enumerate(items):
+        if i in held:
+            continue
+        close = max(free, key=lambda r: _close(r.text, t), default=None)
+        if close and _close(close.text, t) >= 0.5:  # a changed line: the developer reworded the rule
+            close.text, close.edited, close.evidence = t if has_marker(close.text) else clean_rule(t), date, ""
+            close.said_by = None if risky(close.text) else "developer"
             free.remove(close)
-            placed[i] = close
-        else:
-            said = None if risky(t) else "developer"  # a command or URL keeps no mark, however it got here
-            placed[i] = Rule(rule_id(note.id, t, taken), t, date, date, said_by=said, edited=date)
-            taken.add(placed[i].id)
+            held[i] = close
+        elif text := clean_rule(t):
+            said = None if risky(text) else "developer"  # a command or URL keeps no mark, however it got here
+            held[i] = Rule(rule_id(note.id, text, taken), text, date, date, said_by=said, edited=date)
+            taken.add(held[i].id)
     for r in free:
-        r.status, r.retired, r.reason = "retired", date, REMOVED_BY_HAND
-    order = [placed[i] for i in range(len(texts))]
-    return order + [r for r in rules if r not in order], True
+        mine = {w for w in _words(r.text).split() if len(w) > 2}
+        host = next(  # most of its words went into an item that merged other rules: it was folded in too
+            (h for h in held.values() if h.id in hosts and mine and _overlap(mine, hosts[h.id]) >= 0.5), None
+        )
+        if host:
+            retire(r, MERGED_BY_HAND, host)
+        else:
+            retire(r, MERGED_BY_HAND if _inside(r.text, note.body) else REMOVED_BY_HAND)
+    order = [held[i] for i in range(len(items)) if i in held]
+    return order + [r for r in rules if not any(r is o for o in order)], True
 
 
 def _link_text(title: str) -> str:
@@ -573,7 +691,7 @@ def audience(n: Note, table: dict[str, list[str]]) -> str | None:
 
 def _index_line(note: Note, href: str) -> str:
     live = [r for r in note.rules if r.active]
-    if len(live) > 1:  # each rule's first sentence, so every rule can reach the index
+    if len(live) > 1:  # each rule's first sentence; past the cap below, the later rules are cut
         first = "; ".join(_first_sentence(r.text).rstrip(".") for r in live) + "."
     else:
         first = _first_sentence(note.body)
