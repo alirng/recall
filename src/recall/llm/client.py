@@ -17,7 +17,7 @@ from .base import CreditsExhausted, FatalError, LLMError, Provider, Result
 # For holding a call's worth of the dollar budget before its cost is known: input from the
 # prompt's length, output from this model's recent answers for the same purpose.
 CHARS_PER_TOKEN = 3
-TYPICAL_OUTPUT_TOKENS = 4000  # until there is history; thinking models write a lot
+TYPICAL_OUTPUT_TOKENS = 8000  # until there is history (max_tokens is 16000): a cold batch must not overshoot max_usd
 PURPOSES = ("extract", "consolidate")
 
 

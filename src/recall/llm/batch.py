@@ -11,12 +11,23 @@ in llm_cache and llm_calls with its batch price, as a synchronous call would.
   batch of one or two calls saves a fraction of a cent and costs minutes of waiting.
 - Time: a round goes synchronously once the time left is less than twice the batches' typical
   wait, so the end of the time budget goes on answers rather than on waiting.
-- Patience: a batch still running after PATIENCE is cancelled; what it answered is kept, the
-  rest is asked synchronously, and the run stays synchronous from then on.
+- Patience: a batch still running after PATIENCE is cancelled; once it reports ended, what it
+  answered is kept and the rest is asked synchronously, and the run stays synchronous from then
+  on. If the cancel fails or the batch has not ended, it stays running for the next run and its
+  calls fail (see Unreadable answers).
 - Deadline: when the run's time budget ends while a batch runs, the batch is left running and
   its calls fail with BudgetExceeded. Its id stays in the llm_batches table, and the next run
   collects its answers into the response cache before it starts (resume), so the calls it
   repeats cost nothing.
+- Unreadable answers: when an ended batch's answers cannot be read (timeout, 5xx, cut stream)
+  after a few attempts, the batch stays running, its estimated cost counts as spent in this
+  run's budget, and its calls fail with BudgetExceeded: nothing paid for is asked again
+  directly, and the next run collects the answers (resume).
+- Unconfirmed send: a send that timed out may still have been accepted. The provider is asked
+  for a batch of that size created since (find_batch); one found is adopted, none found means
+  the calls go directly. When that cannot be told, the batch is recorded as `unknown` in
+  llm_batches (look for it in the provider's console), its estimate counts as spent, and its
+  calls fail; recall never collects an `unknown` row.
 - Credits: when the API account is out of credits, the client switches to its fallback
   provider (synchronous) or the round's calls fail with BudgetExceeded and the run stops.
 """
@@ -28,7 +39,7 @@ from dataclasses import dataclass, field
 
 import jsonschema
 
-from .base import CreditsExhausted, FatalError, LLMError, Provider, Request, Result
+from .base import CreditsExhausted, FatalError, LLMError, Provider, Request, Result, SendUnconfirmed
 from .client import PURPOSES, BudgetExceeded, Client
 
 PATIENCE = 20 * 60  # seconds a batch may run before the run falls back to synchronous calls
@@ -36,6 +47,7 @@ POLL_FIRST, POLL_MAX = 5.0, 30.0  # seconds between status checks, growing
 PROGRESS_EVERY = 120  # seconds between progress lines in the log
 CANCEL_WAIT = 120  # seconds to wait for a cancelled batch to settle
 TYPICAL_WAIT = 5 * 60  # seconds a batch takes, until this run has timed one
+RESULTS_BACKOFF = (3, 10, 30)  # seconds between attempts to read an ended batch's answers
 
 
 @dataclass(frozen=True)
@@ -128,6 +140,7 @@ class Batcher:
 
     def _submit(self, sent: list[_Sent], out: list, direct: list) -> "_Open | None":
         provider = sent[0].provider
+        since = time.time()
         requests = [Request(f"r{n}", s.call.system, s.call.prompt, s.call.schema) for n, s in enumerate(sent)]
         try:
             batch_id = provider.submit(requests)
@@ -145,6 +158,10 @@ class Batcher:
             for s in sent:
                 out[s.index] = e
             return None
+        except SendUnconfirmed as e:
+            batch_id = self._confirm(provider, sent, requests, since, e, out, direct)
+            if batch_id is None:  # nothing was created, or it is unknown and has been dealt with
+                return None
         except LLMError as e:
             self.log(f"could not send a batch to {provider.label} ({str(e)[:120]}); asking directly")
             self._unsent(sent)
@@ -156,6 +173,32 @@ class Batcher:
         o = _Open(provider, batch_id, {r.id: s for r, s in zip(requests, sent, strict=True)}, time.time())
         self._record(o)
         return o
+
+    def _confirm(
+        self, provider, sent: list[_Sent], requests: list[Request], since: float, e, out, direct
+    ) -> str | None:
+        """A send that may have gone through. Returns the batch id if it did (found), else None
+        after sending the calls directly (not created) or failing them (unknown)."""
+        try:
+            found = provider.find_batch(len(requests), since)
+        except (NotImplementedError, LLMError) as why:
+            o = _Open(provider, f"unknown-{int(since)}", {r.id: s for r, s in zip(requests, sent, strict=True)}, since)
+            self._record(o, "unknown")
+            self.log(
+                f"WARNING: sending {len(requests)} calls to {provider.label} timed out ({str(e)[:100]}) and the batch"
+                f" could not be looked up ({str(why)[:100]}). It may exist and bill: check the provider's console"
+                f" for a batch created at {time.strftime('%H:%M:%S', time.localtime(since))}. Its estimated cost"
+                f" counts as spent, and these calls fail for this run."
+            )
+            self._pending(o, out, "batch send unconfirmed; see the log")
+            return None
+        if found is None:
+            self.log(f"a batch to {provider.label} timed out and was not created; asking directly")
+            self._unsent(sent)
+            direct += [(s.index, "", 0) for s in sent]
+            return None
+        self.log(f"WARNING: a batch send to {provider.label} timed out but batch {found} was created; adopting it")
+        return found
 
     def _unsent(self, sent: list[_Sent]) -> None:
         """Give back the budget held for calls that never went out."""
@@ -194,7 +237,7 @@ class Batcher:
                     opened.remove(o)
                 elif now - o.submitted > self.patience:
                     minutes = round((now - o.submitted) / 60)
-                    self.log(f"batch {o.batch_id} still running after {minutes} min; asking the rest directly")
+                    self.log(f"batch {o.batch_id} still running after {minutes} min; cancelling it")
                     self.sync = True
                     self._cancel(o, out, direct)
                     opened.remove(o)
@@ -203,17 +246,47 @@ class Batcher:
             if note:
                 last_note = now
 
-    def _collect(self, o: _Open, out: list, direct: list) -> None:
-        """An ended batch: accept each valid answer; ask again what failed or was never answered."""
+    def _results(self, o: _Open) -> dict | None:
+        """An ended batch's answers, read again a few times if the read fails; None if it keeps
+        failing. A FatalError (batch gone) is raised."""
+        for pause in (*RESULTS_BACKOFF, None):
+            try:
+                return o.provider.results(o.batch_id)
+            except FatalError:
+                raise
+            except Exception as e:  # timeout, 5xx, a stream cut mid-read: the batch is still there
+                self.log(f"could not read batch {o.batch_id} ({str(e)[:120]})" + ("; trying again" if pause else ""))
+                if pause:
+                    time.sleep(pause)
+        return None
+
+    def _pending(self, o: _Open, out: list, reason: str) -> None:
+        """Answers that cannot be reached now: the batch's estimated cost counts as spent (it may be
+        billed), and its calls fail for this run rather than being asked again at full price."""
+        for s in o.sent.values():
+            self.client.budget.settle(s.estimate, s.estimate)
+            out[s.index] = BudgetExceeded(f"batch {o.batch_id}: {reason}")
+
+    def _collect(self, o: _Open, out: list, direct: list) -> bool:
+        """An ended batch: accept each valid answer; ask again what failed or was never answered.
+        False when the answers could not be read: the batch stays `running` for the next run."""
+        client = self.client
         try:
-            answers = o.provider.results(o.batch_id)
-        except LLMError as e:
-            answers = {}
-            self.log(f"could not read batch {o.batch_id} ({str(e)[:120]}); asking directly")
+            answers = self._results(o)
+        except FatalError as e:
+            self.log(f"batch {o.batch_id} is gone ({str(e)[:120]})")
+            self._mark(o.batch_id, "lost")
+            for s in o.sent.values():
+                client.budget.settle(s.estimate, None)
+                out[s.index] = e
+            return True
+        if answers is None:
+            self.log(f"batch {o.batch_id}: answers pending; they are paid for, and the next run collects them")
+            self._pending(o, out, "answers pending, the next run collects them")
+            return False
         self.waits.append(time.time() - o.submitted)
         minutes = round(self.waits[-1] / 60, 1)
         self.log(f"batch {o.batch_id}: {len(answers)} of {len(o.sent)} answered in {minutes} min")
-        client = self.client
         for rid, s in o.sent.items():
             answer = answers.get(rid)
             if answer is None:  # cancelled or expired: never answered, never billed
@@ -241,17 +314,26 @@ class Batcher:
         # Marked only once every answer is in the cache: a run killed before this point finds the
         # batch still running next time and collects it again, rather than losing paid-for answers.
         self._mark(o.batch_id, "collected")
+        return True
 
     def _cancel(self, o: _Open, out: list, direct: list) -> None:
+        """Cancel a late batch. Its answers are collected only once the provider reports it ended;
+        until then (cancel failed, or still settling) it stays `running` for the next run."""
+        ended = False
         try:
             o.provider.cancel(o.batch_id)
             until = time.time() + CANCEL_WAIT
-            while time.time() < until and not o.provider.poll(o.batch_id)[0]:
-                time.sleep(POLL_FIRST)
+            while not ended and time.time() < until:
+                ended = o.provider.poll(o.batch_id)[0]
+                if not ended:
+                    time.sleep(POLL_FIRST)
         except LLMError as e:
             self.log(f"could not cancel batch {o.batch_id}: {str(e)[:120]}")
-        self._collect(o, out, direct)
-        self._mark(o.batch_id, "cancelled")
+        if not ended:
+            self.log(f"batch {o.batch_id} has not ended; it may still bill, and the next run collects it")
+            self._pending(o, out, "still running after cancel, the next run collects it")
+        elif self._collect(o, out, direct):
+            self._mark(o.batch_id, "cancelled")
 
     def _directly(self, calls: list, direct: list, out: list) -> None:
         """Synchronous calls, a few at a time, unless the time budget is spent."""
@@ -329,9 +411,12 @@ class Batcher:
 
     def _cache_answers(self, o: _Open) -> int:
         try:
-            answers = o.provider.results(o.batch_id)
-        except LLMError as e:
-            self.log(f"  could not read batch {o.batch_id}: {str(e)[:120]}")
+            answers = self._results(o)
+        except FatalError as e:
+            self.log(f"  batch {o.batch_id}: {str(e)[:120]}")
+            return 0
+        if answers is None:
+            self.log(f"  could not read batch {o.batch_id}; it stays for the next run")
             return 0
         n = 0
         for rid, answer in answers.items():
@@ -352,7 +437,7 @@ class Batcher:
 
     # --- the llm_batches table ----------------------------------------------------------------
 
-    def _record(self, o: _Open) -> None:
+    def _record(self, o: _Open, status: str = "running") -> None:
         schemas: dict[str, str] = {}
         requests = {}
         for rid, s in o.sent.items():
@@ -362,7 +447,7 @@ class Batcher:
         with self.client._lock:
             ok = self.client._write(
                 "insert or replace into llm_batches values (?,?,?,?,?,?)",
-                (o.batch_id, o.provider.label, o.submitted, "running", json.dumps(saved), None),
+                (o.batch_id, o.provider.label, o.submitted, status, json.dumps(saved), None),
             )
         if not ok:  # the batch is billed either way; say so, so its id can be found in the provider's console
             self.log(f"could not record batch {o.batch_id}: a run killed now cannot collect it next time")

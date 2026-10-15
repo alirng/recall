@@ -21,6 +21,7 @@ from .base import (
     Provider,
     Request,
     Result,
+    SendUnconfirmed,
     http_json,
     parse_json,
 )
@@ -119,11 +120,19 @@ class OpenAICompatible(Provider):
             for r in requests
         ]
         upload = self._upload("\n".join(json.dumps(line) for line in lines).encode())
-        batch = http_json(
-            f"{self.base_url}/batches",
-            {"input_file_id": upload["id"], "endpoint": "/v1/chat/completions", "completion_window": "24h"},
-            self._headers(),
-        )
+        try:
+            batch = http_json(
+                f"{self.base_url}/batches",
+                {"input_file_id": upload["id"], "endpoint": "/v1/chat/completions", "completion_window": "24h"},
+                self._headers(),
+            )
+        except FatalError:
+            raise
+        except LLMError as e:
+            if str(e).startswith("HTTP 429"):
+                raise  # rejected, not created
+            # may have been created: the Batcher records it as unconfirmed
+            raise SendUnconfirmed(str(e)) from e
         return batch["id"]
 
     def poll(self, batch_id: str) -> tuple[bool, str]:
