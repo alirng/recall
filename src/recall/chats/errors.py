@@ -24,7 +24,7 @@ import hashlib
 import json
 import re
 from bisect import bisect_right
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 
 from .redact import Chat, redact, redact_tool
 
@@ -79,6 +79,13 @@ def reclean(field: str, text, chat: Chat | None = None):
     if field == "next_reply":
         return chat.repeats(redact(text)) if chat else redact(text)
     return chat.tool(text) if chat else redact_tool(text)
+
+
+def reclean_errors(errors: list[ToolError], chat: Chat | None = None) -> list[ToolError]:
+    """Failed calls read back from a stored copy of a chat, their words redacted again as the copy's messages are
+    when they are read (a rule was added since, or the chat's values are known now). Do it before such a list is
+    merged with another: a call with no id is told from another by its words."""
+    return [replace(e, **{k: reclean(k, getattr(e, k), chat) for k in TEXT_FIELDS}) for e in errors]
 
 
 @dataclass

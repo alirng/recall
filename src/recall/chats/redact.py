@@ -434,7 +434,7 @@ def _tool_tier(text: str) -> str:
 
 
 # Bump when the logic around the patterns changes without a pattern changing (redact_many, _is_path_or_host, a helper).
-_LOGIC = "1"
+_LOGIC = "2"
 
 
 def _version() -> str:
@@ -529,22 +529,25 @@ class Chat:
         values = list(found)
         self._exact = sorted(values[:EXACT_VALUES], key=len, reverse=True)
         self._rest = values[EXACT_VALUES:]
+        # for the token lookup: built once, since a chat with hundreds of values is asked once per text and per error
+        self._whole = frozenset(self._rest)
+        self._cores = frozenset(c for v in self._rest for c in _CORE.findall(v))
         self.texts = [self.repeats(t) for t in out]
 
     def repeats(self, text: str) -> str:
-        return _repeats(text, self._exact, self._rest) if text and (self._exact or self._rest) else text
+        return _repeats(text, self._exact, self._whole, self._cores) if text and (self._exact or self._whole) else text
 
     def tool(self, text: str) -> str:
         """redact_tool(text), and this chat's values wherever they stand in it."""
         return _tool_tier(self.repeats(redact(text))) if text else text
 
 
-def _repeats(text: str, exact: list[str], rest: list[str]) -> str:
+def _repeats(text: str, exact: list[str], whole: frozenset[str], cores: frozenset[str]) -> str:
     for v in exact:
         if v in text:
             text = text.replace(v, MARK)
-    if rest:
-        text = _by_token(text, frozenset(rest), frozenset(c for v in rest for c in _CORE.findall(v)))
+    if whole:
+        text = _by_token(text, whole, cores)
     return text
 
 

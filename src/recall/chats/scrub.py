@@ -17,8 +17,9 @@ errors.reclean says which rules a stored field can be read by again.
 ensure() runs at the start of an index run and rewrites those tables once per
 redact.VERSION; run() is the same rewrite without the version check, for a one-off clean.
 The messages and sessions tables are rewritten too, so a rule change takes effect without
-waiting for a rebuild. store.connect() marks the scrub due again after it has copied chats
-into the archive, which are copied as the old tables hold them.
+waiting for a rebuild. A chat's opening prompt (and a title that was cut from it) is cut again from
+its messages as stored, as store._write makes it. store.connect() marks the scrub due again after
+it has copied chats into the archive, which are copied as the old tables hold them.
 
 The notes (the markdown files in ~/.agents/memory) and their ledger are yours: ensure() only
 looks at them and names the ones the rules match, and the notes that were learned from a
@@ -39,6 +40,7 @@ from collections.abc import Callable
 from .. import paths
 from .errors import TEXT_FIELDS, identity, reclean
 from .redact import VERSION, Chat, count, redact, redact_json
+from .transcript import fallback_title, opening_prompt
 
 # table -> the columns that hold chat text. Missing tables and columns are skipped.
 TEXT_COLUMNS = {
@@ -77,7 +79,13 @@ def ensure(con: sqlite3.Connection, log: Callable[[str], None] | None = None) ->
         if not stale(con):
             return
         run(con, stamp=False, log=log, touched=touched)
-        forget.scrub_db(con)  # the old words are also in free pages and the log until the file is rewritten
+        # the old words are also in free pages and the log until the file is rewritten
+        if not forget.scrub_db(con):
+            _say(
+                "the scrub rewrote the index, but another process has it open (an agent's MCP server, likely), so the"
+                " index's -wal file still holds the old pages until that process closes it",
+                log,
+            )
         con.execute("insert or replace into meta values (?, ?)", (META_KEY, VERSION))
         con.commit()
     except sqlite3.OperationalError as e:
@@ -178,18 +186,26 @@ def run(
     changed: Counter = Counter()
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
     chats: Counter | None = None
+    opening: dict[str, str] = {}  # chat -> its opening prompt, from its messages as redacted here
     for table, wanted in TEXT_COLUMNS.items():
         if table not in have:
             continue
         columns = [r[1] for r in con.execute(f"pragma table_info({table})") if r[1] in wanted]
         if table in ("messages", "tool_errors"):
             if chats is None:  # the messages, and the tool errors of the same chats
-                chats = _rewrite_chats(con, changed, have)
+                chats, opening = _rewrite_chats(con, changed, have)
                 if "tool_errors_fts" in have:  # before the commit below: a stop in between must not strand old terms
                     con.execute("insert into tool_errors_fts(tool_errors_fts) values ('rebuild')")
             n = chats[table] if table == "messages" else 0  # the index of tool_errors was rebuilt above
         else:
-            n = _rewrite(con, table, columns, changed, touched if table == "candidates" else None)
+            n = _rewrite(
+                con,
+                table,
+                columns,
+                changed,
+                touched if table == "candidates" else None,
+                opening if table == "sessions" else None,
+            )
         if n and table == "explorations":
             # the matching words kept beside a report are made again from the redacted text (explore._upgrade)
             con.execute("update explorations set prompt_terms = null, report_terms = null")
@@ -201,27 +217,50 @@ def run(
         if n and table == "sessions" and "sessions_fts" in have:
             _sessions_fts(con)
         con.commit()
+    odd: dict[str, list[tuple[str, str]]] = {}  # table -> (key, error kind) of the rows that could not be rewritten
     if "llm_cache" in have:
-        changed["llm_cache.response"] += _rewrite_json(con, "llm_cache", "key", "response", _cache_value)
+        n, odd["llm_cache"] = _rewrite_json(con, "llm_cache", "key", "response", _cache_value)
+        changed["llm_cache.response"] += n
     if "chat_archive" in have:
-        changed["chat_archive.data"] += _rewrite_json(con, "chat_archive", "id, source", "data", _archive_value)
+        n, odd["chat_archive"] = _rewrite_json(con, "chat_archive", "id, source", "data", _archive_value)
+        changed["chat_archive.data"] += n
     if stamp:
         con.execute("insert or replace into meta values (?, ?)", (META_KEY, VERSION))
     con.commit()
+    for table, rows in odd.items():
+        if rows:  # the kinds of error, and chat ids: never what a blob held
+            kinds = ", ".join(f"{k} {n}" for k, n in Counter(k for _, k in rows).most_common())
+            line = f"{len(rows)} rows of {table} could not be read or written back and are left as they are ({kinds})"
+            if table == "chat_archive":
+                ids = [i for i, _ in rows]
+                line += ": " + ", ".join(ids[:5]) + (f" and {len(ids) - 5} more" if len(ids) > 5 else "")
+            _say(line, log)
     if log and sum(changed.values()):
         log("redacted " + ", ".join(f"{n} in {k}" for k, n in sorted(changed.items()) if n))
     return changed
 
 
-def _rewrite(con, table: str, columns: list[str], changed: Counter, notes: dict[str, bool] | None = None) -> int:
+def _rewrite(
+    con,
+    table: str,
+    columns: list[str],
+    changed: Counter,
+    notes: dict[str, bool] | None = None,
+    opening: dict[str, str] | None = None,
+) -> int:
+    """Redact each value of these columns. notes: for candidates, collects the notes learned from a changed one.
+    opening: for sessions, chat id -> its opening prompt, which replaces the stored one (see _opening)."""
     if not columns:
         return 0
     select = ", ".join(columns)
     n = 0
     rows: dict[int, bool] = {}  # candidates changed: rowid -> its title changed
-    for row in con.execute(f"select rowid, {select} from {table}").fetchall():
-        new = [redact(v) if isinstance(v, str) else v for v in row[1:]]
-        diff = [c for c, a, b in zip(columns, row[1:], new, strict=True) if a != b]
+    for row in con.execute(f"select rowid, {select}{', id' if opening is not None else ''} from {table}").fetchall():
+        old = row[1 : 1 + len(columns)]
+        new = [redact(v) if isinstance(v, str) else v for v in old]
+        if opening is not None and row[-1] in opening:
+            new = _opening(columns, old, new, opening[row[-1]])
+        diff = [c for c, a, b in zip(columns, old, new, strict=True) if a != b]
         if diff:
             sets = ", ".join(f"{c} = ?" for c in diff)
             con.execute(f"update {table} set {sets} where rowid = ?", [new[columns.index(c)] for c in diff] + [row[0]])
@@ -241,9 +280,25 @@ def _rewrite(con, table: str, columns: list[str], changed: Counter, notes: dict[
     return n
 
 
-def _rewrite_chats(con, changed: Counter, have: set[str]) -> Counter:
+def _opening(columns: list[str], old, new, first: str) -> list:
+    """A sessions row of a chat whose messages were just redacted, made as store._write makes it: the opening prompt
+    is cut from the first user message as stored, and a title that was cut from the old opening follows it. The
+    values redacted one by one cannot know a key that only another message of the chat marked, and the messages no
+    longer hold that key once they are redacted, so this reads the messages, not the key: a stop between the two
+    steps leaves nothing to strand."""
+    old, new = dict(zip(columns, old, strict=True)), dict(zip(columns, new, strict=True))
+    if "first_prompt" in new:
+        was = old["first_prompt"]
+        if "title" in new and isinstance(was, str) and old["title"] == fallback_title(was):
+            new["title"] = fallback_title(first)
+        new["first_prompt"] = first
+    return [new[c] for c in columns]
+
+
+def _rewrite_chats(con, changed: Counter, have: set[str]) -> tuple[Counter, dict[str, str]]:
     """The messages, a chat at a time, so a key repeated bare further down the chat goes with the one a word
-    marked, and the same chat's failed tool calls with them. Returns the rows changed per table."""
+    marked, and the same chat's failed tool calls with them. Returns the rows changed per table, and each chat's
+    opening prompt from its redacted messages."""
     n: Counter = Counter()
     columns = [r[1] for r in con.execute("pragma table_info(tool_errors)") if r[1] in TEXT_COLUMNS["tool_errors"]]
     errors: dict[str, list] = {}  # session -> its tool_errors rows
@@ -252,20 +307,23 @@ def _rewrite_chats(con, changed: Counter, have: set[str]) -> Counter:
             errors.setdefault(row[1], []).append(row)
     rows = []
     if "messages" in have:
-        rows = con.execute("select rowid, session_id, text from messages order by session_id, seq").fetchall()
+        rows = con.execute("select rowid, session_id, role, text from messages order by session_id, seq").fetchall()
+    opening: dict[str, str] = {}
     for sid, group in itertools.groupby(rows, key=lambda r: r[1]):
         group = list(group)
-        chat = Chat([r[2] for r in group])
-        for (rowid, _, old), text in zip(group, chat.texts, strict=True):
+        chat = Chat([r[3] for r in group])
+        for (rowid, _, _, old), text in zip(group, chat.texts, strict=True):
             if text != old:
                 con.execute("update messages set text = ? where rowid = ?", (text, rowid))
                 changed["messages.text"] += 1
                 n["messages"] += 1
+        if first := opening_prompt((r[2], t) for r, t in zip(group, chat.texts, strict=True)):
+            opening[sid] = first
         _rewrite_errors(con, columns, errors.pop(sid, []), chat, changed, n)
     chat = Chat([])
     for rows_ in errors.values():  # chats whose messages the index no longer holds
         _rewrite_errors(con, columns, rows_, chat, changed, n)
-    return n
+    return n, opening
 
 
 def _rewrite_errors(con, columns: list[str], rows: list, chat: Chat, changed: Counter, n: Counter) -> None:
@@ -303,19 +361,31 @@ def _sessions_fts(con: sqlite3.Connection) -> None:
     con.execute("insert into sessions_fts(sessions_fts) values ('rebuild')")
 
 
-def _rewrite_json(con, table: str, key: str, column: str, fix: Callable[[object], bytes | str | None]) -> int:
-    """For a column that holds encoded JSON: decode, redact every string, encode again."""
+# What an odd value raises: not JSON or not compressed (ValueError, zlib.error), not the shape this code writes
+# (TypeError, KeyError, IndexError, AttributeError), a lone surrogate that cannot be encoded (UnicodeEncodeError,
+# a ValueError).
+_ODD = (ValueError, zlib.error, TypeError, KeyError, IndexError, AttributeError)
+
+
+def _rewrite_json(
+    con, table: str, key: str, column: str, fix: Callable[[object], bytes | str | None]
+) -> tuple[int, list[tuple[str, str]]]:
+    """For a column that holds encoded JSON: decode, redact every string, encode again. Returns the rows changed
+    and the rows that could not be (the first key column and the kind of error: never a message of it, which can
+    quote the value), which stay as they are, so that one odd row does not stop every index run."""
     n = 0
+    skipped: list[tuple[str, str]] = []
     for row in con.execute(f"select {key}, {column} from {table}").fetchall():
         try:
             new = fix(row[-1])
-        except (ValueError, zlib.error):
-            continue  # not what this code wrote: leave it alone
+        except _ODD as e:
+            skipped.append((str(row[0]), "zlib.error" if isinstance(e, zlib.error) else type(e).__name__))
+            continue
         if new is not None:
             where = " and ".join(f"{k.strip()} = ?" for k in key.split(","))
             con.execute(f"update {table} set {column} = ? where {where}", [new, *row[:-1]])
             n += 1
-    return n
+    return n, skipped
 
 
 def _cache_value(response: str) -> str | None:
@@ -330,9 +400,9 @@ def _archive_value(blob: bytes) -> bytes | None:
     """An archived chat: zlib-compressed JSON with the session's fields, its messages and its failed tool calls."""
     data = json.loads(zlib.decompress(blob))
     new = dict(data)
-    if "title" in new:
-        new["title"] = redact_json(new["title"])
     chat = Chat([m[2] for m in new["messages"]] if "messages" in new else [])  # redacted as one chat
+    if isinstance(new.get("title"), str):  # with the chat's values, as store._write redacts a title
+        new["title"] = chat.repeats(redact(new["title"]))
     moved: dict[str, str] = {}  # identity of a message as it was -> as it is now (errors.identity)
     if "messages" in new:  # [role, ts, text, ...] each
         new["messages"] = [[*m[:2], t, *m[3:]] for m, t in zip(new["messages"], chat.texts, strict=True)]
