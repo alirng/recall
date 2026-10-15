@@ -126,6 +126,12 @@ All notable changes to recall are listed here. The format follows
 
 ### Changed
 
+- **A shorter README.** It now covers what recall does, how to install it and the headline
+  results; the detail moved into pages under `docs/` (benchmarks, how it works, projects and
+  rules, coordination, commit links, exploration reports, accounts, reference). Figures were rechecked
+  against their runs: the MemoryCode agent result now comes from the runs that load recall's
+  tools as Claude Code does by default, and search times from the dedicated timing run.
+
 - **One hook command.** Every hook recall installs, for every agent, now runs
   `recall hook --agent <agent>`, which hands the event to the features that want it and
   answers in that agent's format. `recall install` replaces the older `context --hook` and
@@ -142,6 +148,8 @@ All notable changes to recall are listed here. The format follows
 
 ### Fixed
 
+- The PyPI page shows the logo, the charts and working links: the build points the README's
+  relative paths at GitHub.
 - Text that reaches the user's turn without the person writing it is no longer indexed as
   theirs: Claude Code peer messages and task notifications delivered mid-turn, compaction
   summaries and `!` command output; Cursor's session-hook context and tool catalogues; Codex
