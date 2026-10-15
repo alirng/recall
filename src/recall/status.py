@@ -861,6 +861,7 @@ def check_edit(
         me,
         source,
         {s.id: {"source": s.source, "title": s.title, "file": rel, "repo": _repo_name(repo)} for _, s, *_ in fresh},
+        my_title if mine else None,
     )
     out = []
     for sit, s, c, shared, same, spans in fresh:

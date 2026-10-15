@@ -67,6 +67,9 @@ _BOILERPLATE = re.compile(
     r"\[Request interrupted by user[^\]]*\]"
 )
 _EXTERNAL_TOOL = re.compile(r"\[external_agent_tool_call:.*?\[/external_agent_tool_call\]", re.S)
+# recall's reply tokens for message_chat (mail.py), kept out of the index so search_chats
+# and read_chat can't hand one chat's token to another.
+_REPLY_TOKEN = re.compile(r'token=(\\?)"[0-9a-f]{12}\\?"')
 
 
 def clean_user_text(text: str) -> str:
@@ -75,6 +78,7 @@ def clean_user_text(text: str) -> str:
         text = "\n\n".join(q)
     text = _INJECTED.sub("", text)
     text = _BOILERPLATE.sub("", text).strip()
+    text = _REPLY_TOKEN.sub(r'token=\1"…\1"', text)
     if text.startswith(("# AGENTS.md instructions", "Caveat: The messages below")):
         return ""
     return text
@@ -98,7 +102,7 @@ def drop_compaction_summary(text: str) -> str:
 
 
 def clean_assistant_text(text: str) -> str:
-    return _EXTERNAL_TOOL.sub("", text).strip()
+    return _REPLY_TOKEN.sub(r'token=\1"…\1"', _EXTERNAL_TOOL.sub("", text)).strip()
 
 
 def conversation_fingerprint(messages: list[Message]) -> str | None:
