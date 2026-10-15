@@ -33,7 +33,9 @@ All notable changes to recall are listed here. The format follows
 - **Chats that talk to each other.** When an edit hook finds another chat with open changes
   to the same file, recall messages that chat too: who is about to change which lines, and
   what they were asked. Agents answer through the new `message_chat` MCP tool to agree who
-  goes first. Claude Code, Codex and Cursor read their messages on their next edit and at the
+  goes first. An agent can only message chats recall introduced it to, with the token from
+  recall's note, which also names it as the sender; what it writes arrives quoted as another
+  agent's words with no authority, capped at 600 characters and ten messages an hour. Claude Code, Codex and Cursor read their messages on their next edit and at the
   end of a turn, where they keep going to answer (Cursor as a follow-up message; at most three
   times an hour per sender); Claude Code and Codex also on the next prompt. `recall install`
   adds the hooks. The menu bar shows the conversation under the file.
