@@ -71,6 +71,19 @@ All notable changes to recall are listed here. The format follows
   until the index keeps tool errors. `recall jit` shows what would fire and why;
   `recall usage` counts what did; `recall eval jit` fits the gate to your history and `--live`
   measures its precision on real injections.
+
+- **Several accounts and installs, connected by itself.** recall now finds every folder an agent
+  keeps its settings and chats in: the defaults, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` from the
+  environment and from `alias`/`export` lines in your shell rc files, `~/.claude-*` style folders,
+  and Cursor builds such as Nightly. Each gets a stable name, is indexed, and every chat records
+  its folder (chat index schema 7, rebuilt on first run). `recall doctor` shows each folder as
+  connected or not, with a masked account hint and when it was last indexed. `recall setup` asks
+  once whether to keep recall connected automatically (`[autopilot] connect = true`;
+  `--autopilot` answers it, `recall autopilot on|off` changes it): a nightly check and the
+  session-start hook then install the MCP server, hooks and skill into folders that are new or have
+  lost them, with each file backed up first, one line per change in the usage log. Off by default;
+  with it off nothing changes. `recall install` and `uninstall` now cover every folder found, and
+  `uninstall` turns autopilot off. `docs/benchmarks/setup_eval.py` checks it in a sandbox home.
 - **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor
   chats active in the last 12 hours, the branch each is on and the files it edited, and flags a
   file that two chats in one repo both have open changes to: whether the two would conflict if
