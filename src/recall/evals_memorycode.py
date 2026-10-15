@@ -945,7 +945,7 @@ def run_agent(
 
     if not shutil.which("claude"):
         sys.exit("Claude Code is not installed: `claude` is not on PATH")
-    name, arm = arm, ARMS[arm]
+    arm = ARMS[arm]
     run.meta.update(server=evals_agent._server_code() if arm.tools else None)
     empty = os.path.join(run.dir, "no-mcp.json")
     with open(empty, "w") as f:
@@ -1029,7 +1029,7 @@ def run_agent(
     sessions_of = {x.id: f"{len(x.sessions):03d}-sessions" for x in histories}
     summary = {
         "model": model,
-        "arm": arm,
+        "arm": arm.name,
         **metrics,
         "checks_updated": h.ratio_ci([(v["updated_ok"], v["updated_n"]) for v in checks.values()]),
         "checks_unchanged": h.ratio_ci([(v["unchanged_ok"], v["unchanged_n"]) for v in checks.values()]),
@@ -1073,7 +1073,7 @@ def run_agent(
     headline = (
         f"acc={h.fmt(metrics['accuracy'])} short={metrics['short']['mean']} long={metrics['long']['mean']} "
         f"updated={summary['checks_updated']['mean']} tokens_in_median={summary['tokens_in'].get('median')} "
-        f"tools_median={summary['tool_calls'].get('median')} arm={arm} model={model}"
+        f"tools_median={summary['tool_calls'].get('median')} arm={arm.name} model={model}"
     )
     if repeats > 1:
         headline += f" acc_by_repeat={summary['variance']['accuracy_by_repeat']}"
