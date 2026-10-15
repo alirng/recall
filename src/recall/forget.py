@@ -2,10 +2,11 @@
 
 For each chat that means its index rows (sessions, messages and their full-text index, its
 project assignment, the list of files already read), its embedding vectors, its archive
-copies, its extraction record and candidate memories, and the cached model answers that quote
-it. The database file is then rewritten, so the words are not left in its free pages. The
-chat's id goes on a forgotten list, so a later index run does not read it back from the
-agent's files, which recall never deletes.
+copies, its extraction record and candidate memories, the exploration reports it produced
+(explore.py), and the cached model answers that quote it. The database file is then
+rewritten, so the words are not left in its free pages. The chat's id goes on a forgotten
+list, so a later index run does not read it back from the agent's files, which recall never
+deletes.
 
 What it does not remove:
 * Notes. They are the person's own files, so forget does not edit them. It lists the notes
@@ -120,7 +121,9 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub:
     forgotten list, so they are never indexed again. scrub: then rewrite the database file
     so the deleted words are not left in its free pages (see scrub_db). Returns counts per place."""
     have = _tables(con)
-    counts = dict.fromkeys(("chats", "messages", "vectors", "archive_copies", "candidates", "cached_answers"), 0)
+    counts = dict.fromkeys(
+        ("chats", "messages", "vectors", "archive_copies", "candidates", "explorations", "cached_answers"), 0
+    )
     texts = {sid: _text(con, sid, have) for sid in ids}
     counts["cached_answers"] = _purge_cache(con, ids, texts, have)
     deleted = counts["cached_answers"]
@@ -130,7 +133,7 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub:
             return 0
         return con.execute(f"delete from {table} where {column} = ?", (sid,)).rowcount
 
-    named = {"messages": "messages", "vectors": "vectors", "candidates": "candidates"}
+    named = {"messages": "messages", "vectors": "vectors", "candidates": "candidates", "explorations": "explorations"}
     for sid in ids:
         counts["chats"] += (n := delete("sessions", "id", sid))
         deleted += n + delete("sessions_fts", "id", sid)
@@ -161,10 +164,8 @@ def scrub_db(con: sqlite3.Connection) -> bool:
     Returns False when another process has the index open, so the log could not be emptied
     and the old pages stay in it until that process closes."""
     con.commit()
-    have = _tables(con)
-    for fts in ("messages_fts", "sessions_fts"):
-        if fts in have:
-            con.execute(f"insert into {fts}({fts}) values ('optimize')")  # merge away the deletion records
+    for fts in _fts_tables(con):  # chats' words are in more than one: messages, titles, explorations
+        con.execute(f"insert into {fts}({fts}) values ('optimize')")  # merge away the deletion records
     con.commit()
     con.execute("vacuum")
     wait = con.execute("pragma busy_timeout").fetchone()[0]
@@ -209,6 +210,15 @@ def sweep(con: sqlite3.Connection) -> int:
 
 def _tables(con: sqlite3.Connection) -> set[str]:
     return {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
+
+
+def _fts_tables(con: sqlite3.Connection) -> list[str]:
+    return [
+        r[0]
+        for r in con.execute(
+            "select name from sqlite_master where type = 'table' and lower(sql) like 'create virtual table%using fts5%'"
+        )
+    ]
 
 
 def _keyed(con: sqlite3.Connection, have: set[str]) -> list[str]:
