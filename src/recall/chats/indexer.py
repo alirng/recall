@@ -66,6 +66,8 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
     from .. import config, roots
 
     wanted = {os.path.realpath(f) for f in files}
+    cfg = config.load()
+    found = [r for r in roots.discover() if roots.option(r, "index", cfg)]  # index = false: not read at all
     os.makedirs(paths.HOME, exist_ok=True)
     with open(os.path.join(paths.HOME, "index.lock"), "w") as lock:
         deadline = time.time() + wait
@@ -79,7 +81,7 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
                 time.sleep(0.2)
         keep = _keeper(con)
         done = 0
-        for name, items in all_sources(config.load()["sources"], roots.discover()).items():
+        for name, items in all_sources(cfg["sources"], found).items():
             if name in OUT_OF_PROCESS:
                 continue
             for item in items():
