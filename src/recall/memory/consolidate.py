@@ -22,7 +22,7 @@ from datetime import datetime
 
 from ..chats.redact import redact
 from ..llm import Client
-from . import prompts
+from . import prompts, said
 from .notes import CONFIDENCE, REMOVED_BY_HAND, Note, NoteStore, Rule, new_id, rule_id, sync, today
 
 SYSTEM, _ = prompts.load("consolidate")
@@ -219,11 +219,21 @@ class _Batch:
 
     notes: dict[str, Note]  # the store's notes, unchanged until commit
     scope: Scope
+    con: object  # the index, for the chats' messages (see typed)
     work: dict[str, Note] = field(default_factory=dict)  # copies of the notes operations touch
     created: dict[str, Note] = field(default_factory=dict)
     retired: set[tuple[str, str]] = field(default_factory=set)  # (note id, rule id) retired by an operation
     merged: dict[int, str] = field(default_factory=dict)  # candidate id -> note id
     discarded: dict[int, str] = field(default_factory=dict)  # candidate id -> reason
+    asked: dict[int, bool] = field(default_factory=dict, repr=False)  # candidate id -> typed()
+
+    def typed(self, candidate) -> bool:
+        """Did the developer type the candidate's evidence (said.py)? Asked once per candidate."""
+        if candidate["speaker"] != "user":
+            return False
+        if candidate["id"] not in self.asked:
+            self.asked[candidate["id"]] = said.typed_quote(self.con, candidate["session_id"], candidate["evidence"])
+        return self.asked[candidate["id"]]
 
     def note(self, note_id: str) -> Note | None:
         if note_id in self.created:
@@ -257,12 +267,13 @@ class _Batch:
 
 def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, ops, stats: Counter, log) -> None:
     by_number = dict(enumerate(batch, 1))
-    b = _Batch(notes, scope)
+    b = _Batch(notes, scope, con)
     for op in ops:
         candidates = [by_number[i] for i in dict.fromkeys(op["candidates"]) if i in by_number]
         if not candidates:
             continue
         kind, texts = op["op"], _texts(op["rules"])
+        fallback = _texts([c["body"] for c in candidates])
         op = {**op, "note_id": op["note_id"].strip().strip("[]"), "rule_id": op["rule_id"].strip().strip("[]")}
         if kind == "discard":
             for c in candidates:
@@ -287,17 +298,19 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
         if kind == "add" and not b.note(op["note_id"]):
             kind = "create"  # an unknown or out-of-scope note id: a new note
         if kind == "create":
-            note = _create(b, op, texts or [c["body"] for c in candidates], candidates)
+            note = _create(b, op, texts or fallback, candidates)
         elif found:
             note, rule = found
             if kind == "confirm" or (kind == "refine" and not texts):
-                _support(rule, candidates)
+                _support(b, rule, candidates)
             elif kind == "refine":
+                if not _same(rule.text, texts[0]):
+                    rule.said_by, rule.evidence = None, ""  # new words: the old ones' speaker says nothing of them
                 rule.text = texts[0]
-                _support(rule, candidates)
-                _insert(note, rule, _new_rules(note, texts[1:], candidates))
+                _support(b, rule, candidates)
+                _insert(note, rule, _new_rules(b, note, texts[1:], candidates))
             else:  # retire
-                new = _new_rules(note, texts, candidates)
+                new = _new_rules(b, note, texts, candidates)
                 rule.status, rule.retired, rule.reason = "retired", when, op["reason"].strip()[:300]
                 rule.replaced_by = new[0].id if new else None
                 b.retired.add((note.id, rule.id))
@@ -305,12 +318,12 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
             kind = "confirm" if kind == "refine" and not texts else kind
         else:  # add
             note = b.note(op["note_id"])
-            for text in texts or [c["body"] for c in candidates]:
+            for text in texts or fallback:
                 same = next((r for r in note.rules if r.active and _same(r.text, text)), None)
                 if same:
-                    _support(same, candidates)
+                    _support(b, same, candidates)
                 else:
-                    note.rules += _new_rules(note, [text], candidates)
+                    note.rules += _new_rules(b, note, [text], candidates)
         if kind != "create" and op["title"].strip():
             note.title = op["title"].strip()
         note.confidence = max(note.confidence, op["confidence"], key=lambda c: CONFIDENCE.get(c, 0))
@@ -392,34 +405,39 @@ def _create(b: _Batch, op: dict, texts: list[str], candidates) -> Note:
     )
     while note.id in b.notes or note.id in b.created:
         note.id = new_id(title, salt=f"{b.scope.key}{first}{time.time()}")
-    note.rules = _new_rules(note, texts, candidates)
+    note.rules = _new_rules(b, note, texts, candidates)
     sync(note)
     b.created[note.id] = note
     return note
 
 
-def _new_rules(note: Note, texts: list[str], candidates) -> list[Rule]:
+def _new_rules(b: _Batch, note: Note, texts: list[str], candidates) -> list[Rule]:
     taken = {r.id for r in note.rules}
     out = []
     for text in texts:
         rule = Rule(rule_id(note.id, text, taken), text, first_seen=_date(min(c["chat_ts"] or 0 for c in candidates)))
         taken.add(rule.id)
-        _support(rule, candidates)
+        _support(b, rule, candidates)
         out.append(rule)
     return out
 
 
-def _support(rule: Rule, candidates) -> None:
+def _support(b: _Batch, rule: Rule, candidates) -> None:
     """Record that these candidates state the rule: dates, source chats, who said it, a quote.
-    A rule the developer stated in any chat counts as said by the developer."""
+    The rule counts as the developer's when a candidate attributed to the user has its quote
+    in a turn the developer typed (said.py) and the rule asks for no command, URL or network,
+    destructive or exfiltrating action. A rule nothing vouches for keeps no mark, except one
+    that only the agent stated, which is marked so."""
     new = not rule.sources and not rule.edited
     rule.last_seen = max(rule.last_seen, _date(max(c["chat_ts"] or 0 for c in candidates)))
     rule.sources = sorted(set(rule.sources) | {c["session_id"] for c in candidates})
-    said = [c for c in candidates if c["speaker"] == "user"]
-    if said and rule.said_by != "developer":
-        rule.said_by = "developer"
-        rule.evidence = next((c["evidence"] for c in said if c["evidence"]), rule.evidence)[:200]
-    elif new:  # an earlier rule's speaker is unknown (notes from before rules): leave it unset
+    if said.risky(rule.text):
+        rule.said_by = None
+        return
+    typed = next((c for c in candidates if b.typed(c)), None)
+    if typed and rule.said_by != "developer":
+        rule.said_by, rule.evidence = "developer", (typed["evidence"] or "")[:200]
+    elif new and not typed and all(c["speaker"] == "assistant" for c in candidates):
         rule.said_by = "agent"
         rule.evidence = next((c["evidence"] for c in candidates if c["evidence"]), "")[:200]
 
@@ -433,7 +451,8 @@ def _insert(note: Note, after: Rule, new: list[Rule]) -> None:
 
 
 def _texts(values: list[str]) -> list[str]:
-    return [t for t in (" ".join(v.split()) for v in values) if t]
+    """Rule texts on one line each, without a literal said_by marker (said.clean_rule)."""
+    return [t for t in (said.clean_rule(" ".join(v.split())) for v in values) if t]
 
 
 def _same(a: str, b: str) -> bool:
