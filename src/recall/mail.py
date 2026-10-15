@@ -30,7 +30,7 @@ MAIL = os.path.join(paths.HOME, "cache", "mail.jsonl")
 RESOLVED = os.path.join(paths.HOME, "cache", "resolved.json")
 READ = os.path.join(paths.HOME, "cache", "mail-read.json")
 LOCK = os.path.join(paths.HOME, "cache", "mail.lock")
-# Reply tokens: token -> {"holder", "holder_source", "at", "peers": {chat: {source, title, file, repo, at}}}
+# Reply tokens: token -> {"holder", "holder_source", "title", "peers": {chat: {source, title, file, repo, at}}}
 TOKENS = os.path.join(paths.HOME, "cache", "mail-tokens.json")
 KEEP_SECONDS = 2 * 86400
 # A message is delivered within a day or not at all: read marks are forgotten after
@@ -66,6 +66,8 @@ def post(to: str, sender: str, sender_title: str, text: str, to_source: str | No
         "from": sender,
         "from_title": sender_title,
         "text": text.strip(),
+        # Only text recall itself wrote is posted here; render() quotes anything else.
+        "by": "recall",
         **{k: v for k, v in about.items() if v},
     }
     with contextlib.suppress(OSError), _locked():
@@ -83,24 +85,43 @@ def _append(msg: dict) -> None:
         f.write(json.dumps(msg) + "\n")
 
 
+def _write_json(path: str, data) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        json.dump(data, f)
+    os.replace(path + ".tmp", path)
+
+
 def _tokens() -> dict:
+    """Reply tokens, leaving out any entry not in the shape grant() writes."""
     try:
         with open(TOKENS) as f:
-            return json.load(f)
+            tokens = json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
 
+    def ok(v) -> bool:
+        return (
+            isinstance(v, dict)
+            and isinstance(v.get("holder"), str)
+            and isinstance(v.get("peers"), dict)
+            and all(isinstance(d, dict) and isinstance(d.get("at"), (int, float)) for d in v["peers"].values())
+        )
 
-def grant(holder: str, holder_source: str | None, peers: dict[str, dict]) -> str | None:
-    """A token letting `holder` message `peers` (chat id -> {source, title, file, repo}) for a
-    day, the chat's existing one if it has one. Each peer's day restarts when it is granted
-    again. None if the cache can't be written: the note still goes out, without a way to answer."""
+    return {t: v for t, v in tokens.items() if ok(v)} if isinstance(tokens, dict) else {}
+
+
+def grant(holder: str, holder_source: str | None, chats: dict[str, dict], title: str | None = None) -> str | None:
+    """A token letting `holder` (titled `title`) message `chats` (chat id -> {source, title,
+    file, repo}) for a day, the chat's existing one if it has one. Each chat's day restarts
+    when it is granted again. None if the cache can't be written: the note still goes out,
+    without a way to answer."""
     with contextlib.suppress(OSError), _locked():
-        return _grant(holder, holder_source, peers)
+        return _grant(holder, holder_source, chats, title)
     return None
 
 
-def _grant(holder: str, holder_source: str | None, peers: dict[str, dict]) -> str:
+def _grant(holder: str, holder_source: str | None, chats: dict[str, dict], title: str | None) -> str:
     now = time.time()
     tokens = {
         t: {**v, "peers": live}
@@ -108,19 +129,17 @@ def _grant(holder: str, holder_source: str | None, peers: dict[str, dict]) -> st
         if (live := {p: d for p, d in v["peers"].items() if now - d["at"] < TTL_SECONDS})
     }
     token = next((t for t, v in tokens.items() if v["holder"] == holder), None) or secrets.token_hex(6)
-    mine = tokens.setdefault(token, {"holder": holder, "holder_source": holder_source, "peers": {}})
+    mine = tokens.setdefault(token, {"holder": holder, "peers": {}})
     mine["holder_source"] = holder_source or mine.get("holder_source")
-    mine["peers"].update({p: {**d, "at": now} for p, d in peers.items() if p != holder})
-    os.makedirs(os.path.dirname(TOKENS), exist_ok=True)
-    with open(TOKENS + ".tmp", "w") as f:
-        json.dump(tokens, f)
-    os.replace(TOKENS + ".tmp", TOKENS)
+    mine["title"] = title or mine.get("title")
+    mine["peers"].update({p: {**d, "at": now} for p, d in chats.items() if p != holder})
+    _write_json(TOKENS, tokens)
     return token
 
 
-def holder(token: str) -> str | None:
-    """The chat a token was granted to."""
-    return (_tokens().get(token) or {}).get("holder")
+def lookup(token: str) -> dict | None:
+    """What a token was granted: its holder, the holder's title if known, and its peers."""
+    return _tokens().get(token)
 
 
 def send(token: str, to: str, text: str, sender_title: str | None = None) -> tuple[bool, str]:
@@ -131,6 +150,13 @@ def send(token: str, to: str, text: str, sender_title: str | None = None) -> tup
         return False, "The message is empty."
     if len(text) > MAX_CHARS:
         return False, f"Keep it under {MAX_CHARS} characters: say only what the other chat needs to coordinate."
+    try:
+        return _send(token, to, text, sender_title)
+    except OSError as e:
+        return False, f"recall could not write its mailbox ({e.strerror or e}); tell the user instead."
+
+
+def _send(token: str, to: str, text: str, sender_title: str | None) -> tuple[bool, str]:
     now = time.time()
     with _locked():
         mine = _tokens().get(token)
@@ -158,7 +184,7 @@ def send(token: str, to: str, text: str, sender_title: str | None = None) -> tup
                 "to": to,
                 "to_source": peer.get("source"),
                 "from": mine["holder"],
-                "from_title": sender_title or mine["holder"],
+                "from_title": sender_title or mine.get("title") or mine["holder"],
                 "text": text,
                 "by": "agent",
                 **{k: peer[k] for k in ("file", "repo") if peer.get(k)},
@@ -194,10 +220,7 @@ def _save(state: dict) -> None:
     now = time.time()
     state = {k: v for k, v in state.items() if now - v.get("at", 0) < KEEP_SECONDS}
     with contextlib.suppress(OSError):
-        os.makedirs(os.path.dirname(READ), exist_ok=True)
-        with open(READ + ".tmp", "w") as f:
-            json.dump(state, f)
-        os.replace(READ + ".tmp", READ)
+        _write_json(READ, state)
 
 
 def take(chat: str, source: str | None = None, waking: bool = False) -> list[dict]:
@@ -252,12 +275,12 @@ def peers(messages: list[dict]) -> dict[str, dict]:
 
 
 def render(messages: list[dict], token: str | None) -> str:
-    """Messages as the agent reads them, with how to answer. What another agent wrote is quoted
-    and marked as carrying no authority; recall's own notes are not."""
+    """Messages as the agent reads them, with how to answer. recall's own notes read as notes;
+    anything else is quoted and marked as carrying no authority, since an agent wrote it."""
     lines = []
     for m in messages:
         file = m.get("file") or "the shared file"
-        if m.get("by") == "agent":
+        if m.get("by") != "recall":
             quoted = "\n".join("> " + line for line in m["text"][:MAX_CHARS].splitlines())
             lines.append(
                 f'recall · the chat "{m.get("from_title") or m["from"]}" ({m["from"]}), another coding agent,'
@@ -334,10 +357,7 @@ def forget_resolved(keep: set[str]) -> None:
 
 def _write_resolved(marks: dict[str, dict]) -> None:
     with contextlib.suppress(OSError):
-        os.makedirs(os.path.dirname(RESOLVED), exist_ok=True)
-        with open(RESOLVED + ".tmp", "w") as f:
-            json.dump(marks, f)
-        os.replace(RESOLVED + ".tmp", RESOLVED)
+        _write_json(RESOLVED, marks)
 
 
 def resolve(repo: str, file: str, since: float) -> dict:
