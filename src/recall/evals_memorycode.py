@@ -1522,7 +1522,7 @@ def _transplant(source: str, target: str, donor: History, x: History) -> None:
         n.related = [ids[i] for i in n.related if i in ids]
         n.sources = [re.sub(rf"\bmc{donor.id:03d}-", f"mc{x.id:03d}-", s) for s in n.sources]
         for r in n.rules:  # the body is rendered from the rules, so they carry the same names and chat ids
-            r.text, r.evidence = rename(r.text), rename(r.evidence)
+            r.text, r.evidence, r.reason = rename(r.text), rename(r.evidence), rename(r.reason)
             r.sources = [re.sub(rf"\bmc{donor.id:03d}-", f"mc{x.id:03d}-", s) for s in r.sources]
         n.project, n.project_name = (project.key, project.name) if n.scope == "project" and project else (None, None)
         store_.write(n)
