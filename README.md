@@ -662,7 +662,9 @@ sets that period through managed settings, recall keeps those chats no longer th
 allows. `recall forget <chat id>` (or `--project NAME`) removes a chat from recall's index,
 archive, embeddings, extraction records and exploration reports, and from the cached model
 answers that quote it; it lists the notes that cite the chat but leaves them to you, and the
-usage log keeps only the words you asked and chat ids.
+usage log keeps only the words you asked and chat ids. The short-lived notes between chats
+about a shared file (`cache/mail.jsonl`) can quote up to 140 characters of what a chat was
+asked; forget leaves them to age out.
 
 **Will memory pick up something wrong?**
 Sometimes. Every note carries its sources and a confidence level, newer chats supersede
