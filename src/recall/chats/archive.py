@@ -33,6 +33,7 @@ import zlib
 from dataclasses import dataclass, fields
 
 from .. import paths
+from .errors import ToolError, identity
 from .sources import compressed
 from .transcript import Message, Session, clean_user_text, drop_compaction_summary
 
@@ -66,7 +67,7 @@ def enabled(con: sqlite3.Connection) -> bool:
     return con.execute("select 1 from sqlite_master where name = 'chat_archive'").fetchone() is not None
 
 
-def pack(s: Session, messages: list[Message]) -> bytes:
+def pack(s: Session, messages: list[Message], errors: list[ToolError] | None = None) -> bytes:
     d = {
         "agent": s.agent,
         "native_id": s.native_id,
@@ -79,11 +80,12 @@ def pack(s: Session, messages: list[Message]) -> bytes:
         "origin": s.origin,
         "root": s.root,
         "messages": [[m.role, m.ts, m.text, 1] if isinstance(m, Kept) else [m.role, m.ts, m.text] for m in messages],
+        "tool_errors": [e.dump() for e in errors or []],
     }
     return zlib.compress(json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode())
 
 
-_SESSION_FIELDS = {f.name for f in fields(Session)} - {"messages"}
+_SESSION_FIELDS = {f.name for f in fields(Session)} - {"messages", "tool_errors"}  # those two are rebuilt
 
 
 def unpack(blob: bytes) -> Session:
@@ -92,7 +94,9 @@ def unpack(blob: bytes) -> Session:
     the Kept flag are ignored. Add fields to a blob freely; never repurpose one."""
     d = json.loads(zlib.decompress(blob))
     messages = [(Kept if rest and rest[0] else Message)(role, text, ts) for role, ts, text, *rest in d["messages"]]
-    return Session(**{k: v for k, v in d.items() if k in _SESSION_FIELDS}, messages=messages)
+    errors = [e for e in map(ToolError.load, d.get("tool_errors") or []) if e]  # copies from schema 3 have none
+    fields_ = {k: v for k, v in d.items() if k in _SESSION_FIELDS}
+    return Session(**fields_, messages=messages, tool_errors=errors)
 
 
 def messages(row: sqlite3.Row, parser: str) -> list[Message]:
@@ -116,7 +120,9 @@ def copies(con: sqlite3.Connection, sid: str) -> list[sqlite3.Row]:
     return con.execute("select * from chat_archive where id = ? order by archived_at", (sid,)).fetchall()
 
 
-def save(con, s: Session, messages: list[Message], parser: str, size: int | None) -> None:
+def save(
+    con, s: Session, messages: list[Message], parser: str, size: int | None, errors: list[ToolError] | None = None
+) -> None:
     con.execute(
         "insert or replace into chat_archive"
         "(id, source, agent, parser, source_size, n_messages, updated_at, archived_at, restored_at, kept, data)"
@@ -132,7 +138,7 @@ def save(con, s: Session, messages: list[Message], parser: str, size: int | None
             time.time(),
             None,
             kept(messages),
-            pack(s, messages),
+            pack(s, messages, errors),
         ),
     )
 
@@ -190,6 +196,19 @@ def merge(old: list[Message], new: list[Message], only_kept: bool = False, mark:
     return merged if carried else new
 
 
+def merge_errors(*lists: list[ToolError]) -> list[ToolError]:
+    """Every failed call in these lists once: a rewrite that drops tool records loses no error
+    recall had, and copies of one chat in several files share theirs. A call is the agent's own
+    id for it (Claude's tool_use id, Codex's call_id, Cursor's bubble id); a call with none is
+    told apart by its time, tool and words. A later list wins for the same call, so a newer parse
+    that found the fix replaces an older copy's unresolved entry."""
+    by_call: dict[tuple, ToolError] = {}
+    for errors in lists:
+        for e in errors:
+            by_call[("id", e.call_id) if e.call_id else (e.ts, e.tool, e.command, e.signature)] = e
+    return list(by_call.values())
+
+
 def union(first: list[Message], others: list[list[Message]]) -> list[Message]:
     """One chat's messages across several files, each message once (merge's alignment)."""
     out = first
@@ -237,6 +256,26 @@ def log(line: str) -> None:
 # --- before a rebuild --------------------------------------------------------------
 
 
+def _table_errors(con: sqlite3.Connection, sid: str, msgs: list[Message]) -> list[ToolError]:
+    """A chat's rows of the tool_errors table as ToolErrors, their seqs turned back into message
+    identities (the table's seq is a place in these messages, or NULL)."""
+    columns = {r[1] for r in con.execute("pragma table_info(tool_errors)")}
+    if not {"call_id", "seq", "resolved_seq", "next_reply"} <= columns:
+        return []
+
+    def anchor(seq):
+        return identity(msgs[seq].role, msgs[seq].text) if seq is not None and 0 <= seq < len(msgs) else None
+
+    return [
+        ToolError(call_id or "", ts, tool, command, signature, reply or "", anchor(seq), anchor(resolved))
+        for call_id, ts, tool, command, signature, reply, seq, resolved in con.execute(
+            "select call_id, ts, tool, command_head, signature, next_reply, seq, resolved_seq"
+            " from tool_errors where session_id = ? order by id",
+            (sid,),
+        )
+    ]
+
+
 def snapshot(con: sqlite3.Connection, parser: str) -> int:
     """Copy chats from the index tables into the archive, before a rebuild drops them.
     parser: the version that built them. A chat is copied when the archive has no copy of
@@ -279,8 +318,11 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
             # an index from before roots has no such column (`in` on a Row looks at values, not names)
             root=r["root"] if "root" in r.keys() else None,  # noqa: SIM118
         )
+        errors = _table_errors(con, r["id"], msgs) if "tool_errors" in have else []
         mine = con.execute("select data from chat_archive where id = ? and source = ?", (s.id, s.source)).fetchone()
         if mine:
-            msgs = merge(unpack(mine["data"]).messages, msgs, only_kept=True)
-        save(con, s, msgs, parser, sizes.get((r["id"], r["source"])))
+            copy = unpack(mine["data"])
+            msgs = merge(copy.messages, msgs, only_kept=True)
+            errors = merge_errors(errors, copy.tool_errors)  # the copy was anchored when parsed: it wins
+        save(con, s, msgs, parser, sizes.get((r["id"], r["source"])), errors)
     return len(rows)
