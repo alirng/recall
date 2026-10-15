@@ -63,21 +63,30 @@ def append(messages: list[Message], role: str, text: str, ts: float | None) -> N
 
 
 # Agent name -> (display name, detector, item sources). A detector returns the
-# number of chats found on disk, or None if the agent is not installed.
-def agents():
+# number of chats found on disk, or None if the agent is not installed. Each agent is read
+# from every root recall found for it (see roots.py); pass `found` to reuse a discovery.
+def agents(found=None):
+    from ... import roots
     from . import claude, codex, cursor
 
+    found = roots.discover() if found is None else found
+    by_agent = {a: [r for r in found if r.agent == a] for a in roots.AGENTS}
+    cl, cx, cu = by_agent["claude"], by_agent["codex"], by_agent["cursor"]
     return {
-        "claude": ("Claude Code", claude.detect, {"claude": claude.items}),
-        "codex": ("Codex", codex.detect, {"codex": codex.items}),
-        "cursor": ("Cursor", cursor.detect, {"cursor": cursor.transcript_items, "cursor-legacy": cursor.legacy_items}),
+        "claude": ("Claude Code", lambda: claude.detect(cl), {"claude": lambda: claude.items(cl)}),
+        "codex": ("Codex", lambda: codex.detect(cx), {"codex": lambda: codex.items(cx)}),
+        "cursor": (
+            "Cursor",
+            lambda: cursor.detect(cu),
+            {"cursor": lambda: cursor.transcript_items(cu), "cursor-legacy": lambda: cursor.legacy_items(cu)},
+        ),
     }
 
 
-def all_sources(selected: list[str] | None = None) -> dict:
+def all_sources(selected: list[str] | None = None, found=None) -> dict:
     """Item sources for the selected agents; none selected means every agent."""
     out = {}
-    for name, (_, _, sources) in agents().items():
+    for name, (_, _, sources) in agents(found).items():
         if not selected or name in selected:
             out.update(sources)
     return out
