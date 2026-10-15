@@ -463,7 +463,8 @@ changes, so two chats working on different parts of one file get `apart`, not `s
 The other chat hears about it too: recall messages it which chat is about to change which
 lines, and what that chat was asked. Either agent can answer with the `message_chat` MCP
 tool, to agree who goes first or that they are on different parts. An agent can only message
-chats recall introduced it to in the last day, using the token from recall's note, and at most
+chats recall introduced it to in the last day, using the token from recall's note (so only
+agents with recall's hooks, which get those notes, can message), and at most
 ten 600-character messages an hour, so an agent that read something hostile can't reach chats
 it was never introduced to. What another agent writes always arrives quoted and marked as not
 coming from you. (The token is in the chat's transcript, so it stops a misled agent, not one

@@ -337,9 +337,12 @@ def message_chat(to: str, text: str, token: str, ctx: Context = None) -> str:
     from .chats.store import parse_since
 
     def run():
-        who = mail.holder(token)
-        me = status.chat(who, parse_since("12h")) if who else None
-        return mail.send(token, to, text, me.title if me else None)[1]
+        granted = mail.lookup(token) or {}
+        title = granted.get("title")
+        if granted and not title:  # a chat recall only ever wrote to, not about
+            me = status.chat(granted["holder"], parse_since("12h"))
+            title = me.title if me else None
+        return mail.send(token, to, text, title)[1]
 
     return _logged(ctx, "message_chat", {"to": to}, run)
 
