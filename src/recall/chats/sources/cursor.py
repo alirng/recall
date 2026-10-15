@@ -92,6 +92,29 @@ def _workspace_folders() -> dict[str, str]:
     return out
 
 
+def _folder(header: dict) -> str | None:
+    uri = (header.get("workspaceIdentifier") or {}).get("uri") or {}
+    return uri.get("fsPath") or None
+
+
+def _parent_folder(header: dict) -> str | None:
+    """A subagent chat that recorded no folder ran in its parent chat's."""
+    parent = (header.get("subagentInfo") or {}).get("parentComposerId")
+    if not parent:
+        return None
+    if parent in _workspace_folders():
+        return _workspace_folders()[parent]
+    row = (
+        _db()
+        .execute(
+            "select json_extract(value, '$.workspaceIdentifier.uri.fsPath') from cursorDiskKV where key = ?",
+            (f"composerData:{parent}",),
+        )
+        .fetchone()
+    )
+    return row[0] if row else None
+
+
 def detect() -> int | None:
     if not (os.path.isdir(PROJECTS) or os.path.exists(STATE_DB)):
         return None
@@ -125,6 +148,8 @@ def load_transcript(path: str) -> Session | None:
     s.project = slug_to_path(slug) or slug
     header = _kv(f"composerData:{cid}") or {}
     s.title = header.get("name")
+    if header.get("subagentInfo"):
+        s.origin = "subagent"
     st = os.stat(path)
     s.started_at = iso_ts(header.get("createdAt")) or st.st_birthtime
     s.updated_at = iso_ts(header.get("lastUpdatedAt")) or st.st_mtime
@@ -167,7 +192,10 @@ def load_legacy(cid: str) -> Session | None:
         return None
     s = Session("cursor", cid, f"{STATE_DB}#composerData:{cid}")
     s.title = header.get("name")
-    s.project = _workspace_folders().get(cid)
+    # The workspace's own list misses most chats; the chat records its folder itself.
+    s.project = _workspace_folders().get(cid) or _folder(header) or _parent_folder(header)
+    if header.get("subagentInfo"):
+        s.origin = "subagent"  # a helper chat an agent spawned (e.g. explore), not a person typing
     s.started_at = iso_ts(header.get("createdAt"))
     s.updated_at = iso_ts(header.get("lastUpdatedAt")) or s.started_at
     bubbles = header.get("conversation")
