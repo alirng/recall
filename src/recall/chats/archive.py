@@ -20,7 +20,11 @@ its own earlier copy.
   marked restored (store.restore).
 * `recall forget` and a retention period set by an organisation (retention.py) delete copies.
 
-A copy holds what the index holds: messages already cleaned, truncated and redacted.
+A copy holds what the index holds: messages already cleaned, truncated and redacted. It is
+redacted again whenever it is read (messages), so a rule added after the copy was made
+reaches the text that is put back, and so the shrink guard compares like with like: a copy
+that still held a key would not match the freshly redacted parse and would be carried over.
+scrub.py rewrites the stored blobs once per rule version.
 """
 
 import difflib
@@ -34,6 +38,7 @@ from dataclasses import dataclass, fields
 
 from .. import paths
 from .errors import ToolError, identity
+from .redact import redact, redact_many
 from .sources import compressed
 from .transcript import Message, Session, clean_user_text, drop_compaction_summary
 
@@ -104,16 +109,17 @@ def messages(row: sqlite3.Row, parser: str) -> list[Message]:
     through today's cleaning, so a cleaning change reaches chats whose files are gone too.
     That includes compaction summaries, which older parsers indexed as the person's words.
     Another session's message or a task notification cannot be told from the person's text
-    once the file is gone, and stays."""
-    msgs = unpack(row["data"]).messages
-    if row["parser"] == parser:
-        return msgs
-    out = []
-    for m in msgs:
-        text = drop_compaction_summary(clean_user_text(m.text)) if m.role == "user" else m.text
+    once the file is gone, and stays. Every copy is put through today's redaction,
+    whichever parser made it."""
+    kept = []
+    for m in unpack(row["data"]).messages:
+        text = m.text
+        if row["parser"] != parser and m.role == "user":
+            text = drop_compaction_summary(clean_user_text(text))
         if text.strip():
-            out.append(type(m)(m.role, text, m.ts))
-    return out
+            kept.append((m, text))
+    # as one chat, so a key pasted again further down, bare, goes with the one a word marked
+    return [type(m)(m.role, t, m.ts) for (m, _), t in zip(kept, redact_many([t for _, t in kept]), strict=True)]
 
 
 def copies(con: sqlite3.Connection, sid: str) -> list[sqlite3.Row]:
@@ -298,7 +304,7 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
     ).fetchall()
     for r in rows:
         msgs = [
-            Message(m[0], m[2], m[1])
+            Message(m[0], redact(m[2]), m[1])
             for m in con.execute("select role, ts, text from messages where session_id = ? order by seq", (r["id"],))
         ]
         if not msgs:
