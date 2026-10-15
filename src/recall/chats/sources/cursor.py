@@ -92,27 +92,53 @@ def _workspace_folders() -> dict[str, str]:
     return out
 
 
-def _folder(header: dict) -> str | None:
-    uri = (header.get("workspaceIdentifier") or {}).get("uri") or {}
-    return uri.get("fsPath") or None
+@cache
+def composer_folder(cid: str, depth: int = 0) -> str | None:
+    """The folder a Cursor chat ran in. The workspace's own list misses most chats, so then: the
+    folder its transcript sits under (a subagent's under its parent's), the folder the chat
+    records itself, and for a subagent or side chat that has neither, its parent's, up a chain
+    of nested subagents. A transcript folder that no longer exists is the last resort."""
+    if cid in _workspace_folders():
+        return _workspace_folders()[cid]
+    slug = _transcript_slugs().get(cid)
+    recorded, parent = _brief(cid)
+    found = (slug and slug_to_path(slug)) or recorded
+    if not found and parent and depth < 8:
+        found = composer_folder(parent, depth + 1)
+    return found or slug
 
 
-def _parent_folder(header: dict) -> str | None:
-    """A subagent chat that recorded no folder ran in its parent chat's."""
-    parent = (header.get("subagentInfo") or {}).get("parentComposerId")
-    if not parent:
-        return None
-    if parent in _workspace_folders():
-        return _workspace_folders()[parent]
+def _brief(cid: str) -> tuple[str | None, str | None]:
+    """A chat's recorded folder and its parent chat, without parsing the whole record."""
+    con = _db()
     row = (
-        _db()
-        .execute(
-            "select json_extract(value, '$.workspaceIdentifier.uri.fsPath') from cursorDiskKV where key = ?",
-            (f"composerData:{parent}",),
-        )
-        .fetchone()
+        con.execute(
+            "select json_extract(value, '$.workspaceIdentifier.uri.fsPath'),"
+            " json_extract(value, '$.subagentInfo.parentComposerId')"
+            " from cursorDiskKV where key = ? and json_valid(value)",
+            (f"composerData:{cid}",),
+        ).fetchone()
+        if con is not None
+        else None
     )
-    return row[0] if row else None
+    return (row[0] or None, row[1] or None) if row else (None, None)
+
+
+@lru_cache(maxsize=1)
+def _transcript_slugs() -> dict[str, str]:
+    """composer id -> the project slug its transcript sits under, subagents' included."""
+    out = {}
+    for pattern in (("*.jsonl",), ("subagents", "*.jsonl")):
+        for path in glob.glob(os.path.join(PROJECTS, "*", "agent-transcripts", "*", *pattern)):
+            out.setdefault(os.path.basename(path)[:-6], path[len(PROJECTS) + 1 :].split(os.sep)[0])
+    return out
+
+
+def _spawned(header: dict) -> bool:
+    """A helper chat an agent spawned (explore and the like), not a person typing. A side
+    chat is also recorded as a subagent, but the person types in it."""
+    info = header.get("subagentInfo") or {}
+    return bool(info) and info.get("subagentTypeName") != "side-chat" and not header.get("sideChatSeedTurnCount")
 
 
 def detect() -> int | None:
@@ -145,10 +171,10 @@ def load_transcript(path: str) -> Session | None:
     cid = os.path.basename(path)[:-6]
     slug = path[len(PROJECTS) + 1 :].split(os.sep)[0]
     s = Session("cursor", cid, path)
-    s.project = slug_to_path(slug) or slug
+    s.project = composer_folder(cid) or slug
     header = _kv(f"composerData:{cid}") or {}
     s.title = header.get("name")
-    if header.get("subagentInfo"):
+    if _spawned(header):
         s.origin = "subagent"
     st = os.stat(path)
     s.started_at = iso_ts(header.get("createdAt")) or st.st_birthtime
@@ -192,10 +218,9 @@ def load_legacy(cid: str) -> Session | None:
         return None
     s = Session("cursor", cid, f"{STATE_DB}#composerData:{cid}")
     s.title = header.get("name")
-    # The workspace's own list misses most chats; the chat records its folder itself.
-    s.project = _workspace_folders().get(cid) or _folder(header) or _parent_folder(header)
-    if header.get("subagentInfo"):
-        s.origin = "subagent"  # a helper chat an agent spawned (e.g. explore), not a person typing
+    s.project = composer_folder(cid)
+    if _spawned(header):
+        s.origin = "subagent"
     s.started_at = iso_ts(header.get("createdAt"))
     s.updated_at = iso_ts(header.get("lastUpdatedAt")) or s.started_at
     bubbles = header.get("conversation")

@@ -96,6 +96,15 @@ All notable changes to recall are listed here. The format follows
   `recall hook --agent <agent>`, which hands the event to the features that want it and
   answers in that agent's format. `recall install` replaces the older `context --hook` and
   `status --hook` entries, which keep working until then. CONTRIBUTING.md has how to add one.
+- **Session start loads the project's memory, and keeps work and personal apart.** General
+  preferences used to fill the whole block before the project's notes began. Each section
+  now has its own share of a 4,500-character body (down from 6,000); a project index cut to
+  size keeps the best notes of every kind, by title past the first two. `[contexts]` in
+  config.toml names each context's folders: the nightly run judges once whether a general
+  note holds everywhere or only where it was learned (`reach:` in the note, editable), and a
+  note not yet judged loads everywhere, as before. Notes from chats with no folder move to
+  their project once every one of those chats resolves to it. `recall eval session` grades
+  the block against labelled notes for real folders.
 
 ### Fixed
 
@@ -110,6 +119,7 @@ All notable changes to recall are listed here. The format follows
   person's words: Claude Code marks those only in the chat file, so once the file is gone
   they cannot be told from the person's text and stay.
 - A chat file deleted while recall was listing files no longer stops the index run.
+<<<<<<< HEAD
 - **Codex chats Codex had compressed.** Codex turns rollouts a week old into `.jsonl.zst`, and
   recall only looked for `.jsonl`, so most of a long Codex history was neither indexed nor
   readable again. recall now reads both forms: through Python 3.14's built-in zstd, the
@@ -120,6 +130,14 @@ All notable changes to recall are listed here. The format follows
   error, and a `zstd` that hangs is killed after a minute. Commit links and Explore's history
   read compressed Codex chats, and `recall forget` lists the `.jsonl.zst` that holds one.
   The chat index rebuilds once (chat schema 4).
+- **Cursor chats get their folder and their kind.** Cursor records a chat's folder, and
+  whether an agent spawned it, on the chat itself; recall now reads both, and places a
+  helper chat that recorded neither in its parent's folder, up a chain of nested helpers. On
+  one developer's history, Cursor chats a person typed in with no folder fell from 932 to 199,
+  and about 720 helper chats (explore and the like) are marked as subagents, so memory
+  extraction no longer reads them as the developer speaking. Side chats stay the person's.
+  Notes already learned from helper chats stay until edited. The index rebuilds once (chat
+  schema 5).
 
 ## [0.3.0] - 2026-10-13
 
