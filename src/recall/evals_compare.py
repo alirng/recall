@@ -17,10 +17,13 @@ Per metric it reports:
                     hold for cases like these, run noise included
   W/L/T             cases where cand is better than, worse than or equal to base (for a
                     metric with no better direction, above or below)
-  detectable        the smallest difference these runs would detect 80% of the time: 2.8 x the
-                    bootstrap standard error, or the replicate spread's floor where that is
-                    larger (noise one run shares across cases, which the bootstrap misses).
-                    The same rule gives the one-arm "vs an identical one" floors
+  detectable        the bootstrap floor: 2.8 x the bootstrap standard error (80% power for the
+                    interval excluding 0), or the replicate spread's floor where that is larger
+                    (noise one run shares across cases, which the bootstrap misses). It is not
+                    the verdict's power: the verdict also needs Δ beyond the run-to-run spread,
+                    so a true Δ equal to "detectable" earns better or worse only about 0.6 to
+                    0.7 of the time (simulated: 40 cases, 3 to 5 replicates), not 80%. The same
+                    rule gives the one-arm "vs an identical one" floors
   verdict           better or worse when the CI excludes 0 and Δ is beyond the run-to-run
                     spread of the replicates (a Student t quantile at the pooled spread's
                     degrees of freedom, in place of 1.96); else within noise. None under 10

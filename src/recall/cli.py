@@ -495,10 +495,14 @@ def cmd_serve(a) -> None:
     run()
 
 
+# evals whose case ids are generated, so they never hold a comma; the others take --case verbatim
+COMMA_SAFE_CASES = ("memorycode", "swe-contextbench")
+
+
 def cmd_eval(a) -> None:
     from . import evals
 
-    if a.case:  # --case takes ids one at a time or comma-separated, as compare --flips prints them
+    if a.case and a.kind in COMMA_SAFE_CASES:  # ID,ID,... as well as repeated --case
         a.case = [i for c in a.case for i in c.split(",") if i]
     if a.kind == "swe-contextbench":
         from . import evals_swecb
@@ -780,7 +784,12 @@ def _parser() -> argparse.ArgumentParser:
     v2.add_argument(
         "--split", choices=["train", "test", "holdout", "all"], default="train", help="which cases (default train)"
     )
-    v2.add_argument("--case", action="append", metavar="ID", help="only this case; repeatable, or ID,ID,...")
+    v2.add_argument(
+        "--case",
+        action="append",
+        metavar="ID",
+        help="only this case; repeatable (memorycode and swe-contextbench also take ID,ID,...)",
+    )
     v2.add_argument("--against", metavar="RUN_DIR", help="paired comparison with an earlier run of the same eval")
     v2.add_argument("--keyword", action="store_true", help="search --v2: keywords only, even when embeddings are on")
     v2.add_argument("--repeats", type=int, default=1, help="agent, memory: run each case N times")

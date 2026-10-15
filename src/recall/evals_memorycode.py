@@ -51,15 +51,19 @@ the code contains, averaged per history. Arms:
   notes  tools, plus the notes an extraction run wrote (--notes RUN_DIR)
   hook   as notes, and the system prompt also gets what the session-start hook injects for the
          history's folder (memory.context.session_context over those notes), as in production
-  placebo  as hook, with another history's notes of about the same size in place of this
-         history's: moved into this project, people and company renamed, note ids and sources
-         made this history's. The donor shares no convention object and no quoted token with
-         this history (a history with no such donor is skipped), and each row logs the donor
-         and its overlap and conflicting counts (0 by the filter). Hook minus placebo is an
-         upper bound on what the notes' content is worth; placebo minus tools is the effect
-         of loading notes that are not this history's. Without the filter (runs before
-         2026-10-15) the donor often held this history's conventions or contradicted them, so
-         such a placebo is not a priming control
+  placebo  as hook, with another history's notes in place of this history's: moved into this
+         project, people and company renamed, note ids and sources made this history's. The
+         donor shares no convention object and no quoted token with this history (a history
+         with no such donor is skipped: no_donor). Among the donors that pass, the closest in
+         notes size is taken, and a history whose closest donor's notes differ in size by more
+         than 25% is skipped too (no_donor_size). Each row logs the donor, its overlap and
+         conflicting counts (0 by the filter) and size_ratio (donor notes over this history's).
+         Hook minus placebo is an upper bound on what the notes' content is worth; placebo
+         minus tools is the effect of loading notes that are not this history's. The skips fall
+         on long histories, so a filtered run leans short and says little about long ones;
+         donors repeat, so rows are correlated. Without the filter (runs before 2026-10-15)
+         the donor often held this history's conventions or contradicted them, and its size
+         was only a tie-break, so such a placebo is not a priming control
   full   the whole history in the prompt and no tools, as the paper's history setting; every
          history fits (the longest is about 72k tokens)
 Arms are classes in ARMS (see Arm): a new arm subclasses one and registers itself there.
@@ -100,6 +104,7 @@ TRAIN_SHARE = 0.6
 AGENT = "claude"  # the chats read as Claude Code chats
 TURN_SECONDS = 40
 FULL_HISTORY_MAX_TOKENS = 100_000  # the full arm runs only where the history fits (chars / 4)
+PLACEBO_MAX_SIZE_GAP = 0.25  # the placebo skips a history whose closest donor's notes differ in size by more
 TURN = re.compile(r"(?m)^[ \t]*([A-Z][\w.'-]*(?:[ -][A-Z][\w.'-]*)?):[ \t]")
 QUOTED = re.compile(r"'([^']+)'")
 COMPANY = re.compile(r"\b(?:at|called) ([A-Z][A-Z0-9&]{2,})\b")
@@ -1179,12 +1184,17 @@ class Hook(Notes):
 
 class Placebo(Hook):
     """Loads another history's notes in place of this history's, to see what part of the notes'
-    gain comes from their content. The donor's notes are about the same size, moved into this
-    history's project with the people and company renamed and the note ids and sources made
-    this history's. A donor shares no convention object and no quoted token (in any form) with
-    this history, so its notes state none of this history's conventions and contradict none of
-    them; a history with no such donor is skipped (no_donor). Each row logs the donor and how
-    many of its conventions still overlap or conflict (see _overlap), which is 0 by the filter.
+    gain comes from their content. The donor's notes are moved into this history's project
+    with the people and company renamed and the note ids and sources made this history's. A
+    donor shares no convention object and no quoted token (in any form) with this history, so
+    its notes state none of this history's conventions and contradict none of them; a history
+    with no such donor is skipped (no_donor). Among those donors the closest in notes size is
+    taken (a donor whose company can be renamed first), and when its notes differ in size from
+    this history's by more than PLACEBO_MAX_SIZE_GAP the history is skipped too (no_donor_size),
+    because the filter leaves few donors and size alone would pair 4,570 characters of notes
+    with 139. Each row logs the donor, how many of its conventions still overlap or conflict
+    (see _overlap), which is 0 by the filter, and size_ratio, the donor's notes over this
+    history's.
 
     This is not a pure priming control, and what it measures depends on the filter. Read hook
     minus placebo as an upper bound on what the notes' content is worth (the placebo also
@@ -1192,7 +1202,13 @@ class Placebo(Hook):
     effect of loading notes that are not this history's. Run unfiltered (the placebo x3 test
     run of 2026-10-13), the donor shared a latest-form convention with the history in 21 of
     40 histories and had a conflicting one on the same object in 26, so that run's placebo
-    minus tools is mostly the harm of misleading notes."""
+    minus tools is mostly the harm of misleading notes.
+
+    Two limits of the filtered run. The skips fall on the long histories (the filter finds no
+    donor, or none of a similar size), which are the ones with the most conventions, so the
+    rows that remain lean short: hook minus placebo from them says nothing about long
+    histories, where the notes' gain is. And donors repeat across rows, so the rows are
+    correlated and a bootstrap interval over them is optimistic."""
 
     name = "placebo"
     help = "as hook, with the notes of another history that shares no convention object or token"
@@ -1223,13 +1239,21 @@ class Placebo(Hook):
                 f"token with history {x.id}",
             }
         _, _, donor, size = min(donors)
-        overlap, conflicting = _overlap(x, ctx.histories[donor])
+        row = {
+            "donor": donor,
+            "notes_chars": own,
+            "donor_chars": size,
+            "size_ratio": round(size / own, 3) if own else None,
+        }
+        if abs(size - own) > PLACEBO_MAX_SIZE_GAP * max(own, 1):
+            detail = f"the best of {len(donors)} donors (history {donor}) has {size:,} characters of notes"
+            return {"skip": "no_donor_size", "detail": f"{detail} against history {x.id}'s {own:,}", "row": row}
+        row["overlap"], row["conflicting"] = _overlap(x, ctx.histories[donor])
         _transplant(ctx.notes_of(donor), ctx.memory, ctx.histories[donor], x)
         from .memory import context
         from .memory.notes import NoteStore
 
         injected = context.session_context(x.folder, NoteStore(ctx.memory), agent="claude")
-        row = {"donor": donor, "overlap": overlap, "conflicting": conflicting, "notes_chars": own, "donor_chars": size}
         return {"memory": injected, "row": row}
 
 

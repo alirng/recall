@@ -59,8 +59,11 @@ uv run recall eval memory --model claude:haiku --fresh
 To tell a gain from noise, compare the runs case by case:
 `recall eval compare BEFORE_RUN... vs AFTER_RUN...`. It prints the paired difference with a
 bootstrap interval, how many cases got better or worse, each run's spread, and the smallest
-difference those runs can detect. A change smaller than that needs more repeats or more cases,
-and the command says which. It gives no better or worse verdict under 10 paired cases, says
+difference those runs can detect ("detectable"). That is the bootstrap floor: 80% power for the
+interval alone. The verdict also asks Δ to clear the run-to-run spread, so a true difference of
+exactly "detectable" earns a better or worse verdict only about 60 to 70% of the time
+(simulated, 40 cases, 3 to 5 replicates). A change smaller than that needs more repeats or more
+cases, and the command says which. It gives no better or worse verdict under 10 paired cases, says
 "run noise unmeasured" while an arm has fewer than 3 full replicates, and warns when only some
 cases pair or the runs used different agent harnesses. `--flips` lists the cases whose outcome
 changes from run to run, so you can repeat only those. Two habits keep the comparison honest:
@@ -69,13 +72,21 @@ changes from run to run, so you can repeat only those. Two habits keep the compa
   extracted candidates (`--from-candidates RUN_DIR`) instead of extracting again.
 - **Check what the notes add beyond having notes.** Loading any notes can help an agent,
   whatever they say. The MemoryCode agent eval has a `placebo` arm for this: it loads the
-  notes of another history of about the same size, one that shares no convention object or
-  token with this history, and a history with no such donor is skipped. Read it with care:
-  hook minus placebo is an upper bound on what the notes' content is worth, and placebo minus
-  tools is the effect of loading notes that are not this history's, which includes any harm
-  from misleading ones. It is not a pure priming control. MemoryCode has only 77 distinct
-  convention tokens in 360 histories, so without the filter donors often held this history's
-  conventions or contradicted them.
+  notes of another history that shares no convention object or token with this history (the
+  one closest in notes size, among those that qualify). A history with no such donor is
+  skipped (`no_donor`), and so is one whose best donor's notes differ in size by more than
+  25% (`no_donor_size`); each row logs `size_ratio`, the donor's notes over this history's.
+  Read it with care:
+  - Hook minus placebo is an upper bound on what the notes' content is worth, and placebo
+    minus tools is the effect of loading notes that are not this history's, which includes
+    any harm from misleading ones. It is not a pure priming control. MemoryCode has only 77
+    distinct convention tokens in 360 histories, so without the filter donors often held this
+    history's conventions or contradicted them.
+  - The skips fall on the long histories, which have the most conventions, so a filtered run
+    leans short: hook minus placebo from it says nothing about long histories, where the
+    notes' gain is. On the 40 test histories, 21 keep a donor: 19 of 25 short, 2 of 15 long.
+  - Donors repeat (those 21 rows come from 12 donors), so the rows are correlated and the
+    bootstrap interval over them is optimistic.
 
 Personal eval sets name real chats, so they stay in `~/.agents/recall/evals/`. See Privacy
 below.
