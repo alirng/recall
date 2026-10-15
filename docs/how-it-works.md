@@ -27,9 +27,15 @@ How recall reads chats, writes notes, and hands them to agents.
    decides first whether each one holds beyond the task at hand, and drops those that don't.
    A quote that can't be found in the chat demotes the candidate to low confidence.
 4. **Consolidate.** Per project (and for global and unfiled notes), oldest first, candidates are
-   folded into notes: create, update, supersede (newer facts win) or discard. Every operation
-   is validated before a file changes. Open threads expire after 14 days, and a low-confidence
-   note from a single chat after 180.
+   folded into notes. A note is a list of rules, and the model answers with operations on
+   single rules: confirm, refine, retire (newer facts win) or add one, or create a note. Code
+   applies them after checking each one: a retire must name a rule that exists, a chat older
+   than a rule's last sighting cannot retire or change it, and one older than a rule's
+   retirement cannot add it back. A rule leaves a note only through a retire that names it, so
+   changing one rule never drops its neighbours. A note you edited while the run was going is
+   left as you wrote it, and its candidates wait for the next run. Open threads expire after
+   14 days, once every candidate has been read, and a low-confidence note from a single chat
+   after 180.
 5. **Commit.** The `MEMORY.md` indexes are rebuilt, and the run becomes one git commit in
    `~/.agents/memory`.
 
@@ -72,13 +78,63 @@ Run database migrations with `make migrate`, never by hand: the Makefile also se
 the audit tables. Why: two hand-run migrations left staging without audit rows.
 ```
 
+A note holds one or more rules, each something that can change on its own. The body shows
+the rules in force; the YAML keeps every rule with its dates, the chats it came from, and
+whether you or the agent said it:
+
+```yaml
+rules:
+- id: r8c41e
+  text: 'Run database migrations with `make migrate`, never by hand ...'
+  first_seen: '2026-08-12'
+  last_seen: '2026-09-30'
+  sources: [codex:0192f…, claude:7c41e…]
+  said_by: developer
+  status: active
+- id: r20b7a
+  text: Migrations run in CI before each deploy.
+  status: retired
+  retired: '2026-09-02'
+  reason: deploys now run migrations from the release job
+  replaced_by: r5d0f3
+```
+
+A retired rule stays in the YAML with the date, the reason and the rule that replaced it, and
+leaves the body, `MEMORY.md` and search, so an agent never reads the old and the new form side
+by side. Notes from before rules existed read as a note with one rule, and gain the YAML the
+next time recall writes them; an older release that rewrites such a note drops the rule fields.
+
+`said_by: developer` is set only when the quote that backs a rule is found in words you typed:
+in one of that chat's user turns, outside a fenced or indented code block, a `>` quote, an HTML
+comment, a command, hook, document or pasted-text wrapper, a compaction summary and anything
+under a markdown heading, which is where pasted issues, specs and logs sit. A quote with "..."
+gaps counts only when every piece is found and one runs to six words. The quote must also say
+what the rule says: most of the rule's content words are in it, so one typed sentence does not
+vouch for the other rules a model wrote beside it. It is never set on a rule that contains a
+command, a URL, a push, a package install or a deploy, a network, destructive or exfiltrating
+action, or a request to switch off a sandbox, permission or review, and a rule the model
+rewords loses its mark until a typed quote backs the new words. A rule with no mark has an
+unknown speaker, not a vouched one. The mark is a hint, not authentication: it shows the words
+were typed in that chat, not that the rule means what they said. A bare paste with no fence,
+quote mark or heading still passes as typed, and the matching is by words, so a paraphrase can
+fail it or slip past it. A literal `said_by: developer` or `said_by: agent` in text a model
+wrote, or in a line you added by hand, is cut out of the rule. Whoever said a rule, a
+convention never authorizes a network, destructive or exfiltrating action. No reader shows the
+mark yet.
+
 Each note ends with wikilinks to its closest notes, which recall rewrites after every run.
 Two notes are linked when they share distinctive words, more strongly when they came from
 the same chat or project; no model call is involved. A `[[note-id]]` you write in a note's
 body is a link too, and recall leaves it alone.
 
 The files are the source of truth. Edit them, and recall keeps your edits; delete one, and
-it is never learned again. The folder is a git repository, so `git log` shows what each
+it is never learned again. Edit the body: recall reads it back into the rules. A rule whose
+words are still there keeps its id, dates and chats, even when you add an intro or a
+paragraph, renumber the list or fold it into prose (rules whose words you joined into one are
+kept as that rule and marked merged). A changed line updates its rule, a new line is a rule in
+your words, and a rule whose words are gone from the body is retired as removed by hand, which
+is never learned again either. Emptying a body retires all its rules that way and archives the
+note, and the run says so. The folder is a git repository, so `git log` shows what each
 night changed and `git revert` undoes it. It also opens as an Obsidian vault, though nothing
 requires Obsidian. Why markdown rather than a vector or graph store:
 [docs/research/agent-memory-prior-art.md](research/agent-memory-prior-art.md).
