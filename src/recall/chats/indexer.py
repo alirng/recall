@@ -73,8 +73,9 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
 
 
 def _index(con, only, force, max_age, log) -> dict:
-    from .. import config, retention
+    from .. import config, forget, retention
 
+    forget.sweep(con)  # before reading anything: an older release may have brought forgotten chats back
     selected = config.load()["sources"]
     result = _scan(con, selected, only, force, max_age, log)
     retention.apply(con)  # before restoring, so nothing past an organisation's period comes back

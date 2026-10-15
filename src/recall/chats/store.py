@@ -84,7 +84,10 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
 
     The shrink guard: if this file's earlier copy holds messages the parse no longer has
     (the file was compacted or rewritten), they are kept, marked Kept; archive.merge has the
-    rule. The index then holds the union of the chat's copies from every file it lives in."""
+    rule. The index then holds the union of the chat's copies from every file it lives in.
+    A forgotten chat is not written."""
+    if archive.enabled(con) and con.execute("select 1 from forgotten_chats where id = ?", (s.id,)).fetchone():
+        return
     stored = [Message(m.role, redact(m.text[:MAX_MESSAGE_CHARS]), m.ts) for m in s.messages if m.text.strip()]
     if not archive.enabled(con):
         _write(con, s, s.messages, stored)
@@ -122,7 +125,8 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         r[0]
         for r in con.execute(
             f"""select distinct id from chat_archive a where agent in ({",".join("?" * len(agents))})
-                and not exists (select 1 from sessions s where s.id = a.id)""",
+                and not exists (select 1 from sessions s where s.id = a.id)
+                and not exists (select 1 from forgotten_chats f where f.id = a.id)""",
             agents,
         )
     ]
