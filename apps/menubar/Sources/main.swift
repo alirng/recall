@@ -182,6 +182,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var error: String?
     var updated: Date?
     var running = false
+    var again = false  // a refresh was asked for while one ran (after Resolve, say)
     // The panel by default; `defaults write com.rererecall.menubar ui menu` for the plain menu.
     let usesMenu = UserDefaults.standard.string(forKey: "ui") == "menu"
 
@@ -210,12 +211,13 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func refresh() {
-        guard !running else { return }
+        guard !running else { again = true; return }
         running = true
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Self.fetch()
             DispatchQueue.main.async {
                 self.running = false
+                if self.again { self.again = false; DispatchQueue.main.async { self.refresh() } }
                 switch result {
                 case .success(let s):
                     self.status = s

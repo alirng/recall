@@ -326,6 +326,8 @@ def message_chat(to: str, text: str, me: str, ctx: Context = None) -> str:
     def run():
         since = parse_since("12h")
         sender, recipient = status.chat(me, since), status.chat(to, since)
+        if not sender:
+            return f"recall knows no recent chat {me!r}: use the chat id recall gave you as `me`."
         mail.post(
             to,
             me,
