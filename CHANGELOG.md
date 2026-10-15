@@ -153,6 +153,7 @@ All notable changes to recall are listed here. The format follows
   note not yet judged loads everywhere, as before. Notes from chats with no folder move to
   their project once every one of those chats resolves to it. `recall eval session` grades
   the block against labelled notes for real folders.
+- **The MCP server reports recall's version** when an agent connects; it reported none.
 
 ### Fixed
 

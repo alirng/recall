@@ -1119,6 +1119,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     mc.add_argument("--notes", metavar="RUN_DIR", help="memorycode --arm notes: the extraction run whose notes to use")
     mc.add_argument("--queries", type=int, default=3, help="memorycode --agent: requests per history (0: all)")
+    mc.add_argument(
+        "--unprompted",
+        action="store_true",
+        help="memorycode --agent: ask as a plain task that never mentions past sessions, so the agent decides "
+        "on its own whether to use recall",
+    )
     sp.add_argument("--episodes", action="store_true", help="links: judge failure-then-fix episodes instead")
     jg = sp.add_argument_group(
         "jit (also --cases: the pairs file, --judge, --workers, --keyword: fit without embeddings)"

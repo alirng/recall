@@ -15,7 +15,7 @@ from typing import Annotated
 from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 
-from . import projects, usage
+from . import __version__, projects, usage
 from .chats import indexer, store
 from .memory import context
 from .memory.notes import NoteStore
@@ -56,6 +56,7 @@ mcp = _Server(
         "recent_chats(file='/abs/path:line'). For answering the user only; never copy chat ids, titles or "
         "what the person asked into commits, PRs, code or repo files."
     ),
+    version=__version__,
 )
 
 
@@ -127,8 +128,9 @@ def search_chats(
         return _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])[:n]
 
     rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
-    # Claude Code shows the model structuredContent; clients that read content instead (Codex,
-    # Cursor) would get one indented JSON block per chat, so content is the same results as text.
+    # Claude Code and Codex show the model structuredContent when a result has it; Cursor reads
+    # only content, which would otherwise be one indented JSON block per chat, so content is the
+    # same results as text. Keep the two equivalent.
     text = "\n".join(_result_block(r) for r in rows) or "No chats match. Try other words, or fewer filters."
     return CallToolResult(content=[TextContent(type="text", text=text)], structured_content={"result": rows})
 
