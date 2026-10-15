@@ -7,8 +7,8 @@ All notable changes to recall are listed here. The format follows
 
 ### Added
 
-- **recall never loses a chat it has indexed**, except the two ways you ask for it: `recall forget`,
-  and a retention period your organisation sets. Every chat is kept compressed in its own
+- **recall never loses a chat it has indexed**, except one you forget and one past a retention
+  period your organisation sets. Every chat is kept compressed in its own
   table, one copy per file it came from, which a rebuild never drops. When the parser changes,
   chats are re-read from their files, and those whose files are gone (Claude Code deletes
   transcripts after 30 days by default) come back from the archive, marked restored. When a
