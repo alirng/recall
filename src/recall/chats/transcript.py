@@ -27,6 +27,7 @@ class Session:
     origin: str = "interactive"
     root: str | None = None  # which harness root it came from (claude, claude-work, cursor-nightly), see roots.py
     messages: list[Message] = field(default_factory=list)
+    tool_errors: list = field(default_factory=list)  # errors.ToolError, one per failed tool call
 
     @property
     def id(self) -> str:

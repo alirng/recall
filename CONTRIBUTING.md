@@ -120,7 +120,11 @@ An agent source reads one agent's chat history and gives the index a list of cha
    `.jsonl.zst` (Codex does). Key such a chat by its plain `.jsonl` path in both forms
    (`sources/compressed.py`), so compressing it later does not make it look new.
 4. Drop what the index should not hold: tool output, reasoning, and text the tool injects,
-   such as system reminders. The existing sources show how.
+   such as system reminders. The existing sources show how. If the agent records whether a
+   tool call failed, note each finished call in an `errors.Calls` (`src/recall/chats/errors.py`:
+   the agent's own id for it, its input, the index in `Session.messages` it came after or
+   None, and `signature(output)` when it failed) and set `Session.tool_errors = calls.errors()`.
+   It goes to its own table, never into the messages, and the helpers redact whole before they cut.
 5. If a parser change alters what the index should hold, bump `CHAT_SCHEMA_VERSION` in
    `src/recall/chats/store.py`. The chat tables rebuild from the agents' files, and chats whose
    files are gone come back from recall's archive (`src/recall/chats/archive.py`), which a

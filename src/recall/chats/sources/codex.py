@@ -4,10 +4,13 @@ Codex compresses rollouts it has not touched for a week to `.jsonl.zst` (compres
 keyed by its plain `.jsonl` path whichever form is on disk, so compressing it changes nothing."""
 
 import glob
+import json
 import os
+import re
 import sqlite3
 
 from ...roots import Root
+from ..errors import Calls, position, signature
 from ..transcript import Message, Session, clean_assistant_text, clean_user_text
 from . import Item, append, compressed, iso_ts, read_jsonl, text_blocks
 
@@ -106,9 +109,22 @@ def load(path: str, catalog: dict[str, dict], root: str | None = None) -> Sessio
     s = None
     messages: list[Message] = []
     path = compressed.plain_path(path)
+    pending: dict[str, tuple[str, object]] = {}  # call_id -> (tool, its arguments)
+    calls = Calls()
     for d in read_jsonl(path):
         payload = d.get("payload") or {}
         ts = iso_ts(d.get("timestamp"))
+        if d.get("type") == "response_item" and payload.get("type") in ("function_call", "custom_tool_call"):
+            pending[payload.get("call_id")] = (payload.get("name") or "", _arguments(payload))
+            continue
+        if d.get("type") == "response_item" and payload.get("type") in (
+            "function_call_output",
+            "custom_tool_call_output",
+        ):
+            if payload.get("call_id") in pending:
+                tool, args = pending.pop(payload.get("call_id"))
+                calls.add(*position(messages), ts, tool, args, payload.get("call_id"), _failure(payload.get("output")))
+            continue
         if d.get("type") == "session_meta" and s is None:
             s = Session("codex", payload.get("id") or os.path.basename(path), path)
             s.root = root
@@ -138,4 +154,53 @@ def load(path: str, catalog: dict[str, dict], root: str | None = None) -> Sessio
     if s is None:
         return None
     s.messages = messages
+    s.tool_errors = calls.errors()
     return s
+
+
+def _arguments(call: dict):
+    """What a call was given: exec_command's cmd, shell_command's command, a script's text."""
+    raw = call.get("arguments") if call.get("type") == "function_call" else call.get("input")
+    try:
+        return json.loads(raw) if isinstance(raw, str) and raw.lstrip().startswith("{") else raw
+    except ValueError:
+        return raw
+
+
+_EXIT = re.compile(r"^(?:Process exited with code|Exit code:) (-?\d+)\s*$", re.M)
+
+
+def _failure(output) -> str | None:
+    """The error signature of a failed call's output, or None if it succeeded. Codex writes
+    "Process exited with code N" (exec_command, write_stdin), "Exit code: N"
+    (shell_command), JSON with metadata.exit_code (apply_patch), or, for a code-mode
+    script, text blocks that start "Script failed" or carry a nested call's exit_code."""
+    if isinstance(output, list):
+        blocks = [b.get("text", "") for b in output if isinstance(b, dict) and b.get("type") == "input_text"]
+        if blocks and blocks[0].startswith("Script failed"):
+            return signature("\n".join(blocks)) or "Script failed"
+        for block in blocks[1:]:
+            inner = _json(block)
+            if isinstance(inner, dict) and inner.get("exit_code") not in (None, 0):
+                return signature(str(inner.get("output") or "")) or f"exit code {inner['exit_code']}"
+        return None
+    if not isinstance(output, str):
+        return None
+    data = _json(output)
+    if isinstance(data, dict) and isinstance(data.get("metadata"), dict):
+        code = data["metadata"].get("exit_code")
+        return (signature(str(data.get("output") or "")) or f"exit code {code}") if code not in (None, 0) else None
+    m = _EXIT.search(output)
+    if m and m.group(1) != "0":
+        body = output.split("\nOutput:\n", 1)[-1]
+        return signature(body) or f"exit code {m.group(1)}"
+    return None
+
+
+def _json(text: str):
+    if not text.lstrip().startswith(("{", "[")):
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None

@@ -1058,7 +1058,8 @@ def _tool_error_items(
     or elsewhere when the command starts the same way."""
     head = " ".join(str(command or "").split()[:2]).lower()
     rows = con.execute(
-        f"""select e.session_id sid, e.seq, e.command_head, e.signature, s.title, s.updated_at, s.project_key
+        f"""select e.session_id sid, e.seq, e.command_head, e.signature, e.next_reply, s.title, s.updated_at,
+                   s.project_key
             from tool_errors_fts join tool_errors e on e.id = tool_errors_fts.rowid
             join sessions s on s.id = e.session_id
             where tool_errors_fts match ? and s.origin = 'interactive'
@@ -1082,7 +1083,8 @@ def _tool_error_items(
         if r["sid"] in seen or len(out) == 2:
             continue
         seen.add(r["sid"])
-        after = _reply_after(con, r["sid"], r["seq"])
+        # seq is NULL where the failure could not be placed in the chat exactly: the reply stored with it stands in
+        after = _reply_after(con, r["sid"], r["seq"]) if r["seq"] is not None else _gist(r["next_reply"] or "", 170)
         line = (
             f'- {_day(r["updated_at"])}, {_short(r["sid"])} "{_clip(r["title"] or "", 50)}" hit '
             f'"{_clip(r["signature"], 90)}"' + (f"; the reply after it began: {after}" if after else "")
@@ -1119,7 +1121,7 @@ def _recent_asks(agent: str, transcript: str | None, n: int = 3) -> str:
         if agent == "codex":
             s = codex.load(transcript, {})
         elif agent == "cursor":
-            s = cursor.load_transcript(transcript)
+            s = cursor.load_transcript(transcript, errors=False)
         else:
             s = claude.load(transcript)
     except Exception:
