@@ -159,7 +159,7 @@ def _read(agent: str, path: str, catalog) -> dict | None:
     elif agent == "codex":
         s = codex.load(path, catalog())
     else:
-        s = cursor.load_transcript(path)
+        s = cursor.load_transcript(path, errors=False)
     if not s or s.origin != "interactive" or not s.messages:
         return None
     # What the person typed; `!` shell commands and other tool-tagged turns are not requests.

@@ -46,6 +46,13 @@ Redaction is pattern matching. It errs toward redacting, but no pattern list cat
 secret. Do not paste secrets into agent chats. recall does not change the original chat files,
 so a secret already in one stays there.
 
+When the patterns change, recall rewrites the text it keeps and cannot read again from the
+agents' files (extracted candidates, cached model answers, archived chats, exploration reports)
+the next time it indexes, once per version of the rules. It does not rewrite your notes: it
+names the ones the rules match in `logs/redact.log` and on stderr, and you edit them. A note
+you committed keeps the old text in `~/.agents/memory`'s git history until you rewrite that
+history yourself (`git filter-repo`, or start the repository again).
+
 API keys never go in `config.toml`. The file holds only a reference to the key:
 
 - `env:NAME` reads an environment variable.

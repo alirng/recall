@@ -20,7 +20,12 @@ its own earlier copy.
   marked restored (store.restore).
 * `recall forget` and a retention period set by an organisation (retention.py) delete copies.
 
-A copy holds what the index holds: messages already cleaned, truncated and redacted.
+A copy holds what the index holds: messages already cleaned, truncated and redacted. It is
+redacted again whenever it is read (messages), so a rule added after the copy was made
+reaches the text that is put back, and so the shrink guard compares like with like: a copy
+that still held a key would not match the freshly redacted parse and would be carried over.
+scrub.py rewrites the stored blobs once per rule version, and again after every snapshot (the
+snapshot copies the old tables' rows as they stand, and store.connect() marks the scrub due).
 """
 
 import difflib
@@ -33,8 +38,10 @@ import zlib
 from dataclasses import dataclass, fields
 
 from .. import paths
+from .errors import ToolError, identity
+from .redact import redact, redact_many
 from .sources import compressed
-from .transcript import Message, Session, clean_user_text, drop_compaction_summary
+from .transcript import Message, Session, clean_user_text, drop_compaction_summary, fallback_title
 
 SCHEMA = """
 create table if not exists chat_archive (
@@ -66,24 +73,25 @@ def enabled(con: sqlite3.Connection) -> bool:
     return con.execute("select 1 from sqlite_master where name = 'chat_archive'").fetchone() is not None
 
 
-def pack(s: Session, messages: list[Message]) -> bytes:
+def pack(s: Session, messages: list[Message], errors: list[ToolError] | None = None) -> bytes:
     d = {
         "agent": s.agent,
         "native_id": s.native_id,
         "source": s.source,
         "project": s.project,
-        "title": s.title,
+        "title": redact(s.title),
         "branch": s.branch,
         "started_at": s.started_at,
         "updated_at": s.updated_at,
         "origin": s.origin,
         "root": s.root,
         "messages": [[m.role, m.ts, m.text, 1] if isinstance(m, Kept) else [m.role, m.ts, m.text] for m in messages],
+        "tool_errors": [e.dump() for e in errors or []],
     }
     return zlib.compress(json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode())
 
 
-_SESSION_FIELDS = {f.name for f in fields(Session)} - {"messages"}
+_SESSION_FIELDS = {f.name for f in fields(Session)} - {"messages", "tool_errors"}  # those two are rebuilt
 
 
 def unpack(blob: bytes) -> Session:
@@ -92,7 +100,9 @@ def unpack(blob: bytes) -> Session:
     the Kept flag are ignored. Add fields to a blob freely; never repurpose one."""
     d = json.loads(zlib.decompress(blob))
     messages = [(Kept if rest and rest[0] else Message)(role, text, ts) for role, ts, text, *rest in d["messages"]]
-    return Session(**{k: v for k, v in d.items() if k in _SESSION_FIELDS}, messages=messages)
+    errors = [e for e in map(ToolError.load, d.get("tool_errors") or []) if e]  # copies from schema 3 have none
+    fields_ = {k: v for k, v in d.items() if k in _SESSION_FIELDS}
+    return Session(**fields_, messages=messages, tool_errors=errors)
 
 
 def messages(row: sqlite3.Row, parser: str) -> list[Message]:
@@ -100,23 +110,26 @@ def messages(row: sqlite3.Row, parser: str) -> list[Message]:
     through today's cleaning, so a cleaning change reaches chats whose files are gone too.
     That includes compaction summaries, which older parsers indexed as the person's words.
     Another session's message or a task notification cannot be told from the person's text
-    once the file is gone, and stays."""
-    msgs = unpack(row["data"]).messages
-    if row["parser"] == parser:
-        return msgs
-    out = []
-    for m in msgs:
-        text = drop_compaction_summary(clean_user_text(m.text)) if m.role == "user" else m.text
+    once the file is gone, and stays. Every copy is put through today's redaction,
+    whichever parser made it."""
+    kept = []
+    for m in unpack(row["data"]).messages:
+        text = m.text
+        if row["parser"] != parser and m.role == "user":
+            text = drop_compaction_summary(clean_user_text(text))
         if text.strip():
-            out.append(type(m)(m.role, text, m.ts))
-    return out
+            kept.append((m, text))
+    # as one chat, so a key pasted again further down, bare, goes with the one a word marked
+    return [type(m)(m.role, t, m.ts) for (m, _), t in zip(kept, redact_many([t for _, t in kept]), strict=True)]
 
 
 def copies(con: sqlite3.Connection, sid: str) -> list[sqlite3.Row]:
     return con.execute("select * from chat_archive where id = ? order by archived_at", (sid,)).fetchall()
 
 
-def save(con, s: Session, messages: list[Message], parser: str, size: int | None) -> None:
+def save(
+    con, s: Session, messages: list[Message], parser: str, size: int | None, errors: list[ToolError] | None = None
+) -> None:
     con.execute(
         "insert or replace into chat_archive"
         "(id, source, agent, parser, source_size, n_messages, updated_at, archived_at, restored_at, kept, data)"
@@ -132,7 +145,7 @@ def save(con, s: Session, messages: list[Message], parser: str, size: int | None
             time.time(),
             None,
             kept(messages),
-            pack(s, messages),
+            pack(s, messages, errors),
         ),
     )
 
@@ -190,6 +203,19 @@ def merge(old: list[Message], new: list[Message], only_kept: bool = False, mark:
     return merged if carried else new
 
 
+def merge_errors(*lists: list[ToolError]) -> list[ToolError]:
+    """Every failed call in these lists once: a rewrite that drops tool records loses no error
+    recall had, and copies of one chat in several files share theirs. A call is the agent's own
+    id for it (Claude's tool_use id, Codex's call_id, Cursor's bubble id); a call with none is
+    told apart by its time, tool and words. A later list wins for the same call, so a newer parse
+    that found the fix replaces an older copy's unresolved entry."""
+    by_call: dict[tuple, ToolError] = {}
+    for errors in lists:
+        for e in errors:
+            by_call[("id", e.call_id) if e.call_id else (e.ts, e.tool, e.command, e.signature)] = e
+    return list(by_call.values())
+
+
 def union(first: list[Message], others: list[list[Message]]) -> list[Message]:
     """One chat's messages across several files, each message once (merge's alignment)."""
     out = first
@@ -237,12 +263,36 @@ def log(line: str) -> None:
 # --- before a rebuild --------------------------------------------------------------
 
 
+def _table_errors(con: sqlite3.Connection, sid: str, msgs: list[Message]) -> list[ToolError]:
+    """A chat's rows of the tool_errors table as ToolErrors, their seqs turned back into message
+    identities (the table's seq is a place in these messages, or NULL)."""
+    columns = {r[1] for r in con.execute("pragma table_info(tool_errors)")}
+    if not {"call_id", "seq", "resolved_seq", "next_reply"} <= columns:
+        return []
+
+    def anchor(seq):
+        return identity(msgs[seq].role, msgs[seq].text) if seq is not None and 0 <= seq < len(msgs) else None
+
+    return [
+        ToolError(call_id or "", ts, tool, command, signature, reply or "", anchor(seq), anchor(resolved))
+        for call_id, ts, tool, command, signature, reply, seq, resolved in con.execute(
+            "select call_id, ts, tool, command_head, signature, next_reply, seq, resolved_seq"
+            " from tool_errors where session_id = ? order by id",
+            (sid,),
+        )
+    ]
+
+
 def snapshot(con: sqlite3.Connection, parser: str) -> int:
     """Copy chats from the index tables into the archive, before a rebuild drops them.
     parser: the version that built them. A chat is copied when the archive has no copy of
     it, or when the index saw it more recently than any copy (a release without the archive
     indexed it since), keeping what that copy had marked Kept. Forgotten chats are never
-    copied: an older release, which does not know the forgotten list, may have read one back."""
+    copied: an older release, which does not know the forgotten list, may have read one back.
+    The messages are copied as they stand, not redacted here: the rules that caught a value in one
+    message may not catch its bare repeat in the next, which redact_many sees a chat at a time.
+    scrub.ensure does that to every archived copy at the next index run. The words of a chat's
+    tool errors are redacted by pack, and again by the scrub with the chat's values."""
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
     if not {"sessions", "messages"} <= have:
         return 0
@@ -258,6 +308,9 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
              and s.id not in (select id from forgotten_chats)"""
     ).fetchall()
     for r in rows:
+        # As the index holds them: scrub.ensure redacts the archive's copies a chat at a time (redact_many),
+        # which a message-by-message redact here would not match: a bare repeat of a value only a rule
+        # added since caught would be saved as it stands.
         msgs = [
             Message(m[0], m[2], m[1])
             for m in con.execute("select role, ts, text from messages where session_id = ? order by seq", (r["id"],))
@@ -265,7 +318,7 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
         if not msgs:
             continue
         # sessions.title falls back to the opening message; keep only a title the agent gave.
-        derived = (r["first_prompt"] or "")[:80].replace("\n", " ")
+        derived = fallback_title(r["first_prompt"] or "")
         s = Session(
             r["agent"],
             r["native_id"],
@@ -279,8 +332,11 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
             # an index from before roots has no such column (`in` on a Row looks at values, not names)
             root=r["root"] if "root" in r.keys() else None,  # noqa: SIM118
         )
+        errors = _table_errors(con, r["id"], msgs) if "tool_errors" in have else []
         mine = con.execute("select data from chat_archive where id = ? and source = ?", (s.id, s.source)).fetchone()
         if mine:
-            msgs = merge(unpack(mine["data"]).messages, msgs, only_kept=True)
-        save(con, s, msgs, parser, sizes.get((r["id"], r["source"])))
+            copy = unpack(mine["data"])
+            msgs = merge(copy.messages, msgs, only_kept=True)
+            errors = merge_errors(errors, copy.tool_errors)  # the copy was anchored when parsed: it wins
+        save(con, s, msgs, parser, sizes.get((r["id"], r["source"])), errors)
     return len(rows)

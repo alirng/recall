@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 
@@ -27,6 +28,7 @@ class Session:
     origin: str = "interactive"
     root: str | None = None  # which harness root it came from (claude, claude-work, cursor-nightly), see roots.py
     messages: list[Message] = field(default_factory=list)
+    tool_errors: list = field(default_factory=list)  # errors.ToolError, one per failed tool call
 
     @property
     def id(self) -> str:
@@ -113,3 +115,20 @@ def conversation_fingerprint(messages: list[Message]) -> str | None:
     if not turns or sum(len(t) for t in turns) < 40:
         return None
     return hashlib.sha1("\n".join(turns).encode()).hexdigest()[:16]
+
+
+FIRST_PROMPT_CHARS = 500
+TITLE_CHARS = 80
+
+
+def opening_prompt(turns: Iterable[tuple[str, str]]) -> str:
+    """The start of the first user turn, from a chat's (role, text) pairs. The index keeps this as
+    sessions.first_prompt, cut from the text as stored (redacted), never from the raw parse: a key that a
+    later message marked is already gone from it."""
+    return next((t for r, t in turns if r == "user" and t.strip()), "")[:FIRST_PROMPT_CHARS]
+
+
+def fallback_title(first_prompt: str) -> str:
+    """The title of a chat the agent gave none. What tells such a title from an agent's (archive.snapshot, the
+    scrub, and the SQL of the title ranking in store.py) mirrors this one rule."""
+    return first_prompt[:TITLE_CHARS].replace("\n", " ")

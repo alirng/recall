@@ -8,17 +8,29 @@ import time
 from datetime import datetime
 
 from .. import paths
-from . import archive
+from . import archive, scrub
+from .errors import ToolError, anchor, identity, reclean_errors
 from .projects import resolve
-from .redact import redact
-from .transcript import Message, Session, conversation_fingerprint
+from .redact import Chat, redact
+from .transcript import Message, Session, conversation_fingerprint, fallback_title, opening_prompt
 
 MAX_MESSAGE_CHARS = 20_000
+# Text read past a cut so that a secret straddling it is redacted whole before the cut is made.
+REDACT_MARGIN = 512
 # Bumping this rebuilds the chat tables on next run: chats are re-read from their sources,
 # and the ones whose source is gone come back from the archive (archive.py), which a
 # rebuild never drops.
-CHAT_SCHEMA_VERSION = "5"
-CHAT_TABLES = ("sessions", "messages", "messages_fts", "sessions_fts", "seen", "chat_projects")
+CHAT_SCHEMA_VERSION = "7"
+CHAT_TABLES = (
+    "sessions",
+    "messages",
+    "messages_fts",
+    "sessions_fts",
+    "seen",
+    "chat_projects",
+    "tool_errors",
+    "tool_errors_fts",
+)
 
 SCHEMA = """
 create table if not exists sessions (
@@ -45,6 +57,25 @@ create virtual table if not exists sessions_fts using fts5(
 );
 create table if not exists seen (key text primary key, fingerprint text, session_id text);
 create table if not exists meta (k text primary key, v text);
+-- Failed tool calls (chats/errors.py): kept apart from messages, so search ranking and
+-- memory extraction never see them. seq and resolved_seq are NULL unless the message is found
+-- exactly once in the list written for the chat.
+create table if not exists tool_errors (
+  id integer primary key, session_id text, call_id text, ts real, tool text, command_head text, signature text,
+  seq int,           -- the message the failure came after; NULL when it cannot be placed exactly
+  resolved_seq int,  -- the message where a rerun of the identical call in this chat succeeded; same
+  next_reply text    -- the start of what the agent said after the failure
+);
+create index if not exists tool_errors_session on tool_errors(session_id);
+create virtual table if not exists tool_errors_fts using fts5(
+  signature, content='tool_errors', content_rowid='id', tokenize='porter unicode61'
+);
+create trigger if not exists tool_errors_ai after insert on tool_errors begin
+  insert into tool_errors_fts(rowid, signature) values (new.id, new.signature);
+end;
+create trigger if not exists tool_errors_ad after delete on tool_errors begin
+  insert into tool_errors_fts(tool_errors_fts, rowid, signature) values ('delete', old.id, old.signature);
+end;
 """
 
 
@@ -72,6 +103,8 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
                 "delete from meta where k like 'indexed_at:%' or k like 'indexed_at_root:%'"
                 " or k like 'scanned:%' or k = 'projects_stamp'"
             )
+            # the archive now holds copies as the old tables did: scrub.ensure rewrites them at the next index run
+            con.execute("delete from meta where k = ?", (scrub.META_KEY,))
             con.execute("insert or replace into meta values ('chat_schema', ?)", (CHAT_SCHEMA_VERSION,))
         con.commit()
     con.executescript(SCHEMA)
@@ -142,21 +175,31 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
 
     The shrink guard: if this file's earlier copy holds messages the parse no longer has
     (the file was compacted or rewritten), they are kept, marked Kept; archive.merge has the
-    rule. The index then holds the union of the chat's copies from every file it lives in.
-    A forgotten chat is not written."""
+    rule. Its tool errors are kept the same way. The index then holds the union of the
+    chat's copies from every file it lives in. A forgotten chat is not written."""
     if archive.enabled(con) and con.execute("select 1 from forgotten_chats where id = ?", (s.id,)).fetchone():
         return
-    stored = [Message(m.role, redact(m.text[:MAX_MESSAGE_CHARS]), m.ts) for m in s.messages if m.text.strip()]
+    keep = [i for i, m in enumerate(s.messages) if m.text.strip()]
+    # The chat's texts go through redaction together, so a key pasted again further down, bare, goes too,
+    # in the words of its failed tool calls as well.
+    chat = Chat([s.messages[i].text[: MAX_MESSAGE_CHARS + REDACT_MARGIN] for i in keep])
+    stored = [
+        Message(s.messages[i].role, t[:MAX_MESSAGE_CHARS], s.messages[i].ts)
+        for i, t in zip(keep, chat.texts, strict=True)
+    ]
+    errs = archive.merge_errors(anchor(s.tool_errors, s.messages, keep, stored, chat))  # a resumed chat repeats a call
     if not archive.enabled(con):
-        _write(con, s, s.messages, stored)
+        _write(con, s, s.messages, stored, errs, chat)
         return
-    others = []
+    others, other_errs = [], []
     msgs = stored
     size = archive.source_size(s.source)
     for row in archive.copies(con, s.id):
+        copy = archive.unpack(row["data"])
         if row["source"] != s.source:
             if archive.kind(row["source"]) == archive.kind(s.source):
                 others.append(archive.messages(row, CHAT_SCHEMA_VERSION))
+                other_errs.append(copy.tool_errors)
             continue
         # A copy from another parser version may differ for reasons that have nothing to do
         # with the file, so only what it marked Kept carries over, unless the file shrank
@@ -166,12 +209,23 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
         msgs = archive.merge(archive.messages(row, CHAT_SCHEMA_VERSION), stored, only_kept=not same)
         if (n := archive.kept(msgs)) > (row["kept"] or 0):
             archive.log(f"kept {n} messages of {s.id} that a re-read of {s.source} no longer has")
-    archive.save(con, s, msgs, CHAT_SCHEMA_VERSION, size)
+        if same:  # another parser may word a signature differently: keep only this one's
+            # read again, as the messages of the copy are: the copy may predate a rule, or this chat's values
+            errs = archive.merge_errors(reclean_errors(copy.tool_errors, chat), errs)
+    archive.save(con, s, msgs, CHAT_SCHEMA_VERSION, size, errs)
     shown = archive.union(msgs, others)
     if shown is stored:
-        _write(con, s, s.messages, stored)
+        shown_chat = chat
+        parsed = s.messages
     else:
-        _write(con, s, shown, shown)
+        shown, shown_chat = _redacted(shown)
+        parsed = shown
+    # The other files' errors are read again with the chat as shown, and before they are merged: a call
+    # that has no id is told from another by its words, so a stale copy of a call must not outlive its fresh one.
+    shown_errs = (
+        archive.merge_errors(*[reclean_errors(e, shown_chat) for e in other_errs], errs) if other_errs else errs
+    )
+    _write(con, s, parsed, shown, shown_errs, shown_chat)
 
 
 def restore(con: sqlite3.Connection, agents: list[str]) -> int:
@@ -196,7 +250,12 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
         mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
         shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
-        _write(con, s, shown, shown)
+        shown, chat = _redacted(shown)
+        errs = archive.merge_errors(
+            *[reclean_errors(archive.unpack(r["data"]).tool_errors, chat) for r in same_kind],
+            reclean_errors(s.tool_errors, chat),
+        )  # a copy's failed calls are read again with its messages
+        _write(con, s, shown, shown, errs, chat)
         con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
     if ids:
         con.commit()
@@ -204,14 +263,47 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
     return len(ids)
 
 
-def _write(con: sqlite3.Connection, s: Session, parsed: list[Message], stored: list[Message]) -> None:
-    """The index rows for one chat. parsed: what the title and opening prompt come from;
-    stored: the message rows, already truncated and redacted."""
+def _redacted(msgs: list[Message]) -> tuple[list[Message], Chat]:
+    """Messages put back from the archive, redacted as one chat, and the chat (its values redact the words of a
+    failed call that comes with them)."""
+    chat = Chat([m.text for m in msgs])
+    return [type(m)(m.role, t, m.ts) for m, t in zip(msgs, chat.texts, strict=True)], chat
+
+
+def _write(
+    con: sqlite3.Connection,
+    s: Session,
+    parsed: list[Message],
+    stored: list[Message],
+    errors: list[ToolError],
+    chat: Chat,
+) -> None:
+    """The index rows for one chat. parsed: what the fingerprint comes from; stored: the message rows, already
+    truncated and redacted, which the opening prompt and a fallback title are cut from (never from the raw parse,
+    where a repeat of a key is still bare); errors: its failed tool calls, redacted; chat: what redacted the
+    messages, for a title the agent gave."""
     con.execute("delete from messages where session_id=?", (s.id,))
     con.execute("delete from sessions_fts where id=?", (s.id,))
+    con.execute("delete from tool_errors where session_id=?", (s.id,))
+    where: dict[str, list[int]] = {}
+    for i, m in enumerate(stored):
+        where.setdefault(identity(m.role, m.text), []).append(i)
+
+    def seq(who):
+        hits = where.get(who) if who else None
+        return hits[0] if hits and len(hits) == 1 else None  # a message said twice is no place
+
+    con.executemany(
+        "insert into tool_errors(session_id, call_id, ts, tool, command_head, signature, seq, resolved_seq, next_reply)"
+        " values (?,?,?,?,?,?,?,?,?)",
+        [
+            (s.id, e.call_id, e.ts, e.tool, e.command, e.signature, seq(e.anchor), seq(e.resolved_anchor), e.next_reply)
+            for e in errors
+        ],
+    )
     msgs = [m for m in parsed if m.text.strip()]
-    first_prompt = next((m.text for m in msgs if m.role == "user"), "")[:500]
-    title = s.title or first_prompt[:80].replace("\n", " ")
+    first_prompt = opening_prompt((m.role, m.text) for m in stored)
+    title = chat.repeats(redact(s.title)) if s.title else fallback_title(first_prompt)
     project = resolve(s.project)
     row = {  # named, so a column a later release adds does not break this build's insert
         "id": s.id,
@@ -224,7 +316,7 @@ def _write(con: sqlite3.Connection, s: Session, parsed: list[Message], stored: l
         "updated_at": s.updated_at,
         "source": s.source,
         "n_messages": len(stored),
-        "first_prompt": redact(first_prompt),
+        "first_prompt": first_prompt,
         "origin": s.origin,
         "fingerprint": conversation_fingerprint(msgs),
         "project_key": project.key if project else None,
@@ -241,7 +333,7 @@ def _write(con: sqlite3.Connection, s: Session, parsed: list[Message], stored: l
     )
     con.execute(
         "insert into sessions_fts (id, title, project, first_prompt) values (?,?,?,?)",
-        (s.id, title, s.project or "", redact(first_prompt)),
+        (s.id, title, s.project or "", first_prompt),
     )
 
 
@@ -558,6 +650,36 @@ def read(con, chat_id: str, query=None, offset=None, limit=30, max_chars=2000) -
             f"{arch['kept']} of these messages are gone from the chat's files and kept in recall's archive"
         )
     return out
+
+
+def tool_errors(con, text: str, limit: int = 5, exclude: list[str] | None = None) -> list[dict]:
+    """Past failed tool calls whose error signature matches text, best first: where the
+    same error came up before, the message it came after (seq, or None when that cannot be
+    placed exactly), the message where a later run of the identical call succeeded
+    (resolved_seq, or None), and what the agent said next."""
+    q = fts_query(text, "or")
+    if not q:
+        return []
+    skip = f"and e.session_id not in ({','.join('?' * len(exclude))})" if exclude else ""
+    rows = con.execute(
+        f"""select e.session_id, e.seq, e.ts, e.tool, e.command_head, e.signature, e.resolved_seq, e.next_reply
+            from tool_errors_fts join tool_errors e on e.id = tool_errors_fts.rowid
+            where tool_errors_fts match ? {skip} order by bm25(tool_errors_fts) limit ?""",
+        [q, *(exclude or []), limit],
+    )
+    return [
+        {
+            "chat_id": r[0],
+            "seq": r[1],
+            "time": fmt_time(r[2]),
+            "tool": r[3],
+            "command": r[4],
+            "signature": r[5],
+            "resolved_seq": r[6],
+            "next_reply": r[7],
+        }
+        for r in rows
+    ]
 
 
 def stats(con) -> dict:

@@ -16,6 +16,17 @@ All notable changes to recall are listed here. The format follows
   the missing ones are kept. A chat whose copies live in several files (Cursor writes one per
   project folder, Codex one in `sessions/` and one in `archived_sessions/`) now shows every
   message from all of them, where before only the file read last counted.
+- **Past tool failures are searchable.** When a tool call fails (Claude Code's `is_error`
+  results, Codex commands that exit non-zero, Cursor tool calls marked failed or terminal
+  commands that exit non-zero), recall keeps one redacted line saying what went wrong, with
+  the tool and the head of its command, in a `tool_errors` table with its own full-text
+  index. Each line also records the message it came after, whether a later identical call in
+  that chat succeeded (a retry, not proof of a fix) and the start of what the agent said next.
+  Text is redacted whole before it is cut, with extra rules for commands (`-u user:pass`,
+  `--password x`, `DB_PASS=x`, webhook URLs). A call the person declined is not a failure.
+  It never enters the chat messages, so search ranking and memory extraction are unchanged.
+  `store.tool_errors(con, text)` finds the chats where an error came up before. The index
+  rebuilds once (chat schema 6).
 - **`recall forget <chat id>` and `--project NAME`** remove chats from the index, the archive,
   embeddings, extraction records and exploration reports, and keep them from being indexed
   again; the database file is rewritten afterwards so the words are not left in free pages.
@@ -182,6 +193,27 @@ All notable changes to recall are listed here. The format follows
   extraction no longer reads them as the developer speaking. Side chats stay the person's.
   Notes already learned from helper chats stay until edited. The index rebuilds once (chat
   schema 5).
+- **Secrets the redactor missed.** A key written as `"apiKey": "..."`, `**Client Secret**: ...`,
+  `API Key: ...` or `use this api key ...`, in a URL query (`?apiKey=...`, `%3D`, `&amp;`), as
+  `SOME_NAME_KEY=...`, or in a shape of its own (Azure AD client secrets, `sk_` keys, `fc-` keys,
+  `Bearer` and `Basic` tokens, `user:password@`, `:password@` and `token@` URLs, Slack and
+  Discord webhook URLs, `Cookie:` values, GitLab deploy, runner and trigger tokens, PyPI,
+  Docker Hub and Google OAuth client secrets, private keys cut off before their END line) went
+  into the index as written. Each is now redacted, and so are session titles and a key that
+  straddled the cut at 20,000 characters. A key pasted again further down the same chat, with
+  no word beside it, goes too, in the chat's opening prompt and in the lines kept for failed
+  tool calls as well (they use these rules, plus the command rules that were written for them,
+  now in the same file and covered by the same version hash). A hash, UUID or commit id is
+  still left alone unless a word like "api key" sits next to it, and so is a path
+  (`SSH_KEY=~/.ssh/id_ed25519`). Text recall
+  cannot rebuild from your agents' files (extracted candidates, cached model answers, error
+  messages, failed tool calls, exploration reports, archived chats) is rewritten with the
+  current rules at the start of an index run (`chats/scrub.py`), once per version of the rules
+  (a hash of them) and again after every rebuild; a restored archive copy, and the failed tool
+  calls it carries, are redacted again as they are read. Your notes are not rewritten: the same
+  run names the notes, and the entries of `.recall/notes.json`, that the rules match, on stderr
+  and in `logs/redact.log`. The chat
+  index rebuilds itself once (chat schema 7).
 
 ## [0.3.0] - 2026-10-13
 

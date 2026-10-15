@@ -82,6 +82,13 @@ night changed and `git revert` undoes it. It also opens as an Obsidian vault, th
 requires Obsidian. Why markdown rather than a vector or graph store:
 [docs/research/agent-memory-prior-art.md](research/agent-memory-prior-art.md).
 
+Secrets are redacted before a note is written. If a rule is added later that would have
+caught something already in a note, recall does not rewrite the file: after the first index
+run with the new rules it names the notes (and the entries of `.recall/notes.json`) that the
+rules match, on stderr and in `~/.agents/recall/logs/redact.log`. Edit them by hand. The git
+history still holds every earlier version, so a secret that was committed stays in it until
+you rewrite the history (`git filter-repo`) or start the repository again.
+
 ## How agents use it
 
 | Agent | History import | MCP tools | `/recall` skill | Memory at session start | Edit rules |

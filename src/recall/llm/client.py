@@ -10,6 +10,7 @@ import time
 import jsonschema
 
 from .. import paths
+from ..chats.redact import redact, redact_json
 from .base import FatalError, LLMError, Provider, Result
 
 
@@ -68,7 +69,8 @@ class Client:
                 self.tokens_in += result.input_tokens
                 self.tokens_out += result.output_tokens
                 self._write(
-                    "insert or replace into llm_cache values (?,?,?)", (key, json.dumps(result.data), time.time())
+                    "insert or replace into llm_cache values (?,?,?)",
+                    (key, json.dumps(redact_json(result.data)), time.time()),
                 )
             self._log(purpose, result)
             return result.data
@@ -88,7 +90,7 @@ class Client:
                     result.input_tokens,
                     result.output_tokens,
                     result.seconds,
-                    error,
+                    redact(error) if error else error,
                 ),
             )
 

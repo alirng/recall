@@ -173,10 +173,10 @@ def store(
                 session["project_name"],
                 c["scope"],
                 c["type"],
-                c["title"],
-                c["body"],
-                c["why"],
-                c["evidence"],
+                redact(c["title"]),
+                redact(c["body"]),
+                redact(c["why"]),
+                redact(c["evidence"]),
                 c["speaker"],
                 c["confidence"],
                 session["updated_at"],
@@ -187,7 +187,16 @@ def store(
     )
     con.execute(
         "insert or replace into extractions values (?,?,?,?,?,?,?,?)",
-        (session["id"], digest_hash, PROMPT_VERSION, backend, len(candidates), status, error, now),
+        (
+            session["id"],
+            digest_hash,
+            PROMPT_VERSION,
+            backend,
+            len(candidates),
+            status,
+            redact(error) if error else error,
+            now,
+        ),
     )
 
 

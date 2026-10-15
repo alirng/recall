@@ -17,6 +17,7 @@ import sqlite3
 from functools import cache, lru_cache
 from urllib.parse import unquote
 
+from ..errors import Calls, ToolError, position, signature
 from ..transcript import Session, clean_user_text
 from . import Item, append, iso_ts, read_jsonl, text_blocks
 
@@ -196,8 +197,10 @@ def transcript_items(roots=None):
         yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path, b=builds: load_transcript(p, b))
 
 
-def load_transcript(path: str, builds: list[tuple[str, str]] | None = None) -> Session | None:
-    """Transcripts of every build share one folder; the build whose database knows the chat owns it."""
+def load_transcript(path: str, builds: list[tuple[str, str]] | None = None, errors: bool = True) -> Session | None:
+    """Transcripts of every build share one folder; the build whose database knows the chat owns it.
+    errors=False skips the tool errors, whose bubbles are read from that database: a caller that only
+    wants the words (the status line, a hook) should not pay for them."""
     cid = os.path.basename(path)[:-6]
     slug = path[len(PROJECTS) + 1 :].split(os.sep)[0]
     s = Session("cursor", cid, path)
@@ -223,6 +226,10 @@ def load_transcript(path: str, builds: list[tuple[str, str]] | None = None) -> S
         if role == "user":
             text = clean_user_text(text)
         append(s.messages, role, text, None)
+    # Not skipped when the transcript has no tool_use block: 86 of 166 such chats on the live copy still
+    # have failed calls in the database (297 errors), which the transcript did not record.
+    if errors:
+        s.tool_errors = _transcript_errors(cid, header, s.messages, owner_db)
     return s
 
 
@@ -273,8 +280,11 @@ def load_legacy(cid: str, state_db: str = STATE_DB, root: str | None = None) -> 
         for key, value in rows:
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 by_id[key.rsplit(":", 1)[1]] = json.loads(value)
-        bubbles = [by_id[b] for b in order if b in by_id]
-    for b in bubbles:
+        bubbles = [(b, by_id[b]) for b in order if b in by_id]
+    else:
+        bubbles = [((b.get("bubbleId") if isinstance(b, dict) else None) or f"#{i}", b) for i, b in enumerate(bubbles)]
+    calls = Calls()
+    for bubble_id, b in bubbles:
         if not isinstance(b, dict):
             continue
         role = {1: "user", 2: "assistant"}.get(b.get("type"))
@@ -283,4 +293,139 @@ def load_legacy(cid: str, state_db: str = STATE_DB, root: str | None = None) -> 
             text = clean_user_text(text)
         if role:
             append(s.messages, role, text, iso_ts(b.get("createdAt")))
+        if isinstance(b.get("toolFormerData"), dict) and (call := _call(b["toolFormerData"])):
+            name, args, failure = call
+            calls.add(*position(s.messages), iso_ts(b.get("createdAt")), name, args, bubble_id, failure)
+    s.tool_errors = calls.errors()
     return s
+
+
+def _call(tool: dict):
+    """(tool, arguments, failure) for a finished call in a bubble's toolFormerData: failure is
+    its redacted error signature (status "error", or a terminal command that exited non-zero),
+    or None when it succeeded. None for a call that never finished."""
+    name, status = tool.get("name") or "", tool.get("status")
+    if not name or status not in ("completed", "error"):
+        return None
+    code = output = None
+    if name.startswith("run_terminal") and status == "completed":
+        result = _json(tool.get("result"))
+        if isinstance(result, dict):
+            code, output = result.get("exitCode"), result.get("output")
+    args = _json(tool.get("rawArgs")) or _json(tool.get("params")) or {}
+    return name, args, _failure(status, tool.get("error"), code, output)
+
+
+def _failure(status, error, code, output) -> str | None:
+    if status == "error":
+        error = _json(error)
+        message = (
+            (error.get("modelVisibleErrorMessage") or error.get("clientVisibleErrorMessage"))
+            if isinstance(error, dict)
+            else str(error or "")
+        )
+        return signature(message or "") or "error"
+    if code not in (None, 0):
+        return signature(str(output or "")) or f"exit code {code}"
+    return None
+
+
+# What the database says about a chat's bubbles, for a transcript that records calls but not their
+# results. SQLite pulls out only what is needed: tool bubbles (the prefilter skips the others), and
+# for a terminal command its exit code, with the output only when that is not zero.
+_TOOL_BUBBLES = """
+select bid, created, name, status, error, code, case when code is not null and code != 0 then output end, raw, params
+from (
+  select *, case when json_valid(res) then json_extract(res, '$.exitCode') end code,
+            case when json_valid(res) then json_extract(res, '$.output') end output
+  from (
+    select substr(key, ?) bid, json_extract(value, '$.createdAt') created,
+           json_extract(value, '$.toolFormerData.name') name, json_extract(value, '$.toolFormerData.status') status,
+           json_extract(value, '$.toolFormerData.error') error,
+           case when json_extract(value, '$.toolFormerData.name') like 'run_terminal%'
+                then json_extract(value, '$.toolFormerData.result') end res,
+           json_extract(value, '$.toolFormerData.rawArgs') raw, json_extract(value, '$.toolFormerData.params') params
+    from cursorDiskKV
+    where key >= ? and key < ? and value like '%toolFormerData%' and json_valid(value)
+  )
+)"""
+_TEXT_BUBBLES = """
+select substr(key, ?), json_extract(value, '$.type'), json_extract(value, '$.text'),
+       json_extract(value, '$.createdAt')
+from cursorDiskKV
+where key >= ? and key < ? and value not like '%toolFormerData%' and json_valid(value)
+  and json_extract(value, '$.type') in (1, 2) and json_extract(value, '$.text') is not null"""
+
+
+def _collapse(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _transcript_errors(cid: str, header: dict, messages: list, state_db: str = STATE_DB) -> list[ToolError]:
+    """Failed calls of a chat read from its transcript, which records calls but not their
+    results: the results are in the chat's bubbles in the database. A bubble is tied to a
+    transcript message by the words of the text bubble before it: the one message that holds
+    them. Where no message, or more than one, does, the call is not placed (at=None)."""
+    con = _db(state_db)
+    if con is None or not messages:
+        return []
+    order = {h.get("bubbleId"): i for i, h in enumerate(header.get("fullConversationHeadersOnly") or [])}
+    args = (len(f"bubbleId:{cid}:") + 1, f"bubbleId:{cid}:", f"bubbleId:{cid};")
+    try:
+        tools = con.execute(_TOOL_BUBBLES, args).fetchall()
+        if not any(r[3] == "error" or (r[5] not in (None, 0)) for r in tools):
+            return []  # no failure: the text bubbles that would place one are not read
+        texts = con.execute(_TEXT_BUBBLES, args).fetchall()
+    except sqlite3.Error:
+        return []
+
+    # The header lists only some of a long chat's bubbles, so the rest are slotted in by the time they
+    # were created (the listed ones are in that order 99% of the time); a tie keeps the header's order.
+    def when(bid, created):
+        return (iso_ts(created) or 0.0, order.get(bid, len(order)))
+
+    rows = [(when(r[0], r[1]), r[0], "tool", r) for r in tools]
+    for bid, kind, text, created in texts:
+        if kind == 1:
+            text = clean_user_text(text)
+        if text and text.strip():
+            rows.append((when(bid, created), bid, "user" if kind == 1 else "assistant", text))
+    rows.sort(key=lambda r: r[0])
+    said = [(m.role, _collapse(m.text)) for m in messages]
+    # the next assistant text after each row, for what the agent said after a failure
+    after: list[str] = [""] * len(rows)
+    upcoming = ""
+    for i in range(len(rows) - 1, -1, -1):
+        after[i] = upcoming
+        if rows[i][2] == "assistant":
+            upcoming = rows[i][3]
+    calls = Calls()
+    before: tuple[str, str] | None = None
+    placed: dict[tuple[str, str], int | None] = {}  # many calls follow one text bubble
+    for i, (_, bid, kind, row) in enumerate(rows):
+        if kind != "tool":
+            before = (kind, _collapse(row))
+            continue
+        _, created, name, status, error, code, output, raw, params = row
+        if not name or status not in ("completed", "error"):
+            continue
+        failure = _failure(status, error, code, output)
+        at = None
+        if before and before[1] and (failure is not None or calls.failed):
+            if before not in placed:
+                hits = [j for j, (role, text) in enumerate(said) if role == before[0] and before[1] in text]
+                placed[before] = hits[0] if len(hits) == 1 else None
+            at = placed[before]
+        calls.add(at, 0, iso_ts(created), name, _json(raw) or _json(params) or {}, bid, failure, after[i])
+    return calls.errors()
+
+
+def _json(value):
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str) or not value.lstrip().startswith(("{", "[")):
+        return None
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
