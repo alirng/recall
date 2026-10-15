@@ -72,7 +72,9 @@ class Rule:
     first_seen: str = ""  # date of the earliest chat that stated it
     last_seen: str = ""  # date of the latest chat that stated or confirmed it
     sources: list[str] = field(default_factory=list)  # chat ids
-    said_by: str | None = None  # "developer" | "agent": who stated it in the chats
+    said_by: str | None = (
+        None  # "developer" | "agent" | unset: a hint about who stated it, not authentication (said.py)
+    )
     evidence: str = ""  # a supporting quote from a chat
     status: str = "active"  # "active" | "retired"
     retired: str = ""  # date it stopped holding
@@ -437,6 +439,9 @@ def sync(note: Note) -> None:
 
 def _rule_meta(rule: Rule) -> dict:
     meta = {k: v for k, v in asdict(rule).items() if v not in (None, [], "")}
+    for k in ("text", "evidence"):  # a literal said_by marker never reaches the file
+        if k in meta:
+            meta[k] = clean_rule(meta[k])
     meta["status"] = rule.status
     return meta
 
@@ -449,6 +454,7 @@ def _rule_from(entry) -> Rule | None:
         if k in known:
             known[k] = str(known[k]) if known[k] else ""
     known["text"] = clean_rule(str(known["text"]).strip())
+    known["evidence"] = clean_rule(str(known.get("evidence") or ""))
     if risky(known["text"]) and known.get("said_by") == "developer":
         known["said_by"] = None  # edited into a command or a URL: no longer vouched for
     known["sources"] = [str(s) for s in known.get("sources") or []]
@@ -469,17 +475,16 @@ _BULLET = re.compile(r"^[-*+] +")
 
 def _items(body: str) -> list[str]:
     """A body as rule texts: the items of a bullet list, else the whole body as one."""
-    body = clean_rule(body)
     lines = body.strip().split("\n")
     if not _BULLET.match(lines[0]):
-        return [body.strip()] if body.strip() else []
+        return [clean_rule(body.strip())] if body.strip() else []
     out: list[str] = []
     for line in lines:
         if _BULLET.match(line):
             out.append(_BULLET.sub("", line, count=1))
         elif out:
             out[-1] += "\n" + (line[2:] if line.startswith("  ") else line)
-    return [t.strip() for t in out if t.strip()]
+    return [t for t in (clean_rule(t.strip()) for t in out) if t]
 
 
 def _same(a: str, b: str) -> bool:

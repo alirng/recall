@@ -436,10 +436,10 @@ def _support(b: _Batch, rule: Rule, candidates) -> None:
         return
     typed = next((c for c in candidates if b.typed(c)), None)
     if typed and rule.said_by != "developer":
-        rule.said_by, rule.evidence = "developer", (typed["evidence"] or "")[:200]
+        rule.said_by, rule.evidence = "developer", said.clean_rule(typed["evidence"] or "")[:200]
     elif new and not typed and all(c["speaker"] == "assistant" for c in candidates):
         rule.said_by = "agent"
-        rule.evidence = next((c["evidence"] for c in candidates if c["evidence"]), "")[:200]
+        rule.evidence = said.clean_rule(next((c["evidence"] for c in candidates if c["evidence"]), ""))[:200]
 
 
 def _insert(note: Note, after: Rule, new: list[Rule]) -> None:
