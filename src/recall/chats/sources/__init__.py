@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..transcript import Message, Session
+from . import compressed
 
 
 @dataclass
@@ -31,7 +32,9 @@ def iso_ts(value) -> float | None:
 
 
 def read_jsonl(path: str) -> Iterator[dict]:
-    with open(path, encoding="utf-8", errors="replace") as f:
+    """The JSON objects of a JSONL chat file. A path whose file Codex has since compressed
+    (or a .jsonl.zst path) is read from whichever form is on disk; see compressed.py."""
+    with compressed.open_text(path) as f:
         for line in f:
             try:
                 d = json.loads(line)

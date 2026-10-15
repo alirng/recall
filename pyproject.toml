@@ -28,6 +28,8 @@ Changelog = "https://github.com/alirng/recall/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 anthropic = ["anthropic>=1"]
 embeddings = ["numpy>=2"]
+# Codex compresses week-old chats with zstd. Python 3.14+ reads them without this, and so does the `zstd` command.
+zstd = ["zstandard>=0.23; python_version < '3.14'"]
 
 [project.scripts]
 recall = "recall.cli:main"

@@ -257,6 +257,11 @@ uv tool install 'recall-agents[embeddings]'     # or: pipx install 'recall-agent
 The `embeddings` extra is only needed for [semantic search](#semantic-search-optional); the
 command is `recall` either way.
 
+Codex compresses chats it has not touched for a week to `.jsonl.zst`. recall reads them with
+Python 3.14's built-in zstd, the `zstd` command (`brew install zstd`) or the `zstd` extra
+(`uv tool install 'recall-agents[zstd]'`), whichever it finds first. With none of them,
+`recall index`, `recall stats` and `recall status` say how many Codex chats they cannot read.
+
 ## Quick start
 
 ```bash

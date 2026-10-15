@@ -229,6 +229,11 @@ def _detect_agents() -> dict[str, int]:
             found[key] = n
     if not found:
         sys.exit("\nNo supported agents found.")
+    if "codex" in found:
+        from .chats.sources import codex
+
+        if note := codex.unreadable_note():
+            print(f"\n  {note}")
     return found
 
 
