@@ -2,6 +2,7 @@
 
 import os
 import re
+from itertools import zip_longest
 
 from .. import contexts, rules
 from ..chats import store
@@ -28,14 +29,16 @@ def session_context(cwd: str | None, notes: NoteStore | None = None, agent: str 
     current project's index, sized for session start."""
     notes = notes or NoteStore()
     index = _read(os.path.join(notes.root, "MEMORY.md"))
-    # Preferences seen across contexts, then those learned in this folder's context only.
-    where = contexts.of_folder(cwd)
-    prefs = "\n".join(
-        p
-        for h in ("How you work", f"How you work: {where}" if where else None)
-        if h and (p := _section(index, h)) and "(nothing yet)" not in p
-    )
-    prefs = "## How this developer works\n" + _strip_links(prefs) if prefs else ""
+    try:
+        where = contexts.of_folder(cwd)
+    except Exception:  # a config.toml recall cannot read must not cost the session its memory
+        where = None
+    # Preferences that hold everywhere and those of this folder's context take turns, so
+    # neither kind is the one a tight budget cuts first.
+    general = _items(_section(index, "How you work"))
+    local = _items(_section(index, f"How you work: {where}")) if where else []
+    merged = [line for pair in zip_longest(general, local) for line in pair if line]
+    prefs = "## How this developer works\n" + _strip_links("\n".join(merged)) if merged else ""
     try:
         lines = rules.pointers(cwd, agent)
     except Exception:  # a rule file recall cannot read must not cost the session its memory
@@ -51,7 +54,7 @@ def session_context(cwd: str | None, notes: NoteStore | None = None, agent: str 
     project = f"## Project memory: {name}\n" + _strip_links("\n\n".join(bodies)) if bodies else ""
     # Each section gets its own share, so general preferences, the same in every folder,
     # can never crowd out the project's memory; whatever one section leaves goes to the next.
-    pointers = _fit(pointers, RULES_CHARS)
+    pointers = _fit(pointers, RULES_CHARS, "- …more rules: `recall rules` lists them")
     project = _fit_sections(project, MAX_CHARS - len(pointers) - min(len(prefs), PREFS_CHARS))
     prefs = _fit(prefs, MAX_CHARS - len(pointers) - len(project))
     parts = [p for p in (prefs, pointers, project) if p]
@@ -228,46 +231,65 @@ def _index_body(index: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _fit(section: str, limit: int) -> str:
-    """Whole lines from the top, since index lines are ranked best first."""
+def _fit(section: str, limit: int, more: str = "- …more notes: use memory_search") -> str:
+    """Whole lines from the top, since index lines are ranked best first; nothing when not one
+    item fits under the section's heading."""
     if len(section) <= limit:
         return section
-    more = "\n- …more notes: use memory_search"
-    cut = section[: max(limit - len(more), 0)].rsplit("\n", 1)[0]
-    return cut + more if "\n" in cut else ""
+    cut = section[: max(limit - len(more) - 1, 0)].rsplit("\n", 1)[0]
+    return f"{cut}\n{more}" if any(line.startswith("- ") for line in cut.split("\n")) else ""
 
 
 def _fit_sections(section: str, limit: int) -> str:
     """A project index cut to size keeps the best lines of every kind of note, taking turns
     between them, instead of only its first kinds: an index lists preferences and facts before
-    decisions and lessons, so cutting from the bottom would drop those whole."""
+    decisions and lessons, so cutting from the bottom would drop those whole. Past each kind's
+    first few, a note is chosen by its title alone (a claim; read_note has the rest), which
+    leaves room for more of the project; room left over goes back to full lines, best first."""
     if len(section) <= limit:
         return section
     title, *rest = section.split("\n")
-    kinds: dict[str, list[str]] = {}
+    full: dict[str, list[str]] = {}
     heading = ""
     for line in rest:
         if line.startswith("## "):
             heading = line
-            kinds.setdefault(heading, [])
+            full.setdefault(heading, [])
         elif line.startswith("- ") and not line.startswith("- …"):
-            lines = kinds.setdefault(heading, [])
-            # Past each kind's first few, a title alone (a claim, read_note has the rest)
-            # leaves room for more of the project than a title and its first sentence.
-            lines.append(line if len(lines) < FULL_LINES else re.sub(r"^(- \*\*.+?\*\*):.*$", r"\1", line))
+            full.setdefault(heading, []).append(line)
+    short = {
+        h: [line if rank < FULL_LINES else re.sub(r"^(- \*\*.+?\*\*):.*$", r"\1", line) for rank, line in enumerate(v)]
+        for h, v in full.items()
+    }
     more = "- …more notes: use memory_search"
-    used = len(title) + 1 + len(more) + sum(len(h) + 2 for h in kinds)
-    keep: dict[str, list[str]] = {h: [] for h in kinds}
-    for rank in range(max((len(v) for v in kinds.values()), default=0)):
-        for h, lines in kinds.items():
+    used = len(title) + 1 + len(more) + sum(len(h) + 2 for h in full)
+    keep: dict[str, dict[int, str]] = {h: {} for h in full}
+    ranks = range(max((len(v) for v in full.values()), default=0))
+    for rank in ranks:
+        for h, lines in short.items():
             if rank < len(lines) and used + len(lines[rank]) + 1 <= limit:
-                keep[h].append(lines[rank])
+                keep[h][rank] = lines[rank]
                 used += len(lines[rank]) + 1
+    for rank in ranks:
+        for h, chosen in keep.items():
+            if rank in chosen and used + len(full[h][rank]) - len(chosen[rank]) <= limit:
+                used += len(full[h][rank]) - len(chosen[rank])
+                chosen[rank] = full[h][rank]
     out = [title]
-    for h, lines in keep.items():
-        if lines:
+    for h, chosen in keep.items():
+        if chosen:
+            lines = [chosen[r] for r in sorted(chosen)]
             out += [h, *lines] if h else lines
     return "\n".join([*out, more]) if len(out) > 1 else ""
+
+
+def _items(section: str) -> list[str]:
+    """A section's note lines, without its placeholders and "…and N more" lines."""
+    return [
+        line
+        for line in section.split("\n")
+        if line.startswith("- ") and not line.startswith(("- …", "- (nothing yet)"))
+    ]
 
 
 def _section(markdown: str, heading: str) -> str:

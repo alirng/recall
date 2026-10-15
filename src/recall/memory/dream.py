@@ -51,10 +51,12 @@ def run(opts: Options, log=print) -> dict:
         log(f"model: {provider.label}" + (" (private: nothing leaves this machine)" if provider.private else ""))
         deadline = started + opts.max_minutes * 60 * READING_SHARE if opts.max_minutes else None
         stats = Counter()
+        # Before reading, so a long backlog of chats cannot spend the calls it needs.
+        placed = _place(client, log) if opts.fold and contexts.roots() else 0
         if opts.read:
             stats.update(_read(con, client, opts.max_chats, deadline, log))
         if opts.fold:
-            stats.update(_fold(con, client, log))
+            stats.update(_fold(con, client, log, placed))
         con.execute(
             "insert into dream_runs(started, finished, backend, chats, candidates, stats, tokens_in, tokens_out,"
             " llm_calls, error) values (?,?,?,?,?,?,?,?,?,?)",
@@ -167,12 +169,23 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
     return stats
 
 
-def _fold(con, client: Client, log) -> Counter:
+def _place(client: Client, log) -> int:
+    """Judge where each new working preference applies (reach.py); returns how many."""
+    with writing(timeout=60):
+        notes_store = NoteStore()
+        try:
+            return reach.run(client, notes_store, notes_store.load())
+        except (BudgetExceeded, LLMError) as e:
+            log(f"judging where preferences apply stopped early ({e}); the next run continues")
+            return 0
+
+
+def _fold(con, client: Client, log, placed: int = 0) -> Counter:
     with writing(timeout=60):  # a relink in progress finishes first; if one hangs, carry on
-        return _fold_notes(con, client, log)
+        return _fold_notes(con, client, log, placed)
 
 
-def _fold_notes(con, client: Client, log) -> Counter:
+def _fold_notes(con, client: Client, log, placed: int = 0) -> Counter:
     notes_store = NoteStore()
     notes = notes_store.load()
     deleted = notes_store.reconcile(notes)
@@ -188,24 +201,18 @@ def _fold_notes(con, client: Client, log) -> Counter:
     except (BudgetExceeded, LLMError) as e:
         log(f"consolidation stopped early ({e}); the next run continues from here")
     changes = {k: v for k, v in stats.items() if v and k != "batches"}
+    if placed:
+        changes["placed"] = placed
     if refiled := routing.refile(con, notes_store, notes):
         changes["refiled"] = refiled
-    if contexts.roots():
-        try:
-            if placed := reach.run(client, notes_store, notes):
-                changes["placed"] = placed
-        except (BudgetExceeded, LLMError) as e:
-            log(f"judging where preferences apply stopped early ({e}); the next run continues")
     relinked = links.relink(notes_store, notes)
     if relinked:
         changes["relinked"] = relinked
     summary = ", ".join(f"{v} {k}" for k, v in changes.items())
-    if changes or deleted:
-        notes_store.compile(notes)
-        sha = notes_store.commit(f"dream {today()}: {summary or 'reindexed'}")
-        log(f"memory: {summary or 'reindexed'}" + (f" · commit {sha}" if sha else ""))
-    else:
-        log("memory: no changes")
+    # Always rebuilt: the indexes also follow config.toml ([contexts]), which no note records.
+    notes_store.compile(notes)
+    sha = notes_store.commit(f"dream {today()}: {summary or 'reindexed'}")
+    log(f"memory: {summary or 'no changes'}" + (f" · commit {sha}" if sha else ""))
     notes_store.reconcile(notes)
     context.index_notes(con, notes)
     return Counter(changes)

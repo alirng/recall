@@ -668,7 +668,10 @@ def _parser() -> argparse.ArgumentParser:
         "explore",
     ]
     sp.add_argument("kind", nargs="?", choices=kinds, default="search")
-    sp.add_argument("--cases", help="JSONL of hand-written cases; for longmemeval, the dataset's JSON file")
+    sp.add_argument(
+        "--cases",
+        help="JSONL of hand-written cases; session: a JSON array of folders; longmemeval: the dataset's JSON file",
+    )
     sp.add_argument("--limit", type=int, help="longmemeval: the first N questions; v2: a fixed sample of N cases")
     sp.add_argument("--user-only", action="store_true", help="longmemeval: index only user turns, as the paper does")
     sp.add_argument("--official", action="store_true", help="longmemeval: only the questions its own script scores")

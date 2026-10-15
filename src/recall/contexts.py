@@ -6,8 +6,9 @@ names each context's folders:
     work = ["~/Documents/Projects/Acme"]
     personal = ["~/Documents/Projects/Personal"]
 
-A preference learned only in work chats then loads only in work folders, while one seen in
-more than one context loads everywhere. With no [contexts] table, everything is one context.
+A preference the nightly run judges to hold everywhere (memory/reach.py) loads in every folder;
+one tied to a context loads only in the folders of the contexts it was learned in. With no
+[contexts] table, everything is one context.
 """
 
 import os
@@ -18,26 +19,39 @@ from . import config, paths
 
 
 def roots() -> dict[str, list[str]]:
-    table = config.load().get("contexts") or {}
-    return {
-        name: [os.path.normpath(os.path.expanduser(f)) for f in ([folders] if isinstance(folders, str) else folders)]
-        for name, folders in table.items()
-    }
+    """Each context's folders. Entries that are not a folder or a list of folders are skipped:
+    a typo in config.toml must not cost a session its memory."""
+    table = config.load().get("contexts")
+    out = {}
+    for name, folders in table.items() if isinstance(table, dict) else ():
+        folders = [folders] if isinstance(folders, str) else folders if isinstance(folders, list) else []
+        if kept := [os.path.normpath(os.path.expanduser(f)) for f in folders if isinstance(f, str) and f.strip()]:
+            out[str(name)] = kept
+    return out
 
 
 def of_folder(folder: str | None, table: dict[str, list[str]] | None = None) -> str | None:
     """The context a folder belongs to, or None when it is outside every context's folders.
-    Also takes the path slugs some agents record in place of a folder."""
+    Also takes the path slugs some agents record in place of a folder: a slug whose folder
+    still exists is matched as that folder; otherwise by its leading segments, which cannot
+    tell a context's folder from a sibling that extends its name (Acme from Acme-clone)."""
     if not folder:
         return None
     table = roots() if table is None else table
+    if not os.path.isabs(folder):
+        from .chats.sources.cursor import slug_to_path
+
+        folder = slug_to_path(_slug(folder)) or folder
     path = os.path.normpath(os.path.expanduser(folder)) if os.path.isabs(folder) else None
-    slug = _slug(folder)
+    slug = None if path else _slug(folder)
     best, depth = None, -1
     for name, folders in table.items():
         for root in folders:
-            inside = path == root or (path or "").startswith(root + os.sep)
-            if (inside or slug == _slug(root) or slug.startswith(_slug(root) + "-")) and len(root) > depth:
+            if path:
+                inside = path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+            else:
+                inside = slug == _slug(root) or slug.startswith(_slug(root) + "-")
+            if inside and len(root) > depth:
                 best, depth = name, len(root)
     return best
 
