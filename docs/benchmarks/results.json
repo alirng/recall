@@ -758,5 +758,69 @@
         ]
       }
     ]
+  },
+  "rechecked_0_4_0": {
+    "about": "Model-free runs of 0.4.0's code, identical to the published figures. LongMemEval_S (470 questions) and LoCoMo (1,536, categories 1-4) with keyword search; SWE-ContextBench Lite over all 300 sessions with hybrid search (99 issues).",
+    "longmemeval_s_keyword": {
+      "recall_any@5": 0.974,
+      "recall_all@5": 0.872
+    },
+    "locomo_keyword": {
+      "recall_any@5": 0.896,
+      "recall_all@5": 0.772
+    },
+    "swecb_lite_all_hybrid": {
+      "hit@1": 0.586,
+      "hit@3": 0.768,
+      "hit@5": 0.798,
+      "hit@10": 0.929,
+      "hit@15": 0.97
+    }
+  },
+  "memorycode_notes_by_model": {
+    "title": "MemoryCode, facts recalled in the notes by the model that writes them (recall eval memorycode)",
+    "about": "Test split, 40 held-out histories, the same extraction and consolidation pipeline. recall: share of facts found in the notes, paired by history. Chats per call: 8 (Anthropic API) or 12 (Codex).",
+    "rows": [
+      {
+        "model": "gpt-6-luna (Codex)",
+        "recall": "0.59 to 0.68",
+        "runs": "several"
+      },
+      {
+        "model": "Claude Haiku 4.5 (Claude subscription CLI, old alias)",
+        "recall": 0.809,
+        "runs": 3
+      },
+      {
+        "model": "Claude Haiku 5.5 (API)",
+        "recall": 0.946,
+        "runs": 3
+      },
+      {
+        "model": "Claude Haiku 5.5 (Claude subscription CLI)",
+        "recall": 0.976,
+        "runs": 1
+      },
+      {
+        "model": "Haiku 5.5 extraction, Sonnet 5.5 consolidation, against Haiku alone",
+        "recall_difference": -0.02,
+        "note": "within run noise"
+      }
+    ],
+    "consolidation_replay": {
+      "about": "Consolidation only, replaying the same extracted facts, before and after notes hold rules.",
+      "facts_lost_when_notes_merge": [
+        0.125,
+        0.081
+      ],
+      "recall": [
+        0.705,
+        0.753
+      ],
+      "stale_notes": [
+        0.093,
+        0.048
+      ]
+    }
   }
 }
