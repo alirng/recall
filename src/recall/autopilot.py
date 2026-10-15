@@ -98,6 +98,11 @@ def _indexed() -> dict[str, dict]:
     return out
 
 
+def recent(n: int = 5) -> list[str]:
+    """The last changes autopilot made, newest last, for `recall doctor`."""
+    return [f"{c['at'].replace('T', ' ')}  {_describe(c)}" for c in _load().get("changes", [])[-n:]]
+
+
 def summary_line(rows: list[dict]) -> str:
     real = [r for r in rows if r["exists"]]
     ok = sum(1 for r in real if r["connected"])
