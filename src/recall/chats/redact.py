@@ -8,6 +8,12 @@ that sits next to a word like "api key", "secret" or "password", is masked.
 Every rule is named, so a scan can say which one fired. VERSION is a hash of the rules (see
 the end of RULES): when a rule changes it changes, and chats/scrub.py then rewrites the text
 recall keeps and cannot rebuild from the agents' files (candidates, llm_cache, the archive).
+
+There are two tiers. RULES redact() every text. TOOL_RULES are for the words of a failed tool call
+(chats/errors.py: a command, what it printed, what the agent said next), where a secret is written
+as a command line writes it (`curl -u user:pass`, `--password x`, `DB_PASS=x`); they read like a
+command line and are far too wide for a chat message (`sort_key=x`), so only redact_tool() runs
+them, after the rules of redact().
 """
 
 import hashlib
@@ -314,6 +320,119 @@ _NEEDS: dict[str, tuple[str, ...]] = {
 }
 assert {name for name, *_ in RULES} == set(_NEEDS)
 
+# --- the tool tier: the words of a failed tool call ---------------------------------------------------------
+_VALUE = r"""(?:"[^"]*"|'[^']*'|[^\s"']+)"""
+_NAME = (
+    r"[\w.-]*(?:pass(?:word|wd|phrase)?|pwd|secret|token|auth|cred(?:ential)?s?|api[_-]?key|access[_-]?key|"
+    r"private[_-]?key|key|cookie|bearer|salt|dsn)[\w.-]*"
+)
+# `-p secret` is also `mkdir -p dir` and `ssh -p 22`: a port or a path stays, `mkdir -p build` does not.
+_P_FLAG = re.compile(rf"(?<!\S)(-p\s+)(?!-)({_VALUE})")
+
+
+def _p_flag(m: re.Match) -> str:
+    value = m.group(2).strip("'\"")
+    if re.fullmatch(r"\d{1,5}(:\d{1,5})?", value) or "/" in value or value == MARK:
+        return m.group(0)  # a port, a mapping or a path
+    return m.group(1) + MARK
+
+
+# (name, pattern, replacement), applied in this order. A replacement is a template (\1 keeps what is around the secret,
+# so the line still reads) or a function; keep a template a string, so VERSION sees what it says.
+TOOL_RULES: list[tuple[str, re.Pattern, object]] = [
+    # a private key whose end was cut away (a command or an output cut at a length)
+    ("tool-private-key-open", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*\Z", re.S), MARK),
+    # curl -u user:pass, --user user:pass, -u'user:pass'
+    (
+        "tool-user-flag",
+        re.compile(r"""(?<!\S)(-u|--user|--proxy-user)(\s*=?\s*["']?)[^\s:"']+:[^\s"']*"""),
+        r"\1\2" + MARK,
+    ),
+    # sshpass -p secret
+    ("tool-sshpass", re.compile(rf"(?i)\b(sshpass\s+-p\s*){_VALUE}"), r"\1" + MARK),
+    # openssl -passin pass:secret
+    ("tool-pass-colon", re.compile(r"\bpass:(?=\S)\S+"), "pass:" + MARK),
+    # --password x, --token=x, --api-key x
+    (
+        "tool-long-flag",
+        re.compile(
+            rf"""(?i)(--[\w-]*(?:pass(?:word|wd|phrase)?|pwd|secret|token|api-?key|auth|credentials?|cookie|bearer)"""
+            rf"""[\w-]*)((?:\s+|=)(?!-)){_VALUE}"""
+        ),
+        r"\1\2" + MARK,
+    ),
+    # Authorization: Bearer x, X-Api-Key: x, Cookie: x
+    (
+        "tool-header",
+        re.compile(
+            r"""(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token|x-access-token|api-key|cookie|set-cookie)"""
+            r"""(\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s"'][^"'\n]*"""
+        ),
+        r"\1\2" + MARK,
+    ),
+    ("tool-bearer-basic", re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{12,}"), r"\1 " + MARK),
+    # a webhook URL is a credential (more hosts than the webhook-url rule knows)
+    (
+        "tool-webhook",
+        re.compile(
+            r"""(?i)https?://[^\s"'<>]*(?:hooks\.slack\.com|discord(?:app)?\.com/api/webhooks|hooks\.zapier\.com|"""
+            r"""webhook|outlook\.office\d*\.com/|api\.telegram\.org/bot|events\.pagerduty\.com)[^\s"'<>]*"""
+        ),
+        MARK,
+    ),
+    # https://user:pass@host and https://<token>@host
+    ("tool-url-userinfo", re.compile(r"""\b([a-z][a-z0-9+.-]*://)[^\s/@:"']+:[^\s/@"']+@"""), r"\1" + MARK + "@"),
+    ("tool-url-token", re.compile(r"""\b(https?://)[^\s/@:"']{16,}@"""), r"\1" + MARK + "@"),
+    # redis-cli -a secret
+    ("tool-redis-a", re.compile(rf"(?i)\b(redis-cli\b[^\n]*?\s-a\s+){_VALUE}"), r"\1" + MARK),
+    # aws configure set aws_secret_access_key x, npm config set //registry/:_authToken x
+    (
+        "tool-config-set",
+        re.compile(rf"(?i)\b(set\s+\S*(?:secret|token|pass(?:word|wd)?|key|auth)\S*\s+){_VALUE}"),
+        r"\1" + MARK,
+    ),
+    # mysql -pSECRET
+    (
+        "tool-mysql-p",
+        re.compile(r"(?i)\b(mysql\w*|mariadb\w*|psql|mongo\w*)\b([^\n]*?(?<![\w-])-p)(?=[^\s'\"-])[^\s'\"]+"),
+        r"\1\2" + MARK,
+    ),
+    # "the password is hunter2hunter2": a word for a secret, then a value with a digit in it
+    (
+        "tool-word-value",
+        re.compile(
+            r"""(?i)\b(password|passwd|passphrase|secret|token|api[ _-]?key|credentials?)(\s+(?:is\s+|was\s+)?)"""
+            r"""(?=[^\s"']*\d)[^\s"']{8,}"""
+        ),
+        r"\1\2" + MARK,
+    ),
+    # a long run of mixed-case letters and digits, such as a key pasted where a command goes
+    (
+        "tool-long-mixed",
+        re.compile(
+            r"(?<![A-Za-z0-9/._+-])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*\d)"
+            r"[A-Za-z0-9_-]{32,}(?![A-Za-z0-9/._+-])"
+        ),
+        MARK,
+    ),
+    # DB_PASS=x, NPM_AUTH=x, ?token=x
+    ("tool-env-name", re.compile(rf"""(?i)(?<![\w.-])({_NAME})(=)(?!\[REDACTED\]){_VALUE}"""), r"\1\2" + MARK),
+    ("tool-p-flag", _P_FLAG, _p_flag),
+]
+
+
+def redact_tool(text: str) -> str:
+    """text with the secrets of a command line taken out: the rules of redact(), then TOOL_RULES.
+    For the words of a failed tool call, whose output echoes the command and whose reply quotes it."""
+    return _tool_tier(redact(text)) if text else text
+
+
+def _tool_tier(text: str) -> str:
+    for _, pattern, repl in TOOL_RULES:
+        text = pattern.sub(repl, text)
+    return text
+
+
 # Bump when the logic around the patterns changes without a pattern changing (redact_many, _is_path_or_host, a helper).
 _LOGIC = "1"
 
@@ -323,6 +442,10 @@ def _version() -> str:
     It changes exactly when what redact() does to some text can change, and then chats/scrub.py runs again."""
     h = hashlib.sha256(_LOGIC.encode())
     for name, pattern, repl in RULES:
+        h.update(
+            repr((name, pattern.pattern, pattern.flags, repl if isinstance(repl, str) else repl.__name__)).encode()
+        )
+    for name, pattern, repl in TOOL_RULES:
         h.update(
             repr((name, pattern.pattern, pattern.flags, repl if isinstance(repl, str) else repl.__name__)).encode()
         )
@@ -392,14 +515,28 @@ def redact_many(texts: list[str]) -> list[str]:
     own further down (in a command, an .env listing), where no word marks it: every value the rules
     replaced in any of the texts is replaced in all of them (the first EXACT_VALUES wherever they sit, the
     rest where they stand as a token of their own, or as the 20+ character alphanumeric core of one)."""
-    found: dict[str, None] = {}
-    out = [_apply(t, found) for t in texts]
-    if found:
+    return Chat(texts).texts
+
+
+class Chat:
+    """The texts of one chat, redacted together (redact_many), which keeps the values they held so that the
+    words of its failed tool calls can be redacted with them: a key a message marked, used bare in a command,
+    is as much a repeat in the command's line as in a later message."""
+
+    def __init__(self, texts: list[str]):
+        found: dict[str, None] = {}
+        out = [_apply(t, found) for t in texts]
         values = list(found)
-        exact = sorted(values[:EXACT_VALUES], key=len, reverse=True)
-        rest = values[EXACT_VALUES:]
-        out = [_repeats(t, exact, rest) if t else t for t in out]
-    return out
+        self._exact = sorted(values[:EXACT_VALUES], key=len, reverse=True)
+        self._rest = values[EXACT_VALUES:]
+        self.texts = [self.repeats(t) for t in out]
+
+    def repeats(self, text: str) -> str:
+        return _repeats(text, self._exact, self._rest) if text and (self._exact or self._rest) else text
+
+    def tool(self, text: str) -> str:
+        """redact_tool(text), and this chat's values wherever they stand in it."""
+        return _tool_tier(self.repeats(redact(text))) if text else text
 
 
 def _repeats(text: str, exact: list[str], rest: list[str]) -> str:
@@ -432,12 +569,23 @@ def redact_json(value):
     return value
 
 
-def count(text: str) -> Counter:
-    """How many spans each rule changes in text, for scans and the pull request's numbers."""
+def _expand(repl, m: re.Match) -> str:
+    return repl(m) if callable(repl) else m.expand(repl)
+
+
+def count(text: str, tool: bool = False) -> Counter:
+    """How many spans each rule changes in text, for scans and the pull request's numbers. tool: the
+    TOOL_RULES too, as redact_tool() applies them (for the words of a failed tool call)."""
     found: Counter = Counter()
     for name, pattern, repl in _rules(text):
         for m in pattern.finditer(text):
-            if (repl(m) if callable(repl) else repl) != m.group(0):
+            if _expand(repl, m) != m.group(0):
                 found[name] += 1
         text = pattern.sub(repl, text)
+    if tool:
+        for name, pattern, repl in TOOL_RULES:
+            for m in pattern.finditer(text):
+                if _expand(repl, m) != m.group(0):
+                    found[name] += 1
+            text = pattern.sub(repl, text)
     return found

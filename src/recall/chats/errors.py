@@ -26,7 +26,7 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass, fields
 
-from .redact import redact
+from .redact import Chat, redact, redact_tool
 
 SIGNATURE_CHARS = 200
 COMMAND_CHARS = 120
@@ -51,7 +51,11 @@ class ToolError:
     reply: str | None = None  # the agent's next words, when the source has them apart from messages
 
     def dump(self) -> dict:
-        return {name: getattr(self, name) for name in _STORED}
+        """What is stored. The words are redacted again here, so no copy of a failure holds what the rules catch."""
+        d = {name: getattr(self, name) for name in _STORED}
+        for k in TEXT_FIELDS:
+            d[k] = redact_tool(d[k])
+        return d
 
     @classmethod
     def load(cls, d) -> "ToolError | None":
@@ -62,6 +66,7 @@ class ToolError:
 
 
 _STORED = tuple(f.name for f in fields(ToolError))[:8]
+TEXT_FIELDS = ("command", "signature", "next_reply")  # the words of a failure; the rest are ids and anchors
 
 
 @dataclass
@@ -154,11 +159,13 @@ def identity(role: str, text: str) -> str:
     return role[:1] + hashlib.sha1(" ".join(text.split()).encode()).hexdigest()[:12]
 
 
-def anchor(errors: list[ToolError], messages, keep: list[int], stored) -> list[ToolError]:
+def anchor(errors: list[ToolError], messages, keep: list[int], stored, chat: Chat | None = None) -> list[ToolError]:
     """The parse's errors, ready to store. messages: the parse; keep: the indexes of those that
     are stored; stored: their stored (truncated, redacted) form, in the same order. Each error
     gets the identity of its message and of the message where a rerun succeeded, and its next
-    reply is cut from the stored message, so a secret redaction removed stays removed."""
+    reply is cut from the stored message, so a secret redaction removed stays removed.
+    chat: what redacted the messages (redact.Chat); the words of the errors are redacted with
+    the values it held, as the messages are."""
     where = {i: k for k, i in enumerate(keep)}
     out = []
     for e in errors:
@@ -169,9 +176,9 @@ def anchor(errors: list[ToolError], messages, keep: list[int], stored) -> list[T
                 e.call_id,
                 e.ts,
                 e.tool,
-                e.command,
-                e.signature,
-                _next_reply(e, k, messages, where, stored),
+                chat.tool(e.command) if chat else e.command,
+                chat.tool(e.signature) if chat else e.signature,
+                _next_reply(e, k, messages, where, stored, chat),
                 identity(stored[k].role, stored[k].text) if k is not None else None,
                 identity(stored[r].role, stored[r].text) if r is not None else None,
             )
@@ -179,9 +186,9 @@ def anchor(errors: list[ToolError], messages, keep: list[int], stored) -> list[T
     return out
 
 
-def _next_reply(e: ToolError, k: int | None, messages, where: dict[int, int], stored) -> str:
+def _next_reply(e: ToolError, k: int | None, messages, where: dict[int, int], stored, chat: Chat | None) -> str:
     if e.reply is not None:
-        return clean_prose(e.reply)
+        return clean_prose(chat.tool(e.reply) if chat else e.reply)
     if k is None or e.at is None:
         return ""
     # Words the agent added to that same message after the call. The split is where the stored
@@ -189,7 +196,8 @@ def _next_reply(e: ToolError, k: int | None, messages, where: dict[int, int], st
     kept = stored[k].text
     raw = messages[e.at]
     if raw.role == "assistant" and len(raw.text) > e.at_len:
-        head = redact(raw.text[: e.at_len]).rstrip()
+        head = redact(raw.text[: e.at_len])
+        head = (chat.repeats(head) if chat else head).rstrip()
         if kept.startswith(head) and len(kept) > len(head):
             return clean_prose(kept[len(head) :])
     nxt = next((m.text for m in stored[k + 1 :] if m.role == "assistant"), "")
@@ -197,96 +205,6 @@ def _next_reply(e: ToolError, k: int | None, messages, where: dict[int, int], st
 
 
 # --- redaction -----------------------------------------------------------------
-
-_VALUE = r"""(?:"[^"]*"|'[^']*'|[^\s"']+)"""
-_NAME = (
-    r"[\w.-]*(?:pass(?:word|wd|phrase)?|pwd|secret|token|auth|cred(?:ential)?s?|api[_-]?key|access[_-]?key|"
-    r"private[_-]?key|key|cookie|bearer|salt|dsn)[\w.-]*"
-)
-_REDACTED = "[REDACTED]"
-
-# A command line, an output or an agent's words can carry a secret the index's redactor was not
-# written for. Each pattern keeps what is around the secret so the line still reads.
-_COMMAND = [
-    # curl -u user:pass, --user user:pass, -u'user:pass'
-    (re.compile(r"""(?<!\S)(-u|--user|--proxy-user)(\s*=?\s*["']?)[^\s:"']+:[^\s"']*"""), r"\1\2" + _REDACTED),
-    # sshpass -p secret
-    (re.compile(rf"(?i)\b(sshpass\s+-p\s*){_VALUE}"), r"\1" + _REDACTED),
-    # openssl -passin pass:secret
-    (re.compile(r"\bpass:(?=\S)\S+"), "pass:" + _REDACTED),
-    # --password x, --token=x, --api-key x
-    (
-        re.compile(
-            rf"""(?i)(--[\w-]*(?:pass(?:word|wd|phrase)?|pwd|secret|token|api-?key|auth|credentials?|cookie|bearer)"""
-            rf"""[\w-]*)((?:\s+|=)(?!-)){_VALUE}"""
-        ),
-        r"\1\2" + _REDACTED,
-    ),
-    # Authorization: Bearer x, X-Api-Key: x, Cookie: x
-    (
-        re.compile(
-            r"""(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token|x-access-token|api-key|cookie|set-cookie)"""
-            r"""(\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s"'][^"'\n]*"""
-        ),
-        r"\1\2" + _REDACTED,
-    ),
-    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{12,}"), r"\1 " + _REDACTED),
-    # a webhook URL is a credential
-    (
-        re.compile(
-            r"""(?i)https?://[^\s"'<>]*(?:hooks\.slack\.com|discord(?:app)?\.com/api/webhooks|hooks\.zapier\.com|"""
-            r"""webhook|outlook\.office\d*\.com/|api\.telegram\.org/bot|events\.pagerduty\.com)[^\s"'<>]*"""
-        ),
-        _REDACTED,
-    ),
-    # https://user:pass@host and https://<token>@host
-    (re.compile(r"""\b([a-z][a-z0-9+.-]*://)[^\s/@:"']+:[^\s/@"']+@"""), r"\1" + _REDACTED + "@"),
-    (re.compile(r"""\b(https?://)[^\s/@:"']{16,}@"""), r"\1" + _REDACTED + "@"),
-    # redis-cli -a secret
-    (re.compile(rf"(?i)\b(redis-cli\b[^\n]*?\s-a\s+){_VALUE}"), r"\1" + _REDACTED),
-    # aws configure set aws_secret_access_key x, npm config set //registry/:_authToken x
-    (re.compile(rf"(?i)\b(set\s+\S*(?:secret|token|pass(?:word|wd)?|key|auth)\S*\s+){_VALUE}"), r"\1" + _REDACTED),
-    # mysql -pSECRET
-    (
-        re.compile(r"(?i)\b(mysql\w*|mariadb\w*|psql|mongo\w*)\b([^\n]*?(?<![\w-])-p)(?=[^\s'\"-])[^\s'\"]+"),
-        r"\1\2" + _REDACTED,
-    ),
-    # "the password is hunter2hunter2": a word for a secret, then a value with a digit in it
-    (
-        re.compile(
-            r"""(?i)\b(password|passwd|passphrase|secret|token|api[ _-]?key|credentials?)(\s+(?:is\s+|was\s+)?)"""
-            r"""(?=[^\s"']*\d)[^\s"']{8,}"""
-        ),
-        r"\1\2" + _REDACTED,
-    ),
-    # a long run of mixed-case letters and digits, such as a key pasted where a command goes
-    (
-        re.compile(
-            r"(?<![A-Za-z0-9/._+-])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*\d)"
-            r"[A-Za-z0-9_-]{32,}(?![A-Za-z0-9/._+-])"
-        ),
-        _REDACTED,
-    ),
-    # DB_PASS=x, NPM_AUTH=x, ?token=x
-    (re.compile(rf"""(?i)(?<![\w.-])({_NAME})(=)(?!\[REDACTED\]){_VALUE}"""), r"\1\2" + _REDACTED),
-]
-# `-p secret` is also `mkdir -p dir` and `ssh -p 22`: a port or a path stays, `mkdir -p build` does not.
-_P_FLAG = re.compile(rf"(?<!\S)(-p\s+)(?!-)({_VALUE})")
-
-
-def _p_flag(m: re.Match) -> str:
-    value = m.group(2).strip("'\"")
-    if re.fullmatch(r"\d{1,5}(:\d{1,5})?", value) or "/" in value or value == _REDACTED:
-        return m.group(0)  # a port, a mapping or a path
-    return m.group(1) + _REDACTED
-
-
-def redact_command(text: str) -> str:
-    """text with what the index's redactor misses taken out: the secrets a command line, the
-    output that echoes it or an agent quoting it carry."""
-    for pattern, repl in _COMMAND:
-        text = pattern.sub(repl, text)
-    return _P_FLAG.sub(_p_flag, text)
 
 
 def _look(text: str) -> str:
@@ -301,14 +219,10 @@ def _look(text: str) -> str:
     return head + "\n" + tail
 
 
-# a private key whose end was cut away
-_OPEN_KEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*\Z", re.S)
-
-
 def clean(text: str) -> str:
-    """text with secrets taken out, whole: the index's redactor, then the command pass. A reply
-    quotes commands and an output echoes them, so every field gets the command rules."""
-    return redact_command(_OPEN_KEY.sub(_REDACTED, redact(_look(text))))
+    """text with secrets taken out, whole: the index's redactor, then the rules for a command line
+    (redact.TOOL_RULES). A reply quotes commands and an output echoes them, so every field gets both."""
+    return redact_tool(_look(text))
 
 
 def clean_prose(text: str) -> str:

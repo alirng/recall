@@ -6,8 +6,12 @@ rebuild reproduces, so a secret that an older rule let through stays in them:
 
 * candidates (the quotes and notes a model drew from chats) and llm_cache (its answers),
 * the archive's copies of chats whose files the agent has since deleted (chat_archive),
-* tool_errors, where a failed command's text lives, exploration reports (explore.py) and the
-  asks that commit links keep beside an edit (commits.py).
+* tool_errors, where a failed command's text lives (in the index, and in the archive's copies
+  of chats), exploration reports (explore.py) and the asks that commit links keep beside an
+  edit (commits.py).
+
+A failed tool call's words are redacted as redact.redact_tool() does, with the values that the
+messages of the same chat held (redact.Chat), as they are when they are written (store.upsert).
 
 ensure() runs at the start of an index run and rewrites those tables once per
 redact.VERSION; run() is the same rewrite without the version check, for a one-off clean.
@@ -32,7 +36,8 @@ from collections import Counter
 from collections.abc import Callable
 
 from .. import paths
-from .redact import VERSION, count, redact, redact_json, redact_many
+from .errors import TEXT_FIELDS, identity
+from .redact import VERSION, Chat, count, redact, redact_json
 
 # table -> the columns that hold chat text. Missing tables and columns are skipped.
 TEXT_COLUMNS = {
@@ -171,12 +176,15 @@ def run(
     con.execute("pragma secure_delete = on")  # a rewritten value is zeroed, not left in a free page
     changed: Counter = Counter()
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
+    chats: Counter | None = None
     for table, wanted in TEXT_COLUMNS.items():
         if table not in have:
             continue
         columns = [r[1] for r in con.execute(f"pragma table_info({table})") if r[1] in wanted]
-        if table == "messages":
-            n = _rewrite_chats(con, changed)
+        if table in ("messages", "tool_errors"):
+            if chats is None:  # the messages, and the tool errors of the same chats
+                chats = _rewrite_chats(con, changed, have)
+            n = chats[table]
         else:
             n = _rewrite(con, table, columns, changed, touched if table == "candidates" else None)
         if n and table == "explorations":
@@ -230,18 +238,45 @@ def _rewrite(con, table: str, columns: list[str], changed: Counter, notes: dict[
     return n
 
 
-def _rewrite_chats(con, changed: Counter) -> int:
-    """The messages, a chat at a time, so a key repeated bare further down the chat goes with the one a word marked."""
-    n = 0
-    rows = con.execute("select rowid, session_id, text from messages order by session_id, seq").fetchall()
-    for _, group in itertools.groupby(rows, key=lambda r: r[1]):
+def _rewrite_chats(con, changed: Counter, have: set[str]) -> Counter:
+    """The messages, a chat at a time, so a key repeated bare further down the chat goes with the one a word
+    marked, and the same chat's failed tool calls with them. Returns the rows changed per table."""
+    n: Counter = Counter()
+    columns = [r[1] for r in con.execute("pragma table_info(tool_errors)") if r[1] in TEXT_COLUMNS["tool_errors"]]
+    errors: dict[str, list] = {}  # session -> its tool_errors rows
+    if columns and "tool_errors" in have:
+        for row in con.execute(f"select rowid, session_id, {', '.join(columns)} from tool_errors"):
+            errors.setdefault(row[1], []).append(row)
+    rows = []
+    if "messages" in have:
+        rows = con.execute("select rowid, session_id, text from messages order by session_id, seq").fetchall()
+    for sid, group in itertools.groupby(rows, key=lambda r: r[1]):
         group = list(group)
-        for (rowid, _, old), text in zip(group, redact_many([r[2] for r in group]), strict=True):
+        chat = Chat([r[2] for r in group])
+        for (rowid, _, old), text in zip(group, chat.texts, strict=True):
             if text != old:
                 con.execute("update messages set text = ? where rowid = ?", (text, rowid))
                 changed["messages.text"] += 1
-                n += 1
+                n["messages"] += 1
+        _rewrite_errors(con, columns, errors.pop(sid, []), chat, changed, n)
+    chat = Chat([])
+    for rows_ in errors.values():  # chats whose messages the index no longer holds
+        _rewrite_errors(con, columns, rows_, chat, changed, n)
     return n
+
+
+def _rewrite_errors(con, columns: list[str], rows: list, chat: Chat, changed: Counter, n: Counter) -> None:
+    for row in rows:
+        new = [chat.tool(v) if isinstance(v, str) else v for v in row[2:]]
+        diff = [c for c, a, b in zip(columns, row[2:], new, strict=True) if a != b]
+        if diff:
+            sets = ", ".join(f"{c} = ?" for c in diff)
+            con.execute(
+                f"update tool_errors set {sets} where rowid = ?", [new[columns.index(c)] for c in diff] + [row[0]]
+            )
+            for c in diff:
+                changed[f"tool_errors.{c}"] += 1
+            n["tool_errors"] += 1
 
 
 def _standalone_fts(con: sqlite3.Connection, fts: str, columns: tuple[str, ...]) -> None:
@@ -289,16 +324,35 @@ def _cache_value(response: str) -> str | None:
 
 
 def _archive_value(blob: bytes) -> bytes | None:
-    """An archived chat: zlib-compressed JSON with the session's fields and its messages."""
+    """An archived chat: zlib-compressed JSON with the session's fields, its messages and its failed tool calls."""
     data = json.loads(zlib.decompress(blob))
     new = dict(data)
     if "title" in new:
         new["title"] = redact_json(new["title"])
-    if "messages" in new:  # [role, ts, text, ...] each; redacted as one chat
-        texts = redact_many([m[2] for m in new["messages"]])
-        new["messages"] = [[*m[:2], t, *m[3:]] for m, t in zip(new["messages"], texts, strict=True)]
-    if "tool_errors" in new:
-        new["tool_errors"] = redact_json(new["tool_errors"])
+    chat = Chat([m[2] for m in new["messages"]] if "messages" in new else [])  # redacted as one chat
+    moved: dict[str, str] = {}  # identity of a message as it was -> as it is now (errors.identity)
+    if "messages" in new:  # [role, ts, text, ...] each
+        new["messages"] = [[*m[:2], t, *m[3:]] for m, t in zip(new["messages"], chat.texts, strict=True)]
+        for old, m in zip(data["messages"], new["messages"], strict=True):
+            if old[2] != m[2]:
+                moved[identity(old[0], old[2])] = identity(m[0], m[2])
+    if new.get("tool_errors"):
+        new["tool_errors"] = [_archive_error(e, chat, moved) for e in new["tool_errors"]]
     if new == data:
         return None
     return zlib.compress(json.dumps(new, ensure_ascii=False, separators=(",", ":")).encode())
+
+
+def _archive_error(e, chat: Chat, moved: dict[str, str]):
+    """A stored ToolError: its words redacted, and the identities of the messages it points to follow those
+    messages if they changed, so a restore can still place it."""
+    if not isinstance(e, dict):
+        return e
+    e = dict(e)
+    for k in TEXT_FIELDS:
+        if isinstance(e.get(k), str):
+            e[k] = chat.tool(e[k])
+    for k in ("anchor", "resolved_anchor"):
+        if e.get(k) in moved:
+            e[k] = moved[e[k]]
+    return e
