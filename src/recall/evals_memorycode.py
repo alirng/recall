@@ -60,7 +60,8 @@ the code contains, averaged per history. Arms:
          conflicting counts (0 by the filter) and size_ratio (donor notes over this history's).
          Hook minus placebo is an upper bound on what the notes' content is worth; placebo
          minus tools is the effect of loading notes that are not this history's. The skips fall
-         on long histories, so a filtered run leans short and says little about long ones;
+         mostly on long histories (13 of 19 on the test split), so a filtered run leans short and
+         says little about long ones;
          donors repeat, so rows are correlated. Without the filter (runs before 2026-10-15)
          the donor often held this history's conventions or contradicted them, and its size
          was only a tie-break, so such a placebo is not a priming control
@@ -1204,9 +1205,9 @@ class Placebo(Hook):
     40 histories and had a conflicting one on the same object in 26, so that run's placebo
     minus tools is mostly the harm of misleading notes.
 
-    Two limits of the filtered run. The skips fall on the long histories (the filter finds no
-    donor, or none of a similar size), which are the ones with the most conventions, so the
-    rows that remain lean short: hook minus placebo from them says nothing about long
+    Two limits of the filtered run. The skips fall mostly on the long histories (13 of 19 on the
+    test split: the filter finds no donor, or none of a similar size), which are the ones with
+    the most conventions, so the rows that remain lean short: hook minus placebo from them says nothing about long
     histories, where the notes' gain is. And donors repeat across rows, so the rows are
     correlated and a bootstrap interval over them is optimistic."""
 
