@@ -126,6 +126,9 @@ All notable changes to recall are listed here. The format follows
 
 ### Changed
 
+- **Archive copies load whatever a later version added to them.** Reading a copy ignores
+  keys and message fields it does not know, so a change that adds a field to the archive can
+  be reverted without breaking every index run.
 - **One hook command.** Every hook recall installs, for every agent, now runs
   `recall hook --agent <agent>`, which hands the event to the features that want it and
   answers in that agent's format. `recall install` replaces the older `context --hook` and
