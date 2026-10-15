@@ -111,6 +111,7 @@ def report(deep: bool = True) -> list[dict]:
         if live and cmd and consent is not None:
             new = [k for k in agents.hook_kinds(r.agent) if k not in consent]
             new = agents._hook_gaps(r, cmd, set(new)) if new else []
+        elsewhere = agents.other_runners(r, cmd) if live and cmd else []
         approval = agents.cursor_approval(r) if live and r.agent == "cursor" and have.get("mcp") else None
         rows.append(
             {
@@ -130,6 +131,8 @@ def report(deep: bool = True) -> list[dict]:
                 "mine": roots.option(r, "mine", cfg),
                 "index": roots.option(r, "index", cfg),
                 "new_hooks": new,
+                "hooks_run": elsewhere,
+                "this_recall": cmd,
                 "has_cursor_config": os.path.isdir(r.path) if r.agent == "cursor" else None,
                 **indexed.get(r.name, {}),
             }
