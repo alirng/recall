@@ -105,7 +105,12 @@ def cmd_forget(a) -> None:
     if not a.yes:
         if not sys.stdin.isatty():
             sys.exit("pass --yes to forget without asking")
-        if not input(f"Forget {len(ids)} chat(s) everywhere recall holds them? (y/n) ").strip().lower().startswith("y"):
+        if (
+            not input(f"Forget {len(ids)} chat(s) from recall's index and archive? (y/n) ")
+            .strip()
+            .lower()
+            .startswith("y")
+        ):
             return
     with indexer.exclusive("an index run is in progress: waiting for it to finish"):
         counts = forget.purge(con, ids, scrub=False)
@@ -642,7 +647,7 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--offset", type=int)
     sp.add_argument("--limit", type=int, default=30)
     command("stats", cmd_stats, "what's in the index")
-    sp = command("forget", cmd_forget, "remove a chat, or a project's chats, from everything recall holds")
+    sp = command("forget", cmd_forget, "remove a chat, or a project's chats, from recall's index and archive")
     sp.add_argument("chat_id", nargs="?")
     sp.add_argument("--project", help="every chat in this project")
     sp.add_argument("--yes", action="store_true", help="do not ask first")
