@@ -274,6 +274,19 @@ def _spec(r) -> dict:
     }
 
 
+def record_connected(found: list, cmd: str | None = None) -> None:
+    """Note every root that has any part of recall in it, whoever put it there (autopilot, or the
+    person's own `recall install`), so `recall uninstall` can still reach it after discovery loses it."""
+    from .integrations import agents
+
+    state = _load()
+    connected = state.setdefault("connected", {})
+    for r in agents.connectable(found):
+        if any(agents.parts(r, cmd).values()):
+            connected[r.name] = {"spec": _spec(r), "files": agents.root_files(r), "at": time.time()}
+    _save(state)
+
+
 def recorded_roots(found: list) -> list:
     """The roots autopilot (or `recall install`) connected that discovery no longer finds: an alias
     taken out of a shell rc, a variable unset. Their folders may still hold recall's files."""
