@@ -5,6 +5,27 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-15
+
+recall can now tell you which chat wrote a line of code, keeps every chat it has indexed, tells
+agents about each other's edits, and writes notes as rules it checks one by one. Search results
+are unchanged. Numbers: docs/benchmarks.md.
+
+### Upgrading
+
+- **The chat index rebuilds itself once** (chat schema 7), and so does the redaction of stored
+  text: the first index run after upgrading re-reads your chats and rewrites the text recall
+  cannot rebuild from your agents' files (cached answers, extracted candidates, archived
+  chats) with the current rules. Chats whose files are gone come back from the archive.
+- **Memory notes gain a `rules:` block** in their front matter the next time recall writes
+  them. An older recall that rewrites such a note drops that block, so upgrade every machine
+  that shares the notes folder.
+- **The Claude provider's `haiku`, `sonnet` and `opus` now run the 5.5 models.** Each call uses
+  more of your plan than Haiku 4.5 did.
+- **With an API key, the nightly run sends batched calls** at half the price and stops at a
+  default budget of $1 a run (`[dream] max_usd`). With a ChatGPT or Claude subscription or a
+  local model, nothing changes in cost: batches and the dollar budget do not apply.
+
 ### Added
 
 - **Batch APIs for the nightly run.** With an Anthropic or OpenAI key, `recall dream` sends its
@@ -40,8 +61,7 @@ All notable changes to recall are listed here. The format follows
   Text is redacted whole before it is cut, with extra rules for commands (`-u user:pass`,
   `--password x`, `DB_PASS=x`, webhook URLs). A call the person declined is not a failure.
   It never enters the chat messages, so search ranking and memory extraction are unchanged.
-  `store.tool_errors(con, text)` finds the chats where an error came up before. The index
-  rebuilds once (chat schema 6).
+  `store.tool_errors(con, text)` finds the chats where an error came up before.
 - **`recall forget <chat id>` and `--project NAME`** remove chats from the index, the archive,
   embeddings, extraction records and exploration reports, and keep them from being indexed
   again; the database file is rewritten afterwards so the words are not left in free pages.
@@ -88,7 +108,7 @@ All notable changes to recall are listed here. The format follows
 - **Memory mid-session.** Hooks can hand an agent a past chat or note at the moment it
   applies: when the prompt closely matches an earlier chat, and when it reads a file (scoped
   rules it does not load itself, notes naming the file, the last chat that talked about it).
-  A gate fitted on one developer's history abstains unless it is sure; each item comes once
+  A gate fitted on one real history abstains unless it is sure; each item comes once
   per session, 1,200 characters at most per injection; a preference or a past chat tied to
   one context (`[contexts]`) is handed only to that context's sessions, while searching chats
   is not narrowed; hooks send a prompt only to a local embedding model, never a hosted one,
@@ -97,7 +117,6 @@ All notable changes to recall are listed here. The format follows
   until the index keeps tool errors. `recall jit` shows what would fire and why;
   `recall usage` counts what did; `recall eval jit` fits the gate to your history and `--live`
   measures its precision on real injections.
-
 - **Several accounts and installs, connected by itself.** recall now finds every folder an agent
   keeps its settings and chats in: the defaults, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` from the
   environment and from `export` lines, statement-start assignments and aliases in your shell rc files
@@ -160,6 +179,8 @@ All notable changes to recall are listed here. The format follows
   cache follow the pinned id. When Claude Code serves another model than the one asked for
   (an old install, or a plan that serves something else), recall says so once on stderr.
   Haiku 5.5 thinks before it answers, so each call uses more of the plan than Haiku 4.5 did.
+  On MemoryCode, notes written through Claude Code held 97.6% of the facts with the full model
+  id (one run), against 80.9% with the old alias.
 - **Archive copies load whatever a later version added to them.** Reading a copy ignores
   keys and message fields it does not know, so a change that adds a field to the archive can
   be reverted without breaking every index run.
@@ -196,7 +217,9 @@ All notable changes to recall are listed here. The format follows
   no command, URL, network, destructive or exfiltrating action, or to switch off a sandbox,
   permission or review; otherwise it is unset. It is a hint, not authentication, and no reader
   shows it yet. Notes written this way still read as plain notes in an older release, which
-  drops the rule fields if it rewrites the note.
+  drops the rule fields if it rewrites the note. On a replay of the same extracted facts
+  (MemoryCode, 40 held-out histories), facts lost when notes merge fell from 12.5% to 8.1%,
+  recall rose from 70.5% to 75.3% and stale notes fell from 9.3% to 4.8%.
 
 ### Fixed
 
@@ -206,7 +229,7 @@ All notable changes to recall are listed here. The format follows
   theirs: Claude Code peer messages and task notifications delivered mid-turn, compaction
   summaries and `!` command output; Cursor's session-hook context and tool catalogues; Codex
   goal continuations, skill bodies, browser state and subagent reports. Memory extraction
-  reads user turns as the developer speaking. The index rebuilds once (chat schema 3).
+  reads user turns as the developer speaking.
   A chat whose file is gone comes back from the archive with the same cleaning applied to
   its user turns, and Claude Code's compaction summary is dropped from it. What the archive
   cannot undo is a peer message or task notification an older release stored as the
@@ -222,15 +245,13 @@ All notable changes to recall are listed here. The format follows
   how many Codex chats cannot be read and how to fix it. A damaged file is skipped with an
   error, and a `zstd` that hangs is killed after a minute. Commit links and Explore's history
   read compressed Codex chats, and `recall forget` lists the `.jsonl.zst` that holds one.
-  The chat index rebuilds once (chat schema 4).
 - **Cursor chats get their folder and their kind.** Cursor records a chat's folder, and
   whether an agent spawned it, on the chat itself; recall now reads both, and places a
   helper chat that recorded neither in its parent's folder, up a chain of nested helpers. On
-  one developer's history, Cursor chats a person typed in with no folder fell from 932 to 199,
+  one real history, Cursor chats a person typed in with no folder fell from 932 to 199,
   and about 720 helper chats (explore and the like) are marked as subagents, so memory
   extraction no longer reads them as the developer speaking. Side chats stay the person's.
-  Notes already learned from helper chats stay until edited. The index rebuilds once (chat
-  schema 5).
+  Notes already learned from helper chats stay until edited.
 - **Secrets the redactor missed.** A key written as `"apiKey": "..."`, `**Client Secret**: ...`,
   `API Key: ...` or `use this api key ...`, in a URL query (`?apiKey=...`, `%3D`, `&amp;`), as
   `SOME_NAME_KEY=...`, or in a shape of its own (Azure AD client secrets, `sk_` keys, `fc-` keys,
@@ -251,7 +272,6 @@ All notable changes to recall are listed here. The format follows
   calls it carries, are redacted again as they are read. Your notes are not rewritten: the same
   run names the notes, and the entries of `.recall/notes.json`, that the rules match, on stderr
   and in `logs/redact.log`. The chat
-  index rebuilds itself once (chat schema 7).
 
 ## [0.3.0] - 2026-10-13
 
@@ -413,7 +433,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/alirng/recall/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/alirng/recall/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/alirng/recall/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/alirng/recall/compare/v0.1.0...v0.2.0
