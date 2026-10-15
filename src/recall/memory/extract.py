@@ -187,7 +187,16 @@ def store(
     )
     con.execute(
         "insert or replace into extractions values (?,?,?,?,?,?,?,?)",
-        (session["id"], digest_hash, PROMPT_VERSION, backend, len(candidates), status, error, now),
+        (
+            session["id"],
+            digest_hash,
+            PROMPT_VERSION,
+            backend,
+            len(candidates),
+            status,
+            redact(error) if error else error,
+            now,
+        ),
     )
 
 

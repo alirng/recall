@@ -5,16 +5,16 @@ one chat must not resurface in another. Patterns err on the side of redacting, b
 ordinary hashes, UUIDs and commit ids stay: only a credential-shaped token, or a long token
 that sits next to a word like "api key", "secret" or "password", is masked.
 
-Every rule is named, so a scan can say which one fired. When a rule changes, bump
-VERSION: chats/scrub.py then rewrites the text recall keeps and cannot rebuild from the
-agents' files (candidates, llm_cache, the archive).
+Every rule is named, so a scan can say which one fired. VERSION is a hash of the rules (see
+the end of RULES): when a rule changes it changes, and chats/scrub.py then rewrites the text
+recall keeps and cannot rebuild from the agents' files (candidates, llm_cache, the archive).
 """
 
+import hashlib
 import re
 from collections import Counter
 
 MARK = "[REDACTED]"
-VERSION = "2"
 
 _TOKCH = r"[A-Za-z0-9_\-+/=.~%\\]"  # what a pasted key is made of, with the \_ a markdown escape adds
 _NOT_MARK = r"(?![\[]?REDACTED)"
@@ -70,12 +70,37 @@ def _tail(m: re.Match) -> str:
     return m.group(0)[: m.start("v") - m.start()] + MARK
 
 
+def _assignment(m: re.Match) -> str:
+    return f"{m.group(1)}{m.group(2)}{MARK}"
+
+
 def _tail_unless_path(m: re.Match) -> str:
     return m.group(0) if _is_path_or_host(m.group("v")) else _tail(m)
 
 
+_COOKIE_CH = r"[A-Za-z0-9_.~%+/\-]"
+# name=value inside a Cookie header; the value has a letter and a digit and is 12+ characters long (a theme or a
+# flag is not). The name is anchored so a long run without "=" is read once.
+_COOKIE_PAIR = re.compile(
+    rf"(?<![A-Za-z0-9_.\-])(?P<n>[A-Za-z0-9_.\-]+=)(?!\[?REDACTED)"
+    rf"(?P<c>(?={_COOKIE_CH}*\d)(?={_COOKIE_CH}*[A-Za-z]){_COOKIE_CH}{{12,}}={{0,2}})"
+)
+
+
+def _cookie(m: re.Match) -> str:
+    return m.group(0)[: m.start("v") - m.start()] + _COOKIE_PAIR.sub(lambda p: p.group("n") + MARK, m.group("v"))
+
+
+def _cookie_values(m: re.Match) -> list[str]:
+    """What _cookie replaces, for redact_many: the cookie values, not the rest of the header line."""
+    return [p.group("c") for p in _COOKIE_PAIR.finditer(m.group("v"))]
+
+
+_cookie.values = _cookie_values  # type: ignore[attr-defined]
+
+
 _VENDOR_PREFIXES = (
-    r"glpat-[A-Za-z0-9_\-]{20,}"  # GitLab
+    r"gl(?:pat|dt|rt|ptt)-[A-Za-z0-9_\-]{20,}"  # GitLab: personal, deploy, runner, pipeline trigger
     r"|dop_v1_[0-9a-f]{40,}"  # DigitalOcean
     r"|hf_[A-Za-z0-9]{30,}"  # Hugging Face
     r"|r8_[A-Za-z0-9]{30,}"  # Replicate
@@ -93,11 +118,27 @@ _VENDOR_PREFIXES = (
     r"|whsec_[A-Za-z0-9]{20,}"  # Stripe webhook
     r"|ya29\.[A-Za-z0-9_\-]{20,}"  # Google OAuth
     r"|key-[0-9a-f]{32}"  # Mailgun
+    r"|pypi-[A-Za-z0-9_\-]{50,}"  # PyPI: a macaroon, 100+ characters
+    r"|dckr_pat_[A-Za-z0-9_\-]{20,}"  # Docker Hub
+    r"|GOCSPX-[A-Za-z0-9_\-]{20,}"  # Google OAuth client secret
+)
+
+_PEM_HEAD = r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+_PEM_END = r"-----END [A-Z ]*PRIVATE KEY-----"
+_NL = r"(?:\s|\\r|\\n)"  # a line break, also the \n a JSON string holds
+_EOL = r"(?:\r?\n|\\r?\\n)"
+_PEM_OPEN = (
+    # Proc-Type: / DEK-Info: lines of an encrypted key; a header line ends at its line break, so a line of
+    # "a: a: a:" has one way to be read
+    rf"(?:[ \t]*{_EOL})?(?:[ \t]*[A-Za-z][A-Za-z\-]*:[^\r\n\\]*{_EOL})*"
+    rf"{_NL}*(?=[A-Za-z0-9+/]*\d)[A-Za-z0-9+/]{{24,}}={{0,2}}(?:{_NL}+[A-Za-z0-9+/]{{16,}}={{0,2}})*"
 )
 
 # (name, pattern, replacement). The shapes come first, each a credential wherever it appears.
 RULES: list[tuple[str, re.Pattern, object]] = [
-    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S), MARK),
+    # a whole block; or, when the END line is missing (a cut-off paste, a message cut at 20,000 characters),
+    # the BEGIN line and the base64 lines after it, if there are any (prose after a mention of the header stays)
+    ("private-key", re.compile(rf"{_PEM_HEAD}.*?{_PEM_END}|{_PEM_HEAD}{_PEM_OPEN}", re.S), MARK),
     ("sk-key", re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}"), MARK),
     ("github", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}"), MARK),
     ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}"), MARK),
@@ -112,18 +153,49 @@ RULES: list[tuple[str, re.Pattern, object]] = [
     # Azure AD client secret: three characters, a digit, "Q~", then 31-34 more
     ("azure-ad-secret", re.compile(r"(?<![A-Za-z0-9_.~\-])[A-Za-z0-9_.\-]{3}\dQ~[A-Za-z0-9_.~\-]{30,40}"), MARK),
     ("vendor-prefix", re.compile(rf"(?<![A-Za-z0-9_\-])(?:{_VENDOR_PREFIXES})"), MARK),
-    ("db-url", re.compile(r"(?i)\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:/@]+:[^\s@]+@"), MARK),
+    # the path of a Slack or Discord webhook is the secret: whoever has the URL can post
+    (
+        "webhook-url",
+        re.compile(
+            r"(?i)\bhttps?://(?:hooks\.slack\.com/(?:services|workflows|triggers|actions)"
+            r"|(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks)/(?P<v>[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)"
+        ),
+        _tail_unless_placeholder,
+    ),
+    ("db-url", re.compile(r"(?i)\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:/@]*:[^\s@]+@"), MARK),
     # any other scheme://user:password@host, keeping everything but the password
     (
         "url-userinfo",
-        re.compile(r"(?i)\b[a-z][a-z0-9+.\-]{0,31}://[^\s:/@\[\]]+:(?P<v>(?!\[REDACTED\])[^\s@/\[\]]{6,})@"),
+        re.compile(r"(?i)\b[a-z][a-z0-9+.\-]{0,31}://[^\s:/@\[\]]*:(?P<v>(?!\[REDACTED\])[^\s@/\[\]]{6,})@"),
         _tail_unless_placeholder,
     ),
-    # Authorization: Bearer <token>, Basic <base64>
+    # scheme://token@host: a user part that is itself a credential (git clone https://<token>@host/...),
+    # not ssh://git@host or postgres://postgres@localhost, and not abfss://<workspace-guid>@host: in a
+    # storage URL (abfss, s3, gs ...) the part before the @ names a container, and a GUID is an id
+    (
+        "url-token-user",
+        re.compile(
+            r"(?i)\b(?!(?:abfss?|wasbs?|adls?|s3a?|gs|hdfs|oss|cos|obs)://)[a-z][a-z0-9+.\-]{0,31}://"
+            r"(?P<v>(?!\[?REDACTED)(?![0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@)"
+            r"(?=[A-Za-z0-9_\-.~%]*\d)(?=[A-Za-z0-9_\-.~%]*[A-Za-z])[A-Za-z0-9_\-.~%]{20,})@"
+        ),
+        _tail_unless_placeholder,
+    ),
+    # Authorization: Bearer <token>
     (
         "bearer",
-        re.compile(rf"(?i)\b(?:bearer|basic)\s+(?P<v>{_tok(20)})"),
+        re.compile(rf"(?i)\bbearer\s+(?P<v>{_tok(20)})"),
         _tail_unless_path,
+    ),
+    # Authorization: Basic <base64 of user:password>. Base64 has no "-" or "_", and a mix of upper and lower case
+    # with a digit; "basic authentication-flow-v2" and "basic ConfigurationManager" are words.
+    (
+        "basic",
+        re.compile(
+            r"(?i)\bbasic\s+(?P<v>(?!\[?REDACTED)(?-i:(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z]))"
+            r"(?=[A-Za-z0-9+/]*\d)[A-Za-z0-9+/]{16,}={0,2})(?![A-Za-z0-9+/=\-_.])"
+        ),
+        _tail,
     ),
     # name=value, name: value. The original rule, which the rules below widen.
     (
@@ -132,7 +204,7 @@ RULES: list[tuple[str, re.Pattern, object]] = [
             r"(?i)\b([A-Z0-9_]*(?:api[_-]?key|secret|token|password|passwd|pwd|client[_-]?secret|access[_-]?key)[A-Z0-9_]*)"
             r"(\s*[:=]\s*[\"']?)([^\s\"']{8,})"
         ),
-        lambda m: f"{m.group(1)}{m.group(2)}{MARK}",
+        _assignment,
     ),
     # "apiKey": "...", **Client Secret**: `...`, API Key: ..., api_key%3D...: a name, then a separator
     (
@@ -156,13 +228,14 @@ RULES: list[tuple[str, re.Pattern, object]] = [
         ),
         _tail_unless_path,
     ),
-    # INDEXNOW_KEY=..., WEBSITE_AUTH_ENCRYPTION_KEY=...: an upper-case name that ends in _KEY
+    # SERVICE_API_KEY=..., MY_APP_ENCRYPTION_KEY=...: an upper-case name that ends in _KEY.
+    # SSH_KEY=~/.ssh/... is a path, not a value.
     (
         "env-key",
         re.compile(
             rf"\b(?![A-Z0-9_]*(?:CACHE|SORT|PRIMARY|FOREIGN|PARTITION|STORAGE|ROUTE|QUERY))[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_KEY(?![A-Za-z0-9])[\s\"'`*]{{0,3}}[:=]\s*[\"'`]?(?P<v>{_NOT_MARK}{_tok(16)})"
         ),
-        _tail,
+        _tail_unless_path,
     ),
     # a bare "Key: <long mixed token>" at 32+ characters (not a hash: it needs upper and lower case)
     (
@@ -194,6 +267,12 @@ RULES: list[tuple[str, re.Pattern, object]] = [
         ),
         _tail,
     ),
+    # Cookie: session=<value>; Set-Cookie: ...: every cookie value that looks like a credential, the names stay
+    (
+        "cookie",
+        re.compile(r"(?i)\b(?:set-)?cookie[\"']?[ \t]*:[ \t]*[\"']?(?P<v>[^\r\n]+)"),
+        _cookie,
+    ),
 ]
 
 
@@ -213,10 +292,16 @@ _NEEDS: dict[str, tuple[str, ...]] = {
     "sk_-key": ("sk_", "rk_"),
     "firecrawl": ("fc-",),
     "azure-ad-secret": ("q~",),
-    "vendor-prefix": ("glpat-", "dop_v1_", "hf_", "r8_", "pplx-", "gsk_", "xai-", "tvly-", "sg.", "npm_", "shp"),
+    "vendor-prefix": (
+        *("glpat-", "gldt-", "glrt-", "glptt-", "dop_v1_", "hf_", "r8_", "pplx-", "gsk_", "xai-", "tvly-", "sg."),
+        *("npm_", "shp", "pypi-", "dckr_pat_", "gocspx-"),
+    ),
+    "webhook-url": ("hooks.slack.com", "/webhooks/"),
     "db-url": ("://",),
     "url-userinfo": ("://",),
-    "bearer": ("bearer", "basic"),
+    "url-token-user": ("://",),
+    "bearer": ("bearer",),
+    "basic": ("basic",),
     "assignment": ("api", "secret", "token", "pass", "pwd", "access"),
     "named-value": _KEYWORDS,
     "named-password": ("pass", "pwd"),
@@ -225,8 +310,29 @@ _NEEDS: dict[str, tuple[str, ...]] = {
     "bare-key": ("key",),
     "prose-bare-key": ("key",),
     "url-param": (*_KEYWORDS, "auth", "sig", "sas", "x-amz", "code_verifier"),
+    "cookie": ("cookie",),
 }
 assert {name for name, *_ in RULES} == set(_NEEDS)
+
+# Bump when the logic around the patterns changes without a pattern changing (redact_many, _is_path_or_host, a helper).
+_LOGIC = "1"
+
+
+def _version() -> str:
+    """A hash of the rules: the pattern, flags and replacement of each, the words that switch them on, the placeholders.
+    It changes exactly when what redact() does to some text can change, and then chats/scrub.py runs again."""
+    h = hashlib.sha256(_LOGIC.encode())
+    for name, pattern, repl in RULES:
+        h.update(
+            repr((name, pattern.pattern, pattern.flags, repl if isinstance(repl, str) else repl.__name__)).encode()
+        )
+    h.update(repr(sorted(_NEEDS.items())).encode())
+    h.update(_PLACEHOLDER.pattern.encode())
+    h.update(_COOKIE_PAIR.pattern.encode())
+    return h.hexdigest()[:10]
+
+
+VERSION = _version()
 
 
 def _rules(text: str):
@@ -238,8 +344,8 @@ def redact(text: str) -> str:
     return _apply(text, None)
 
 
-def _apply(text: str, found: set[str] | None) -> str:
-    """Run the rules. found collects the credential values they replace, for redact_many."""
+def _apply(text: str, found: dict[str, None] | None) -> str:
+    """Run the rules. found collects the credential values they replace (in order), for redact_many."""
     if not text:
         return text
     for _, pattern, repl in _rules(text):
@@ -247,33 +353,72 @@ def _apply(text: str, found: set[str] | None) -> str:
     return text
 
 
-def _collecting(repl, found: set[str]):
+def _collecting(repl, found: dict[str, None]):
     def sub(m: re.Match) -> str:
         new = repl(m) if callable(repl) else repl
         if new != m.group(0):
-            v = m.group("v") if "v" in m.re.groupindex and m.group("v") else m.group(0)
-            if _is_token(v):
-                found.add(v)
-            found.update(r for r in re.findall(r"[A-Za-z0-9]{20,}", v) if _is_token(r))  # the part that turns up alone
+            if hasattr(repl, "values"):  # a rule whose group v is more than the secret says which parts are
+                values = repl.values(m)
+            else:
+                values = [m.group("v") if "v" in m.re.groupindex and m.group("v") else m.group(0)]
+            for v in values:
+                if _is_token(v):
+                    found[v] = None
+                for r in _LONG_RUN.findall(v):  # the part that turns up alone
+                    if _is_token(r):
+                        found[r] = None
         return new
 
     return sub
+
+
+_LONG_RUN = re.compile(r"[A-Za-z0-9]{20,}")
+_CORE = re.compile(r"[A-Za-z0-9]{16,}")
+_RUN = re.compile(rf"{_TOKCH}{{16,}}")
 
 
 def _is_token(v: str) -> bool:
     return len(v) >= 16 and re.search(r"\d", v) is not None and re.search(r"[A-Za-z]", v) is not None
 
 
+# How many of a chat's values are looked for as plain substrings in every text. The cost is values x text,
+# so a chat that holds hundreds (an .env dump, a fixture file) hands the rest to a token lookup, which
+# reads each text once.
+EXACT_VALUES = 32
+
+
 def redact_many(texts: list[str]) -> list[str]:
     """redact() over the texts of one chat. A key pasted after "api key:" is often pasted again on its
     own further down (in a command, an .env listing), where no word marks it: every value the rules
-    replaced in any of the texts is replaced in all of them."""
-    found: set[str] = set()
+    replaced in any of the texts is replaced in all of them (the first EXACT_VALUES wherever they sit, the
+    rest where they stand as a token of their own, or as the 20+ character alphanumeric core of one)."""
+    found: dict[str, None] = {}
     out = [_apply(t, found) for t in texts]
     if found:
-        again = re.compile("|".join(re.escape(v) for v in sorted(found, key=len, reverse=True)))
-        out = [again.sub(MARK, t) if t else t for t in out]
+        values = list(found)
+        exact = sorted(values[:EXACT_VALUES], key=len, reverse=True)
+        rest = values[EXACT_VALUES:]
+        out = [_repeats(t, exact, rest) if t else t for t in out]
     return out
+
+
+def _repeats(text: str, exact: list[str], rest: list[str]) -> str:
+    for v in exact:
+        if v in text:
+            text = text.replace(v, MARK)
+    if rest:
+        text = _by_token(text, frozenset(rest), frozenset(c for v in rest for c in _CORE.findall(v)))
+    return text
+
+
+def _by_token(text: str, whole: frozenset[str], cores: frozenset[str]) -> str:
+    def run(m: re.Match) -> str:
+        t = m.group(0)
+        if t in whole:
+            return MARK
+        return _CORE.sub(lambda c: MARK if c.group(0) in cores else c.group(0), t)
+
+    return _RUN.sub(run, text)
 
 
 def redact_json(value):
