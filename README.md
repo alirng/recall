@@ -648,7 +648,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall usage [--since 7d]` | how recall itself gets used, from its local log |
 | `recall status [--since 12h] [--json]` | what each agent is working on now, and files two chats both have open changes to |
 | `recall why <file>[:line] \| --commit <sha>` | the chats that wrote a file, a line or a commit (local only) |
-| `recall links [--episodes]` | link commits to chats now; `--episodes` lists failures a later commit fixed |
+| `recall links [--episodes]` | link commits to chats now; `--episodes` (experimental: a judge found only 24% of 21 sampled episodes right) lists failures a later commit fixed |
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
 | `recall resolve --repo <repo> --file <file>` | message every chat in an overlap to agree who goes first (the menu bar's Resolve) |
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |

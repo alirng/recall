@@ -86,7 +86,9 @@ All notable changes to recall are listed here. The format follows
   in recall's index on your machine: git is only read, with lazy fetching and textconv
   off, and nothing is written to any repo. They are worked out without a model, in the
   nightly run and on each `recall why`; `[links] enabled = false` turns them off and deletes
-  them. `recall links --episodes` lists commits that fixed something that had failed.
+  them. `recall links --episodes` lists commits that fixed something that had failed. It is
+  experimental: a judge found 24% of 21 sampled episodes right (0 of 14 for failed checks and
+  commands, 5 of 6 for corrections), so do not build on it yet.
 
 ### Changed
 

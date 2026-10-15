@@ -725,7 +725,14 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--commit", help="a commit sha (or any name git knows) instead of a file")
     sp.add_argument("--json", action="store_true")
     sp = command("links", cmd_links, "link commits to the chats that produced them (local only)")
-    sp.add_argument("--episodes", action="store_true", help="list chats where something failed, then a commit fixed it")
+    sp.add_argument(
+        "--episodes",
+        action="store_true",
+        help=(
+            "EXPERIMENTAL: list chats where something failed, then a commit fixed it. "
+            "A judge found 24%% of them right (5 of 21), so do not build on it"
+        ),
+    )
     sp.add_argument("--json", action="store_true")
 
     sp = command("dream", cmd_dream, "distil new chats into memory notes (runs nightly)")
