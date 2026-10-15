@@ -357,7 +357,7 @@ where key >= ? and key < ? and value not like '%toolFormerData%' and json_valid(
   and json_extract(value, '$.type') in (1, 2) and json_extract(value, '$.text') is not null"""
 
 
-def _norm(text: str) -> str:
+def _collapse(text: str) -> str:
     return " ".join(text.split())
 
 
@@ -391,7 +391,7 @@ def _transcript_errors(cid: str, header: dict, messages: list, state_db: str = S
         if text and text.strip():
             rows.append((when(bid, created), bid, "user" if kind == 1 else "assistant", text))
     rows.sort(key=lambda r: r[0])
-    said = [(m.role, _norm(m.text)) for m in messages]
+    said = [(m.role, _collapse(m.text)) for m in messages]
     # the next assistant text after each row, for what the agent said after a failure
     after: list[str] = [""] * len(rows)
     upcoming = ""
@@ -404,7 +404,7 @@ def _transcript_errors(cid: str, header: dict, messages: list, state_db: str = S
     placed: dict[tuple[str, str], int | None] = {}  # many calls follow one text bubble
     for i, (_, bid, kind, row) in enumerate(rows):
         if kind != "tool":
-            before = (kind, _norm(row))
+            before = (kind, _collapse(row))
             continue
         _, created, name, status, error, code, output, raw, params = row
         if not name or status not in ("completed", "error"):
