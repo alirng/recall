@@ -474,7 +474,7 @@ same repo gets explored again and again, often for much the same question. recal
 exploration's report with the commit it was written at, so there is something to start from.
 
 Recording is on. Handing an earlier report to a new exploration is **off by default**: a replay
-of 10 of my past explorations with Claude Code's Explore found no gain in judged quality
+of 10 past explorations with Claude Code's Explore found no gain in judged quality
 (7.10 with it against 7.20 without) and tokens about 6% lower, within the noise. To try it, set
 
 ```toml
