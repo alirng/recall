@@ -87,7 +87,7 @@ def _schema(con) -> str | None:
 def add_root_column(con: sqlite3.Connection) -> None:
     """An index built before roots existed has no sessions.root. Add it in place (nothing is dropped,
     so chats whose files are gone survive); the indexer fills it from each chat's source path.
-    root is the last column, which is where SCHEMA puts it, so inserts by position still line up."""
+    Inserts name their columns, so a column added after the ones SCHEMA lists does not break them."""
     if "root" not in {r[1] for r in con.execute("pragma table_info(sessions)")}:
         with contextlib.suppress(sqlite3.OperationalError):  # another process added it just now
             con.execute("alter table sessions add column root text")
@@ -213,33 +213,34 @@ def _write(con: sqlite3.Connection, s: Session, parsed: list[Message], stored: l
     first_prompt = next((m.text for m in msgs if m.role == "user"), "")[:500]
     title = s.title or first_prompt[:80].replace("\n", " ")
     project = resolve(s.project)
+    row = {  # named, so a column a later release adds does not break this build's insert
+        "id": s.id,
+        "agent": s.agent,
+        "native_id": s.native_id,
+        "project": s.project,
+        "title": title,
+        "branch": s.branch,
+        "started_at": s.started_at,
+        "updated_at": s.updated_at,
+        "source": s.source,
+        "n_messages": len(stored),
+        "first_prompt": redact(first_prompt),
+        "origin": s.origin,
+        "fingerprint": conversation_fingerprint(msgs),
+        "project_key": project.key if project else None,
+        "project_name": project.name if project else None,
+        "root": s.root,
+    }
     con.execute(
-        "insert or replace into sessions values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            s.id,
-            s.agent,
-            s.native_id,
-            s.project,
-            title,
-            s.branch,
-            s.started_at,
-            s.updated_at,
-            s.source,
-            len(stored),
-            redact(first_prompt),
-            s.origin,
-            conversation_fingerprint(msgs),
-            project.key if project else None,
-            project.name if project else None,
-            s.root,
-        ),
+        f"insert or replace into sessions ({', '.join(row)}) values ({', '.join('?' * len(row))})",
+        tuple(row.values()),
     )
     con.executemany(
         "insert into messages(session_id, seq, role, ts, text) values (?,?,?,?,?)",
         [(s.id, i, m.role, m.ts, m.text) for i, m in enumerate(stored)],
     )
     con.execute(
-        "insert into sessions_fts values (?,?,?,?)",
+        "insert into sessions_fts (id, title, project, first_prompt) values (?,?,?,?)",
         (s.id, title, s.project or "", redact(first_prompt)),
     )
 
