@@ -167,6 +167,17 @@ All notable changes to recall are listed here. The format follows
   rules, coordination, commit links, exploration reports, accounts, reference). Figures were
   rechecked against their runs: the MemoryCode agent result now comes from the runs that load
   recall's tools as Claude Code does by default, and search times from the dedicated timing run.
+- **Memory notes hold rules, and consolidation changes them one at a time.** A note is a
+  title and a list of rules, each with an id, the dates and chats that stated it, and a quote.
+  The model answers with operations on named rules (confirm, refine, retire, add, create), and
+  code checks each one: a rule leaves a note only through a retire that names it, a chat older
+  than a rule's last sighting cannot retire or refine it, and nothing is written until every
+  operation in the batch is checked. Consolidation prompt v3. The note's body is rendered from its active rules, and
+  a hand edit of the body is read back into them. A rule carries `said_by: developer` only
+  when the developer typed its quote outside any paste and the rule asks for no command, URL
+  or network, destructive or exfiltrating action; otherwise it is unset. It is a hint, not
+  authentication, and no reader shows it yet. Notes written this way still read as plain
+  notes in an older release, which drops the rule fields if it rewrites the note.
 
 ### Fixed
 
