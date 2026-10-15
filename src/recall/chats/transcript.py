@@ -25,6 +25,7 @@ class Session:
     # "interactive" for chats a person drove; "headless" for SDK / -p / exec runs.
     # Headless chats stay searchable but are not mined for memories.
     origin: str = "interactive"
+    root: str | None = None  # which harness root it came from (claude, claude-work, cursor-nightly), see roots.py
     messages: list[Message] = field(default_factory=list)
 
     @property

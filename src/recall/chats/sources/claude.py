@@ -3,31 +3,49 @@
 import glob
 import os
 
+from ...roots import Root
 from ..projects import is_scratch
 from ..transcript import Message, Session, clean_assistant_text, clean_user_text
 from . import Item, append, iso_ts, read_jsonl, text_blocks
 
-ROOT = os.path.expanduser("~/.claude/projects")
+ROOT = os.path.expanduser("~/.claude/projects")  # the default root's; roots.discover() finds the rest
 
 
-def detect() -> int | None:
-    if not os.path.isdir(ROOT):
+def _folders(roots) -> list[tuple[str | None, str]]:
+    """(root name, chats folder) for each root whose folder exists, once per real folder."""
+    if roots is None:
+        roots = [Root("claude", "claude", os.path.dirname(ROOT), default=True)]
+    out, seen = [], set()
+    for r in roots:
+        folder = os.path.join(r.path, "projects")
+        real = os.path.realpath(folder)
+        if os.path.isdir(folder) and real not in seen:
+            seen.add(real)
+            out.append((r.name, folder))
+    return out
+
+
+def detect(roots=None) -> int | None:
+    folders = _folders(roots)
+    if not folders:
         return None
-    return len(glob.glob(os.path.join(ROOT, "*", "*.jsonl")))
+    return sum(len(glob.glob(os.path.join(f, "*", "*.jsonl"))) for _, f in folders)
 
 
-def items():
+def items(roots=None):
     # Only top-level session files; subagent transcripts live in nested folders.
-    for path in glob.glob(os.path.join(ROOT, "*", "*.jsonl")):
-        try:
-            st = os.stat(path)
-        except OSError:  # deleted since the listing; the index and the archive keep its chat
-            continue
-        yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path: load(p))
+    for name, folder in _folders(roots):
+        for path in glob.glob(os.path.join(folder, "*", "*.jsonl")):
+            try:
+                st = os.stat(path)
+            except OSError:  # deleted since the listing; the index and the archive keep its chat
+                continue
+            yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path, n=name: load(p, n))
 
 
-def load(path: str) -> Session | None:
+def load(path: str, root: str | None = None) -> Session | None:
     s = Session("claude", os.path.basename(path)[:-6], path)
+    s.root = root
     messages: list[Message] = []
     summary = None
     for d in read_jsonl(path):

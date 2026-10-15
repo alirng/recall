@@ -23,7 +23,7 @@ SCHEMA = """
 create table if not exists sessions (
   id text primary key, agent text, native_id text, project text, title text, branch text,
   started_at real, updated_at real, source text, n_messages int, first_prompt text,
-  origin text, fingerprint text, project_key text, project_name text
+  origin text, fingerprint text, project_key text, project_name text, root text
 );
 create index if not exists sessions_project on sessions(project_key, updated_at);
 create table if not exists messages (
@@ -67,7 +67,10 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
                 archive.snapshot(con, built_by)  # nothing the old tables hold is lost with them
             for t in CHAT_TABLES:
                 con.execute(f"drop table if exists {t}")
-            con.execute("delete from meta where k like 'indexed_at:%' or k like 'scanned:%' or k = 'projects_stamp'")
+            con.execute(
+                "delete from meta where k like 'indexed_at:%' or k like 'indexed_at_root:%'"
+                " or k like 'scanned:%' or k = 'projects_stamp'"
+            )
             con.execute("insert or replace into meta values ('chat_schema', ?)", (CHAT_SCHEMA_VERSION,))
         con.commit()
     con.executescript(SCHEMA)
@@ -156,7 +159,7 @@ def _write(con: sqlite3.Connection, s: Session, parsed: list[Message], stored: l
     title = s.title or first_prompt[:80].replace("\n", " ")
     project = resolve(s.project)
     con.execute(
-        "insert or replace into sessions values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "insert or replace into sessions values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             s.id,
             s.agent,
@@ -173,6 +176,7 @@ def _write(con: sqlite3.Connection, s: Session, parsed: list[Message], stored: l
             conversation_fingerprint(msgs),
             project.key if project else None,
             project.name if project else None,
+            s.root,
         ),
     )
     con.executemany(
