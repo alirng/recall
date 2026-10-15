@@ -12,11 +12,15 @@ checking each one, and nothing is written until the whole batch is checked:
 - a rule leaves a note only through a retire that names it: one that went missing any
   other way is put back, and the log says so;
 - a note whose file changed while the batch ran (a hand edit) is not written from the stale
-  copy: its candidates stay for the next run.
+  copy: its candidates stay for the next run;
+- the same goes for a hand edit waiting to be read back into a note's rules, which is written
+  first: one whose file changed since it was read, or an emptied body saved in the last ten
+  minutes (an editor may be mid-rewrite), is left for the next run.
 Candidates the model skips, or whose only operations were refused, are retried.
 """
 
 import copy
+import os
 import re
 import time
 from collections import Counter
@@ -34,6 +38,7 @@ CONTEXT_NOTES = 40
 RETIRED_SHOWN = 2  # per note: recent retired rules, so a restated old form reads as outdated
 REJECTED_SHOWN = 30  # per kind, in a prompt: notes deleted by hand, and rules removed by hand
 MAX_ATTEMPTS = 2
+SETTLE_SECONDS = 600  # an emptied body is archived only once the file has been quiet this long
 OPEN_TTL_DAYS = 14
 LOW_TTL_DAYS = 180
 TYPES = ["preference", "fact", "decision", "lesson", "open"]
@@ -143,9 +148,30 @@ class Consolidation:
     def __init__(self, con, store: NoteStore, notes: dict[str, Note], log=print):
         self.con, self.store, self.notes, self.log = con, store, notes, log
         self.stats = Counter()
+        pending: set[str] = set()  # notes whose hand edit is left for the next run
         for note in list(notes.values()):
             if note.edited_by_hand:  # keep the rules read back from a hand edit
                 emptied = not note.body.strip() and bool(note.rules)
+                if store.changed(note):  # saved again since the notes were read: this copy is stale
+                    pending.add(note.id)
+                    fresh = store.reread(note)
+                    if fresh:
+                        notes[note.id] = fresh
+                    else:
+                        del notes[note.id]
+                    self.stats["deferred, note changed on disk"] += 1
+                    log(
+                        f"  {note.title!r}: changed on disk since it was read, so its hand edit is read on the next run"
+                    )
+                    continue
+                if emptied and _quiet_for(note) < SETTLE_SECONDS:  # an editor may be mid-rewrite
+                    pending.add(note.id)
+                    self.stats["deferred, emptied note still settling"] += 1
+                    log(
+                        f"  {note.title!r}: its body was emptied by hand less than {SETTLE_SECONDS // 60} minutes "
+                        f"ago, so the note is left for the next run"
+                    )
+                    continue
                 store.write(note)
                 self.stats["edited by hand"] += 1
                 if emptied:  # nothing is lost: the rules stay in the file, retired
@@ -161,6 +187,7 @@ class Consolidation:
             (
                 (r.retired, {"title": n.title, "body": r.text, "scope": n.scope, "project": n.project})
                 for n in store.load(include_archived=True).values()
+                if n.id not in pending  # a hand edit left for the next run is not settled: not yet a deletion
                 for r in n.rules
                 if r.reason == REMOVED_BY_HAND
             ),
@@ -218,10 +245,20 @@ class Consolidation:
         return self.stats
 
 
+def _quiet_for(note: Note) -> float:
+    """Seconds since the note's file was last saved."""
+    try:
+        return time.time() - os.path.getmtime(note.path)
+    except OSError:
+        return float("inf")
+
+
 def expire(store: NoteStore, notes: dict[str, Note]) -> int:
     """Open threads go stale quickly; weak single-source notes fade if never seen again."""
     now, n = time.time(), 0
     for note in list(notes.values()):
+        if note.edited_by_hand:  # a hand edit left for the next run: nothing is written from this copy
+            continue
         try:
             age = (now - datetime.fromisoformat(note.last_seen).timestamp()) / 86400
         except ValueError:
@@ -399,10 +436,12 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
             note.confidence = "high"  # corroborated across several chats
         if note.id in b.work and _state(note) == _state(b.notes[note.id]):
             continue  # looked at, not changed
-        if note.id in b.work and store.changed(b.notes[note.id]):
+        if note.id in b.work and (b.notes[note.id].edited_by_hand or store.changed(b.notes[note.id])):
             # The file changed (a hand edit) or went while the batch ran, so this copy is stale and
-            # writing it would undo that. Later batches work from the file as it is now; these
-            # candidates stay new, and the next run folds them in.
+            # writing it would undo that; or its hand edit was left for the next run (see
+            # Consolidation). Later batches work from the file as it is now; these candidates stay
+            # new, and the next run folds them in.
+            why = "has a hand edit waiting" if b.notes[note.id].edited_by_hand else "changed on disk during the batch"
             fresh = store.reread(b.notes[note.id])
             if fresh and fresh.status == "active":
                 notes[note.id] = fresh
@@ -410,7 +449,7 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
                 notes.pop(note.id, None)
             deferred |= {c for c, n in b.merged.items() if n == note.id}
             stats["deferred, note changed on disk"] += 1
-            log(f"  not written: {note.title!r} changed on disk during the batch; its candidates stay for the next run")
+            log(f"  not written: {note.title!r} {why}; its candidates stay for the next run")
             continue
         note.updated = today()
         store.write(note)  # also renders the body, and archives a note with no rule left

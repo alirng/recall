@@ -175,13 +175,13 @@ All notable changes to recall are listed here. The format follows
   it back), a note you edited mid-run is not overwritten, and nothing is written until every
   operation in the batch is checked. Consolidation prompt v3. The note's body is rendered from
   its active rules, and a hand edit of the body is read back into them: a rule whose words
-  still stand keeps its id and sources, and only a rule whose words are gone is remembered as
-  removed by hand. A rule carries `said_by: developer` only when the developer typed a quote
-  that supports that rule outside any paste and the rule asks for no command, URL, network,
-  destructive or exfiltrating action, or to switch off a sandbox, permission or review;
-  otherwise it is unset. It is a hint, not authentication, and no reader shows it yet. Notes
-  written this way still read as plain notes in an older release, which drops the rule fields
-  if it rewrites the note.
+  still stand keeps its id and sources, and a rule you delete is remembered as removed by hand
+  even when its words sit inside a longer rule. A rule carries `said_by: developer` only when
+  the developer typed a quote that supports that rule outside any paste and the rule asks for
+  no command, URL, network, destructive or exfiltrating action, or to switch off a sandbox,
+  permission or review; otherwise it is unset. It is a hint, not authentication, and no reader
+  shows it yet. Notes written this way still read as plain notes in an older release, which
+  drops the rule fields if it rewrites the note.
 
 ### Fixed
 
