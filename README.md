@@ -720,7 +720,14 @@ body is a link too, and recall leaves it alone.
 The files are the source of truth. Edit them, and recall keeps your edits; delete one, and
 it is never learned again. The folder is a git repository, so `git log` shows what each
 night changed and `git revert` undoes it. It also opens as an Obsidian vault, though nothing
-requires Obsidian. Why markdown rather than a vector or graph store:
+requires Obsidian.
+
+Secrets are redacted before a note is written. If a rule is added later that would have
+caught something already in a note, recall does not rewrite the file: after the first index
+run with the new rules it names the notes (and the entries of `.recall/notes.json`) that the
+rules match, on stderr and in `~/.agents/recall/logs/redact.log`. Edit them by hand. The git history
+still holds every earlier version, so a secret that was committed stays in it until you rewrite
+the history (`git filter-repo`) or start the repository again. Why markdown rather than a vector or graph store:
 [docs/research/agent-memory-prior-art.md](docs/research/agent-memory-prior-art.md).
 
 ## Commands

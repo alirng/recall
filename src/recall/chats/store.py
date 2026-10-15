@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 
 from .. import paths
-from . import archive
+from . import archive, scrub
 from .errors import ToolError, anchor, identity
 from .projects import resolve
 from .redact import redact, redact_many
@@ -104,6 +104,8 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
                 "delete from meta where k like 'indexed_at:%' or k like 'indexed_at_root:%'"
                 " or k like 'scanned:%' or k = 'projects_stamp'"
             )
+            # the archive now holds copies as the old tables did: scrub.ensure rewrites them at the next index run
+            con.execute("delete from meta where k = ?", (scrub.META_KEY,))
             con.execute("insert or replace into meta values ('chat_schema', ?)", (CHAT_SCHEMA_VERSION,))
         con.commit()
     con.executescript(SCHEMA)

@@ -24,7 +24,8 @@ A copy holds what the index holds: messages already cleaned, truncated and redac
 redacted again whenever it is read (messages), so a rule added after the copy was made
 reaches the text that is put back, and so the shrink guard compares like with like: a copy
 that still held a key would not match the freshly redacted parse and would be carried over.
-scrub.py rewrites the stored blobs once per rule version.
+scrub.py rewrites the stored blobs once per rule version, and again after every snapshot (the
+snapshot copies the old tables' rows as they stand, and store.connect() marks the scrub due).
 """
 
 import difflib
@@ -78,7 +79,7 @@ def pack(s: Session, messages: list[Message], errors: list[ToolError] | None = N
         "native_id": s.native_id,
         "source": s.source,
         "project": s.project,
-        "title": s.title,
+        "title": redact(s.title),
         "branch": s.branch,
         "started_at": s.started_at,
         "updated_at": s.updated_at,
@@ -287,7 +288,10 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
     parser: the version that built them. A chat is copied when the archive has no copy of
     it, or when the index saw it more recently than any copy (a release without the archive
     indexed it since), keeping what that copy had marked Kept. Forgotten chats are never
-    copied: an older release, which does not know the forgotten list, may have read one back."""
+    copied: an older release, which does not know the forgotten list, may have read one back.
+    The rows are copied as they stand, not redacted here: the rules that caught a value in one
+    message may not catch its bare repeat in the next, which redact_many sees a chat at a time.
+    scrub.ensure does that to every archived copy at the next index run."""
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
     if not {"sessions", "messages"} <= have:
         return 0
@@ -303,8 +307,11 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
              and s.id not in (select id from forgotten_chats)"""
     ).fetchall()
     for r in rows:
+        # As the index holds them: scrub.ensure redacts the archive's copies a chat at a time (redact_many),
+        # which a message-by-message redact here would not match: a bare repeat of a value only a rule
+        # added since caught would be saved as it stands.
         msgs = [
-            Message(m[0], redact(m[2]), m[1])
+            Message(m[0], m[2], m[1])
             for m in con.execute("select role, ts, text from messages where session_id = ? order by seq", (r["id"],))
         ]
         if not msgs:

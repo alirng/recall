@@ -12,6 +12,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
+from ..chats.redact import redact
 from ..llm import Client
 from . import prompts
 from .notes import CONFIDENCE, Note, NoteStore, new_id, today
@@ -140,7 +141,7 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
         if kind == "discard" or (kind != "update" and not op["title"].strip()):
             con.executemany(
                 "update candidates set status='discarded', reason=? where id=?",
-                [(op["reason"][:300] or "discarded", c["id"]) for c in candidates],
+                [(redact(op["reason"])[:300] or "discarded", c["id"]) for c in candidates],
             )
             stats["discarded"] += len(candidates)
             continue
