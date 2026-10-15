@@ -33,6 +33,7 @@ import zlib
 from dataclasses import dataclass
 
 from .. import paths
+from .sources import compressed
 from .transcript import Message, Session, clean_user_text, drop_compaction_summary
 
 SCHEMA = """
@@ -128,8 +129,9 @@ def save(con, s: Session, messages: list[Message], parser: str, size: int | None
 
 
 def source_size(source: str) -> int | None:
+    """The chat file's size as plain text; a compressed Codex rollout is asked for its own."""
     try:
-        return os.path.getsize(source) if os.path.isfile(source) else None
+        return compressed.size(source)
     except OSError:
         return None
 
