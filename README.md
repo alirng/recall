@@ -275,7 +275,7 @@ Setup asks a few questions and does the rest:
 2. Model       picks who writes your memories, then tests it with a live call
 3. Index       reads your chat history into a local search index
 4. Connect     adds the MCP tools, the /recall skill and session-start hooks (Claude Code, Codex),
-               then asks once whether to keep every agent folder connected on its own
+               then asks once whether to keep every agent folder connected on its own (default no)
 5. Schedule    updates memory nightly (launchd on macOS, systemd on Linux)
 6. First run   starts in the background, newest chats first
 ```
@@ -401,30 +401,63 @@ it by hand. Until a note is judged it loads everywhere, as it did before context
 
 Working across a personal and a work account, or Cursor next to Cursor Nightly, means several
 agent folders: Claude Code with a second `CLAUDE_CONFIG_DIR`, Codex with another `CODEX_HOME`,
-a second Cursor build. recall finds each one (the defaults, the environment, `alias` and
-`export` lines in your shell rc files, `~/.claude-*` style folders, Cursor's builds), names it
-(`claude`, `claude-work`, `cursor-nightly`) and indexes it, so every chat records which folder it
-came from. `recall doctor` lists them:
+a second Cursor build. recall finds each one (the defaults, the environment, `export` lines,
+assignments that start a statement and aliases in your shell rc files, `~/.claude-*` style folders
+that hold a real config, Cursor's builds), names it (`claude`, `claude-work`, `cursor-nightly`) and
+indexes it, so every chat records which folder it came from. Text that only mentions a variable (an
+`echo`, a comment) names nothing; the home folder and anything above it never count; and a folder
+called `*-backup` or `*.bak`, or one whose chats are the default folder's, is not an account.
+`recall doctor` lists them:
 
 ```text
 claude          ~/.claude
-                connected; 5,812 chats, last indexed 3 min ago; a***@gmail.com
+                connected; 5,812 chats, last indexed 3 min ago; a***@***
 claude-work     ~/.claude-work
-                waiting for first launch (not created yet)
-cursor-nightly  ~/.cursor  [~/Library/Application Support/Cursor Nightly/User]
-                connected; 3 chats, last indexed 3 min ago; a***@example.com
+                waiting for first launch (the agent has not used this folder yet; recall writes nothing there)
+codex           ~/.codex
+                hooks written, trust pending: trust them once with /hooks in Codex; 212 chats, last indexed 3 min ago
+cursor          ~/.cursor  [~/Library/Application Support/Cursor/User]
+                connected, approval pending: Cursor asks once per project before it loads a new MCP server; 3 chats
 ```
 
-Say yes once to *keep recall connected automatically* (`recall setup` asks; or
-`recall autopilot on`) and recall installs its MCP server, hooks and skill in any folder that
-is new or has lost them, using the code `recall install` runs, with each file backed up first
-(`<file>.recall-backup`). After an upgrade it also adds any hook the new release installs. It checks every night and, when a session starts in Claude Code or
-Codex, looks for gaps and fixes them in the background. A folder your shell names but that
-does not exist yet is left alone until the first launch creates it. With autopilot off
-nothing changes, and `recall uninstall` turns it off. Chat history is only ever read. Cursor's
-builds share `~/.cursor` for MCP, hooks, skills and transcripts, so a second build needs no
-new files. Codex runs hooks only after you trust them once in `/hooks`, which recall cannot do
-for you.
+A folder is written to only after the agent has used it. Chats of a second account are searchable
+at once, but they only become memory when you say so, per root in `config.toml`:
+
+```toml
+[roots.claude-work]
+mine = true      # `recall dream` turns this root's chats into notes (default roots: on)
+index = false    # do not read this root's chats at all
+connect = false  # autopilot and `recall install` leave it alone
+```
+
+Roots are accounts and installs; `[contexts]` (above) are folders. A mined root's notes take their
+context from the folder each chat ran in, so name your work folders in `[contexts]` before you turn
+`mine` on for a work account, or its notes will belong to no context and load everywhere.
+
+Say yes once to *keep recall connected automatically* (`recall setup` asks, and the default is no;
+or `recall autopilot on`). recall then writes its MCP server, hooks and skill into each agent folder
+that is new or has lost them, using the code `recall install` runs, with each file backed up first
+(`<file>.recall-backup` keeps the file as it was before recall first touched it; later changes keep
+`<file>.<time>.recall-backup`). The hooks can add context to your prompts and continue a turn, so the
+yes covers the hooks this release installs and no others: a hook a later release adds shows in
+`recall doctor` as "new hooks available" and waits for you to run `recall install`. A hook that
+already runs an existing recall is left alone, so running recall from a checkout never takes the
+installed one's hooks over. It checks every night and, when a session starts in Claude Code or
+Codex, looks for gaps and fixes them in the background. With autopilot off nothing changes.
+`recall uninstall` turns it off, takes its lock and removes recall from every folder it connected,
+including one your rc no longer names; `recall uninstall --root claude-work` removes it from one
+and keeps autopilot out of it. Chat history is only ever read.
+
+Two agents ask for a second step that recall cannot take for you. Codex runs hooks only after you
+trust them once in `/hooks`. Cursor loads an MCP server from `mcp.json` only after you approve it,
+once per project (`cursor-agent mcp enable recall`, or the prompt in the app), and asks again when
+the entry changes; `recall doctor` reads the approval files and says "approval pending" until one
+exists. Cursor's builds share `~/.cursor` for MCP, hooks, skills and transcripts, so a second build
+needs no new files.
+
+**For agents:** `recall setup --yes` never turns autopilot on, and an agent must ask the person
+before it passes `--autopilot` or runs `recall autopilot on`: it writes into other tools' config
+folders.
 
 ## Projects
 
@@ -710,7 +743,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall explore [lookup <question> \| backfill] [--cwd DIR]` | earlier exploration reports for this repo, and what a new exploration would get |
 | `recall jit [<prompt>] [--file F] [--error TEXT] [--cwd DIR]` | what the mid-session hooks would hand an agent, and why |
-| `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents, in every folder found (every config file is backed up first); install also offers to keep Claude Code chats for ten years (`--only retention`) |
+| `recall install` · `uninstall [--only mcp,skill,hook] [--root NAME]` | connect to agents, in every folder found or one root (every config file is backed up first); install also offers to keep Claude Code chats for ten years (`--only retention`) |
 | `recall doctor [--json]` | each agent folder: connected or not, account hint, when last indexed |
 | `recall autopilot [on \| off] [--dry-run]` | keep every agent folder connected by itself; no argument runs the check now |
 | `recall schedule enable \| disable \| status` | the nightly run |

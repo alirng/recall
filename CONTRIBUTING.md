@@ -43,6 +43,11 @@ helped. The checks are:
   the public LongMemEval benchmark's session retrieval (download the file from
   huggingface.co/datasets/xiaowu0162/longmemeval-cleaned). A search change should hold up on
   both: LongMemEval has real labels but synthetic chats, your own history is the reverse.
+- **Setup eval.** `uv run python docs/benchmarks/setup_eval.py` builds sandbox homes with fake
+  Claude Code, Codex and Cursor folders and runs recall's real commands in them (never the real
+  home). It checks what autopilot connects, that nothing outside the agent roots is written, that
+  every changed file has a backup, and that chat history and secrets are untouched. A change to
+  roots, installs, hooks or backups adds or extends a scenario there.
 - **End to end.** Run the CLI, the MCP server (`recall serve`) and the session-start hook
   (`recall context` prints what the hook loads) against real history.
 
@@ -98,12 +103,18 @@ An agent source reads one agent's chat history and gives the index a list of cha
 `src/recall/chats/sources/claude.py`.
 
 1. Write `src/recall/chats/sources/<agent>.py` with two functions:
-   - `detect()` returns how many chats it found on disk, or `None` if the agent is not
+   - `detect(roots)` returns how many chats it found on disk, or `None` if the agent is not
      installed.
-   - `items()` yields one item per chat. Each item has a stable key and a cheap fingerprint,
+   - `items(roots)` yields one item per chat. Each item has a stable key and a cheap fingerprint,
      so unchanged chats are skipped on the next index. Its loader parses the chat only when
      it is needed.
-2. Register the source in `src/recall/chats/sources/__init__.py`.
+
+   `roots` is the list of `roots.Root` found for the agent (`src/recall/roots.py`): one person can
+   run the same agent against several folders (a second `CLAUDE_CONFIG_DIR`, Cursor beside Cursor
+   Nightly). Read every root's chats, and set `Session.root` to the root's name so the index can
+   tell them apart. Add the agent's folders to `discover()` (and its markers, the files only the
+   agent writes) and to `store.backfill_roots`, which names the root of chats indexed before roots
+   existed by the folder their source file sits in. Do not read a folder the agent has not used.
 3. Read the agent's files and never write to them. Open SQLite databases with `mode=ro`.
    Read JSONL through `read_jsonl`, which also reads a file the agent has compressed to
    `.jsonl.zst` (Codex does). Key such a chat by its plain `.jsonl` path in both forms
@@ -134,6 +145,12 @@ merges their `Reply`s into the one answer that agent accepts.
 2. Add it to `HANDLERS` under its kind, as `"recall.<module>:<function>"`.
 3. Add the agent events that should fire it to `INSTALL`, for Claude Code, Codex and Cursor
    alike. `recall install` writes exactly these entries, replacing older ones of its own.
+   Autopilot (`src/recall/autopilot.py`) installs only the hook kinds (`hooks.consent_key`: an
+   agent's event, with the exploration hooks as their own kind) that were installed when the
+   person said yes to it; a kind you add shows in `recall doctor` as "new hooks available" until
+   they run `recall install`. A hook that already runs an existing `recall hook --agent <agent>` is
+   never rewritten or reordered (Codex ties its trust to the entry); change a field only when the
+   release needs it.
 4. If the kind is new, teach `parse` to recognise it and `render` to answer it for each
    agent. Use formats confirmed in that agent's docs or source; a kind not confirmed for an
    agent stays silent there. Codex rejects replies with fields it does not know, Cursor's
