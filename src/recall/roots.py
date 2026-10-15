@@ -123,12 +123,19 @@ def set_option(root: Root, key: str, value: bool) -> None:
     config.save(cfg)
 
 
-def unmined(found: list[Root] | None = None) -> list[str]:
-    """Names of the roots whose chats `recall dream` must not read."""
-    from . import config
+def mined(cfg: dict | None = None) -> list[str]:
+    """Names of the roots whose chats `recall dream` may read: the default roots (named for their agent)
+    unless `mine = false`, and any root with `mine = true`. An allowlist built from config alone, so a
+    root that is no longer discovered (an alias taken out, a folder moved) stays out, with the chats
+    already indexed from it."""
+    if cfg is None:
+        from . import config
 
-    cfg = config.load()
-    return [r.name for r in found or discover() if not option(r, "mine", cfg)]
+        cfg = config.load()
+    table = cfg.get("roots") or {}
+    out = [a for a in AGENTS if not (isinstance(table.get(a), dict) and table[a].get("mine") is False)]
+    out += [n for n, t in table.items() if isinstance(t, dict) and t.get("mine") is True and n not in out]
+    return out
 
 
 def discover() -> list[Root]:

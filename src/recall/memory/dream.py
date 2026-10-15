@@ -108,26 +108,28 @@ def ensure_tables(con) -> None:
 
 def pending_chats(con) -> list:
     """Interactive chats not yet read at the current prompt version, newest first.
-    Of a chat copied between agents, only the fullest copy is read. Chats of a root the person has
-    not opted in ([roots.NAME] mine = true; the default roots are in unless mine = false) stay out.
-    A chat with no root yet is read: it was indexed before roots existed and is the default's."""
+    Of a chat copied between agents, only the fullest copy is read. Only chats of a root the person
+    has opted into are read ([roots.NAME] mine = true; the default roots are in unless mine = false),
+    whether or not that root is still found. A chat with no root yet is read: it was indexed before
+    roots existed and is the default's."""
     from .. import roots
 
-    out = roots.unmined()
-    room = f" and (s.root is null or s.root not in ({','.join('?' * len(out))}))" if out else ""
+    names = roots.mined()
+    marks = ",".join("?" * len(names))
+    room = f" and (s.root is null or s.root in ({marks}))"
     rows = con.execute(
         f"""select s.* from sessions s left join extractions e on e.session_id = s.id
            where s.origin = 'interactive' and s.n_messages >= ?{room}
              and (e.session_id is null or e.prompt_version != ? or e.at < s.updated_at or e.status = 'failed')
            order by s.updated_at desc""",
-        (MIN_MESSAGES, *out, extract.PROMPT_VERSION),
+        (MIN_MESSAGES, *names, extract.PROMPT_VERSION),
     ).fetchall()
     fullest = {}
     for r in con.execute(
         "select fingerprint, id from sessions where fingerprint is not null and origin = 'interactive' "
         + room.replace("s.root", "root")
         + " order by n_messages desc, updated_at asc",
-        out,
+        names,
     ):
         fullest.setdefault(r["fingerprint"], r["id"])
     return [r for r in rows if not r["fingerprint"] or fullest[r["fingerprint"]] == r["id"]]
