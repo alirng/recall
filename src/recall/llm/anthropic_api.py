@@ -9,7 +9,7 @@ import json
 import time
 from contextlib import contextmanager
 
-from .base import CREDIT_ERRORS, CreditsExhausted, FatalError, LLMError, Provider, Request, Result
+from .base import CREDIT_ERRORS, CreditsExhausted, FatalError, LLMError, Provider, Request, Result, SendUnconfirmed
 
 MAX_TOKENS = 16000  # thinking counts toward it
 
@@ -77,11 +77,41 @@ class AnthropicAPI(Provider):
     # --- Message Batches API ------------------------------------------------------------------
 
     def submit(self, requests: list[Request]) -> str:
-        with _errors():
-            batch = self._sdk().messages.batches.create(
-                requests=[{"custom_id": r.id, "params": self._params(r.system, r.prompt, r.schema)} for r in requests]
-            )
+        # No automatic retry: a create that timed out may have been accepted, and a silent second
+        # create would bill the same requests twice. The Batcher decides what to do (find_batch).
+        sdk = self._sdk().with_options(max_retries=0)
+        try:
+            with _errors():
+                batch = sdk.messages.batches.create(
+                    requests=[
+                        {"custom_id": r.id, "params": self._params(r.system, r.prompt, r.schema)} for r in requests
+                    ]
+                )
+        except (CreditsExhausted, FatalError):
+            raise
+        except LLMError as e:
+            cause = e.__cause__
+            import anthropic
+
+            if isinstance(cause, anthropic.APIConnectionError) or (
+                isinstance(cause, anthropic.APIStatusError) and cause.status_code >= 500
+            ):  # APITimeoutError is an APIConnectionError
+                raise SendUnconfirmed(str(e)) from e
+            raise
         return batch.id
+
+    def find_batch(self, count: int, since: float) -> str | None:
+        with _errors():
+            page = self._sdk().messages.batches.list(limit=20)
+            found = []
+            for b in page.data:
+                c = b.request_counts
+                total = c.processing + c.succeeded + c.errored + c.canceled + c.expired
+                if b.created_at.timestamp() >= since - 5 and total == count:
+                    found.append(b.id)
+        if len(found) > 1:
+            raise LLMError(f"{len(found)} recent batches match: {', '.join(found)}")
+        return found[0] if found else None
 
     def poll(self, batch_id: str) -> tuple[bool, str]:
         with _errors():

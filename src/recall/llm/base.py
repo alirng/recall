@@ -12,6 +12,11 @@ class LLMError(Exception):
     """A call failed in a way that may succeed on retry: timeout, rate limit, bad output."""
 
 
+class SendUnconfirmed(LLMError):
+    """A batch's send failed in a way that may still have reached the server (timeout, dropped
+    connection, 5xx): it may exist and bill. A rejected send (4xx, no credits) is not this."""
+
+
 class FatalError(LLMError):
     """A call cannot succeed as configured: bad key, unknown model, missing CLI."""
 
@@ -125,6 +130,12 @@ class Provider:
         raise NotImplementedError
 
     def cancel(self, batch_id: str) -> None:
+        raise NotImplementedError
+
+    def find_batch(self, count: int, since: float) -> str | None:
+        """After a send that may have gone through: the id of the one batch of `count` requests
+        created since `since` (epoch seconds), or None if there is none. Raise NotImplementedError
+        or LLMError when this cannot be told."""
         raise NotImplementedError
 
 
