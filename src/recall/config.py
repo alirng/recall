@@ -13,6 +13,9 @@ DEFAULTS = {
     "embeddings": {},  # optional semantic search: provider, name, base_url; see embeddings.py
     "dream": {"max_minutes": 120, "max_calls": 80},
     "contexts": {},  # name -> folders, e.g. work = ["~/Projects/Acme"]; see contexts.py
+    # connect = true: recall keeps every Claude Code, Codex and Cursor folder connected (see autopilot.py).
+    # Unset until `recall setup` asks, once.
+    "autopilot": {},
     "usage_log": True,  # recall logs its own use to usage.jsonl; see usage.py
     # When an agent edits a file another chat has open changes to: ask, worktree, tell or off
     # per situation. These are the recommended rules; see status.py and `recall setup`.
