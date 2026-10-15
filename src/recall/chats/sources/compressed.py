@@ -101,12 +101,12 @@ def content_size(path: str) -> int | None:
 def fingerprint(path: str) -> str | None:
     """ "<mtime_ns>:<size>" of a chat file. A .zst twin gives what the plain file gave (same
     modified time, declared uncompressed size), so compressing a chat does not make it look
-    changed. None when neither form exists."""
+    changed. None when neither form exists or can be stat-ed."""
     plain = plain_path(path)
     for candidate in (plain, plain + SUFFIX, plain):  # a file moving between forms is found by one of these
         try:
             st = os.stat(candidate)
-        except FileNotFoundError:
+        except OSError:  # gone, or not readable by us: the next form may be there
             continue
         size = content_size(candidate) if candidate.endswith(SUFFIX) else None
         return f"{st.st_mtime_ns}:{st.st_size if size is None else size}"
