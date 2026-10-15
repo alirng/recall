@@ -117,9 +117,9 @@ All notable changes to recall are listed here. The format follows
   one identity whichever form is on disk, so compressing or resuming it changes nothing.
   When none of the three is available, `recall index`, `recall stats` and `recall status` say
   how many Codex chats cannot be read and how to fix it. A damaged file is skipped with an
-  error, and a `zstd` that hangs is killed after a minute. `recall forget` lists the
-  `.jsonl.zst` that holds a compressed chat, and Explore's history reads compressed Codex
-  explorers. The chat index rebuilds once (chat schema 4).
+  error, and a `zstd` that hangs is killed after a minute. Commit links and Explore's history
+  read compressed Codex chats, and `recall forget` lists the `.jsonl.zst` that holds one.
+  The chat index rebuilds once (chat schema 4).
 
 ## [0.3.0] - 2026-10-13
 
