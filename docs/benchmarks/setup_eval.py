@@ -250,6 +250,56 @@ def _locked(path: str) -> bool:
         return True
 
 
+def agent_cli(*names: str) -> str | None:
+    for n in names:
+        found = shutil.which(n) or (n if os.path.isabs(n) and os.path.exists(n) else None)
+        if found:
+            return found
+    return None
+
+
+CODEX = ("codex", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
+
+
+def readback(sb: str, rows: list[dict]) -> dict[str, str]:
+    """Ask each agent's own CLI, in the sandbox, whether it sees recall's MCP server. recall's own check reads
+    files recall wrote, so this is the part that an agent confirms. root -> what the agent said ('' if no CLI)."""
+    out = {}
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("CODEX_", "CLAUDE", "CURSOR_", "RECALL_"))}
+    base |= {"HOME": sb, "PATH": os.path.join(sb, "bin") + os.pathsep + os.environ["PATH"]}
+    for r in rows:
+        if not r["exists"]:
+            continue
+        env, args, want = dict(base), None, None
+        if r["agent"] == "claude" and shutil.which("claude"):
+            if r["root"] != "claude":
+                env["CLAUDE_CONFIG_DIR"] = r["path"]
+            args, want = ["claude", "mcp", "get", "recall"], "Connected"  # it starts the server and shakes hands
+        elif r["agent"] == "codex" and agent_cli(*CODEX):
+            env["CODEX_HOME"] = r["path"]
+            args, want = [agent_cli(*CODEX), "mcp", "get", "recall"], "enabled: true"
+        elif (
+            r["agent"] == "cursor"
+            and r["root"] == "cursor"
+            and agent_cli("cursor-agent", os.path.expanduser("~/.local/bin/cursor-agent"))
+        ):
+            args, want = (
+                [agent_cli("cursor-agent", os.path.expanduser("~/.local/bin/cursor-agent")), "mcp", "list"],
+                "recall",
+            )
+        if not args:
+            continue
+        try:
+            done = subprocess.run(
+                args, env=env, capture_output=True, text=True, timeout=90, cwd=sb, stdin=subprocess.DEVNULL
+            )
+            text = done.stdout + done.stderr
+        except subprocess.TimeoutExpired:
+            text = "timed out"
+        out[r["root"]] = want if want in text else "NOT SEEN: " + " ".join(text.split())[:80]
+    return out
+
+
 def doctor(sb: str) -> list[dict]:
     rc, out = run(sb, "doctor", "--json")
     return json.loads(out) if rc == 0 else []
@@ -388,7 +438,7 @@ def fresh(agent: str):
 
     def check(sb: str, ctx: dict) -> list[str]:
         again = ctx["segments"][1]  # a second run must find nothing to do
-        state = UNRELATED + (".agents/recall/autopilot.json",)  # recall's own note of when it looked
+        state = (*UNRELATED, ".agents/recall/autopilot.json")  # recall's own note of when it looked
         changed = [p for p in diff(again["before"], again["after"]) if not p.startswith(state)]
         return [f"a second run changed {changed[:3]}"] if changed else []
 
@@ -448,7 +498,8 @@ def wipe_act(sb: str, ctx: dict) -> None:
 
 def wipe_check(sb: str, ctx: dict) -> list[str]:
     s = json.loads(slurp(os.path.join(sb, ".claude", "settings.json")))
-    if s.get("env", {}).get("MY_TOKEN") != SECRETS["claude-env"] or "Stop" not in s["hooks"]:
+    mine = [h["command"] for g in s["hooks"].get("Stop", []) for h in g["hooks"]]
+    if s.get("env", {}).get("MY_TOKEN") != SECRETS["claude-env"] or "echo done" not in mine:
         return ["the person's own settings were lost"]
     return []
 
@@ -587,6 +638,12 @@ def scenario(name: str) -> dict:
             errs.append(f"leaks: {lk[:3]}")
         if name in NOTHING_CHANGES and j["touched"]:
             errs.append(f"changed with the setting off: {j['touched']}")
+        seen = {}
+        if name not in NOTHING_CHANGES and name != "uninstall-stays-off":
+            seen = readback(sb, report["rows"])
+            errs += [
+                f"{root}: the agent's own CLI says {said}" for root, said in seen.items() if said.startswith("NOT")
+            ]
         timing = check_time(sb) if name == "update-wipes-hooks" else None
         return {
             "scenario": name,
@@ -598,6 +655,7 @@ def scenario(name: str) -> dict:
             "history_touched": len(j["history"]),
             "leaks": len(lk),
             "indexed": ctx["indexed"],
+            "agent_confirms": seen,
             "seconds": ctx["seconds"],
             "timing": timing,
             "errors": errs,
@@ -666,6 +724,9 @@ def main() -> None:
             f"{r['scenario']:{w}}  {r['connected']:30}  {r['files_touched']:7}  {r['unbacked']:8}  "
             f"{r['history_touched']:7}  {r['leaks']:5}  {idx}  {'PASS' if r['pass'] else 'FAIL'}"
         )
+        if r["agent_confirms"]:
+            ok = [k for k, v in r["agent_confirms"].items() if not v.startswith("NOT")]
+            print(f"    the agents' own CLIs see the MCP server in: {', '.join(ok) or 'none'}")
         for e in r["errors"]:
             print(f"    - {e}")
     for r in results:

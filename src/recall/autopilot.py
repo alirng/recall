@@ -44,9 +44,10 @@ def set_enabled(on: bool) -> None:
 # --- what is connected (read-only) ------------------------------------------------------------
 
 
-def report() -> list[dict]:
+def report(accounts: bool = True) -> list[dict]:
     """One row per root: its parts, account hint and when it was last indexed. Reads the index
-    read-only, so it never creates or migrates it."""
+    read-only, so it never creates or migrates it. accounts=False skips the sign-in lookups, one of
+    which opens Cursor's multi-GB database: `recall status`, which a menu bar polls, leaves them out."""
     from . import roots
     from .integrations import agents
 
@@ -67,7 +68,7 @@ def report() -> list[dict]:
                 "data": r.data,
                 "via": r.via,
                 "exists": r.exists,
-                "account": roots.account(r) if r.exists else None,
+                "account": roots.account(r) if r.exists and accounts else None,
                 "parts": have,
                 "connected": bool(have) and all(have.values()),
                 "needs_trust": r.agent == "codex" and bool(have.get("hook")),

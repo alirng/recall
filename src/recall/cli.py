@@ -511,7 +511,7 @@ def cmd_status(a) -> None:
     s = status.status(store.parse_since(a.since))
     if n := codex.unreadable():
         s["unreadable"] = {"agent": "codex", "chats": n, "fix": compressed.fix_hint()}
-    rows = autopilot.report()
+    rows = autopilot.report(accounts=False)
     if a.json:
         print(json.dumps({**s, "roots": rows}, indent=2))
         return
