@@ -8,6 +8,7 @@ so a file changed through a shell command does not show up.
 """
 
 import contextlib
+import difflib
 import functools
 import glob
 import json
@@ -47,6 +48,30 @@ _PATCH_FILE = re.compile(
 )
 
 
+def patch_hunks(text: str) -> tuple[list[str], list[str]]:
+    """The text each hunk of a one-file apply_patch replaces and puts in its place, from its
+    context (' ') and removed ('-') or added ('+') lines, so edit_lines can place it."""
+    olds, news, old, new = [], [], [], []
+
+    def close():
+        if old or new:
+            olds.append("".join(old))
+            news.append("".join(new))
+        old.clear()
+        new.clear()
+
+    for line in text.splitlines(keepends=True):
+        if line.startswith(("@@", "*** ")):
+            close()
+        elif line[:1] in (" ", "-"):
+            old.append(line[1:])
+            new.extend([line[1:]] if line[0] == " " else [])
+        elif line[:1] == "+":
+            new.append(line[1:])
+    close()
+    return [o for o in olds if o.strip()], [n for o, n in zip(olds, news, strict=True) if o.strip()]
+
+
 def patch_files(text: str, cwd: str | None) -> list[str]:
     """The files an apply_patch patch touches, made absolute against cwd."""
     out = []
@@ -71,6 +96,8 @@ class Live:
     checkout: str | None = None  # the worktree it last edited in, else the one it runs in
     # (checkout, repo-relative path, when), one per file, oldest edit first
     touched: list[tuple[str, str, float | None]] = field(default_factory=list)
+    # path -> the line ranges its edits left, as the edit hooks saw them
+    regions: dict[str, list[list[int]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -212,13 +239,19 @@ def _sessions(since: float) -> list[Live]:
         s.updated_at = max(s.updated_at, e["at"])
         for f, at in e["files"].items():
             _edited(s.edits, f, max(at, s.edits.get(f) or 0))
+        for f, spans in e["regions"].items():
+            s.regions.setdefault(f, []).extend(spans)
     return found
 
 
-def _log(agent: str, session: str, path: str, cwd: str | None, transcript: str | None) -> None:
+def _log(
+    agent: str, session: str, path: str, cwd: str | None, transcript: str | None, lines: list[list[int]] | None = None
+) -> None:
     entry = {"at": time.time(), "agent": agent, "session": session, "file": path, "cwd": cwd}
     if transcript:
         entry["transcript"] = os.path.realpath(transcript)
+    if lines:
+        entry["lines"] = lines
     with contextlib.suppress(OSError):
         os.makedirs(os.path.dirname(EDITS), exist_ok=True)
         if os.path.exists(EDITS) and os.path.getsize(EDITS) > 512_000:
@@ -249,11 +282,61 @@ def _logged(since: float) -> dict[str, dict]:
             continue
         e = out.setdefault(
             f"{x['agent']}:{x['session']}",
-            {"agent": x["agent"], "cwd": x.get("cwd"), "transcript": x.get("transcript"), "files": {}},
+            {"agent": x["agent"], "cwd": x.get("cwd"), "transcript": x.get("transcript"), "files": {}, "regions": {}},
         )
         e["at"] = x["at"]
         _edited(e["files"], x["file"], x["at"])
+        if spans := x.get("lines"):
+            e["regions"].setdefault(x["file"], []).extend(spans)
     return out
+
+
+WHOLE = [1, 10**9]  # an edit that rewrites the whole file
+
+
+def edit_lines(path: str, olds: list[str], news: list[str]) -> list[list[int]] | None:
+    """The lines an edit is about to change, one [first, last] per replaced piece of text; the
+    new text's length sets where each range ends. None when any text cannot be found."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    spans = []
+    for old, new in zip(olds, news, strict=False):
+        at = text.find(old) if old else -1
+        if at < 0:
+            return None
+        first = text.count("\n", 0, at) + 1
+        spans.append([first, first + max(old.rstrip("\n").count("\n"), new.rstrip("\n").count("\n"))])
+    return spans or None
+
+
+def content_lines(path: str, content: str) -> list[list[int]] | None:
+    """The lines a whole-file write changes, as [first, last] ranges in the file as it stands,
+    by comparing it with the new content. Cursor sends every edit this way, and Claude Code's
+    Write does too. A new file is all new."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            old = f.read().splitlines()
+    except FileNotFoundError:
+        return [WHOLE]
+    except OSError:
+        return None
+    matcher = difflib.SequenceMatcher(None, old, content.splitlines(), autojunk=False)
+    return [[i1 + 1, max(i1 + 1, i2)] for tag, i1, i2, _, _ in matcher.get_opcodes() if tag != "equal"] or None
+
+
+def _apart(mine: list[list[int]], theirs: list[list[int]], gap: int = 3) -> bool:
+    """Whether two sets of line ranges are clear of each other by more than `gap` lines."""
+    return bool(mine and theirs) and all(a[0] > b[1] + gap or b[0] > a[1] + gap for a in mine for b in theirs)
+
+
+def _span(ranges: list[list[int]]) -> str:
+    if any(r == WHOLE for r in ranges):
+        return "the whole file"
+    parts = [f"{a}" if a == b else f"{a}–{b}" for a, b in sorted({tuple(r) for r in ranges})]
+    return "line" + ("s " if len(parts) > 1 or "–" in parts[0] else " ") + ", ".join(parts)
 
 
 # --- git --------------------------------------------------------------------------
@@ -456,23 +539,24 @@ def _ago(seconds: float) -> str:
 SITUATIONS = {
     "same_copy": "you share a working copy, so either of you can overwrite the other",
     "conflict": "merging the two as they stand would conflict",
+    "apart": "you are changing different lines of one working copy, so with targeted edits you can both carry on",
     "overlap": "the two merge cleanly for now",
 }
 ACTIONS = ("worktree", "ask", "tell", "off")  # strongest first
 PRESETS = {
     "recommended": (
-        {"same_copy": "ask", "conflict": "tell", "overlap": "off"},
-        "stop and ask you before two live chats edit one working copy; mention conflicts",
+        {"same_copy": "ask", "conflict": "tell", "apart": "tell", "overlap": "off"},
+        "stop and ask you before two live chats edit the same lines of one working copy; mention conflicts",
     ),
     "hands-off": (
-        {"same_copy": "worktree", "conflict": "tell", "overlap": "off"},
+        {"same_copy": "worktree", "conflict": "tell", "apart": "tell", "overlap": "off"},
         "move the agent to its own worktree instead of asking",
     ),
     "tell": (
-        {"same_copy": "tell", "conflict": "tell", "overlap": "tell"},
+        {"same_copy": "tell", "conflict": "tell", "apart": "tell", "overlap": "tell"},
         "agents mention every overlap and never stop",
     ),
-    "off": ({"same_copy": "off", "conflict": "off", "overlap": "off"}, "no checks on edits"),
+    "off": ({"same_copy": "off", "conflict": "off", "apart": "off", "overlap": "off"}, "no checks on edits"),
 }
 
 
@@ -511,10 +595,15 @@ def _instruction(action: str, file: str, repo: str, default: str) -> str:
 
 
 def status(since: float) -> dict:
+    from . import mail
+
     _fresh()
     now = time.time()
     sessions = sorted(_sessions(since), key=lambda s: -s.updated_at)
     checkouts = _place(sessions)
+    letters = mail.recent(since)
+    # Messages name a chat by id or transcript; either finds it.
+    alias = {k: s.id for s in sessions for k in (s.id, s.source) if k}
 
     # A file that two sessions in one repo both edited and that is still open where each
     # edited it; work already in the default branch drops out. Its level:
@@ -539,8 +628,12 @@ def status(since: float) -> dict:
         conflict = None
         if len(tops) > 1:
             conflict = any(_conflict(checkouts[a], checkouts[b], f) for a, b in combinations(tops, 2))
-        level = "act" if conflict or (conflict is None and live) else "watch"
-        situation = "conflict" if conflict else "same_copy" if conflict is None and live else "overlap"
+        spans = [group[sid].regions.get(os.path.join(side[sid], f), []) for sid in group]
+        apart = conflict is None and live and all(_apart(a, b) for a, b in combinations(spans, 2))
+        level = "act" if conflict or (conflict is None and live and not apart) else "watch"
+        situation = (
+            "conflict" if conflict else "apart" if apart else "same_copy" if conflict is None and live else "overlap"
+        )
         overlaps.append(
             {
                 "repo": _repo_name(repo),
@@ -550,17 +643,27 @@ def status(since: float) -> dict:
                 "branches": [checkouts[t].branch or "detached" for t in tops],
                 "live": live,
                 "conflict": conflict,
+                "situation": situation,
                 "level": level,
                 "sides": [
                     {
                         "session": sid,
+                        "source": group[sid].source,
                         "checkout": side[sid],
                         "branch": checkouts[side[sid]].branch,
                         "base": checkouts[side[sid]].base,
                     }
                     for sid in group
                 ],
+                # What the chats have said to each other, oldest first.
+                "messages": [
+                    {"at": m["at"], "from": sender, "to": recipient, "text": m["text"]}
+                    for m in letters
+                    if (sender := alias.get(m.get("from")) or alias.get(m.get("sender_source"))) in group
+                    and (recipient := alias.get(m.get("to")) or alias.get(m.get("to_source"))) in group
+                ],
                 # For each session, a note to paste into it about the others.
+                "key": f"{repo}:{f}:{','.join(sorted(group))}",
                 "notes": {
                     sid: "\n".join(
                         _about(o, checkouts[side[oid]], situation, [f], side[oid] == side[sid])
@@ -592,6 +695,11 @@ def status(since: float) -> dict:
                 "files": sorted({f for _, f, _ in s.touched}),
             }
         )
+    # Overlaps the person pressed Resolve on; records for overlaps that are gone are dropped.
+    marks = mail.resolved()
+    for o in overlaps:
+        o["sent_at"] = marks.get(o["key"])
+    mail.forget_resolved({o["key"] for o in overlaps})
     levels = {o["level"] for o in overlaps}
     return {
         "generated_at": now,
@@ -601,6 +709,11 @@ def status(since: float) -> dict:
         "sessions": out,
         "overlaps": overlaps,
     }
+
+
+def chat(chat_id: str, since: float) -> Live | None:
+    """A recent chat by id."""
+    return next((s for s in _sessions(since) if s.id == chat_id), None)
 
 
 def elsewhere(path: str, since: float) -> str:
@@ -655,15 +768,19 @@ def check_edit(
     since: float,
     acts=("worktree", "ask", "tell"),
     transcript: str | None = None,
+    lines: list[list[int]] | None = None,
 ) -> Decision | None:
-    """Called when an agent is about to edit `path`. Logs the edit, then checks other chats
-    with open changes to the same file in the same repo and applies the person's rule for the
-    worst situation found, if it is one of `acts` (an agent hook may only be able to refuse
-    before an edit and to inform after it). Each other chat is raised once, listing every
+    """Called when an agent is about to edit `path` (`lines`: the ranges the edit changes, if
+    known). Logs the edit, then checks other chats with open changes to the same file in the
+    same repo and applies the person's rule for the worst situation found, if it is one of
+    `acts` (an agent hook may only be able to refuse before an edit and to inform after it).
+    The other chat gets a message about it too. Each other chat is raised once, listing every
     file the two share, and again only if things get worse."""
     _fresh()
+    from . import mail
+
     path = os.path.realpath(path if os.path.isabs(path) or not cwd else os.path.join(cwd, path))
-    _log(agent, session_id, path, cwd, transcript)
+    _log(agent, session_id, path, cwd, transcript, lines)
     tops: dict[str, str | None] = {}
     top = _top(path, tops)
     repo = _repo_dir(top) if top else None
@@ -686,11 +803,15 @@ def check_edit(
     others = [(s, theirs) for s in sessions if not is_me(s) and rel in (theirs := in_repo(s))]
     if not others:
         return None
+    mine = next((s for s in sessions if s.id == me), None) or next((s for s in sessions if is_me(s)), None)
     my_files = {f for s in sessions if is_me(s) for f in in_repo(s)} | {rel}
+    # After an edit (Cursor's postToolUse) the file already holds it; the lines this chat's
+    # hook recorded before the edit stand in.
+    lines = lines or (mine.regions.get(path) if mine else None)
     checkouts: dict[str, Checkout | None] = {top: _checkout(top)}
     if not checkouts[top]:
         return None
-    rank = {name: i for i, name in enumerate(reversed(SITUATIONS))}  # overlap 0 … same_copy 2
+    rank = {name: i for i, name in enumerate(reversed(SITUATIONS))}  # overlap 0 … same_copy 3
     found = []
     for s, theirs in others:
         t, when = theirs[rel]
@@ -699,15 +820,16 @@ def check_edit(
         c = checkouts[t]
         if not c or rel not in c.open or _committed_since(c, rel, when):
             continue
+        spans = s.regions.get(os.path.join(t, rel), [])
         if t == top and time.time() - s.updated_at <= LIVE_SECONDS:
-            situation = "same_copy"
+            situation = "apart" if lines and _apart(lines, spans) else "same_copy"
         elif t != top and _conflict(checkouts[top], c, rel):
             situation = "conflict"
         else:
             situation = "overlap"
         if want[situation] in acts:
             shared = sorted(f for f, (ft, _) in theirs.items() if f in my_files and ft == t and f in c.open)
-            found.append((situation, s, c, shared, t == top))
+            found.append((situation, s, c, shared, t == top, spans))
     if not found:
         return None
 
@@ -730,12 +852,42 @@ def check_edit(
 
     action = min((want[sit] for sit, *_ in fresh), key=ACTIONS.index)
     default = (_git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ["main"])[0]
-    lines = ["recall: " + _about(s, c, sit, shared, same) for sit, s, c, shared, same in fresh]
-    lines.append(_instruction(action, rel, _repo_name(repo), default))
+    my_title = mine.title if mine else f"{AGENTS.get(agent, agent)} chat"
+    mine_where = checkouts[top].branch or "detached"
+    out = []
+    for sit, s, c, shared, same, spans in fresh:
+        line = "recall: " + _about(s, c, sit, shared, same)
+        if spans:
+            line += f" Its edits there: {_span(spans)}."
+        if lines:
+            line += f" Yours: {_span(lines)}."
+        out.append(
+            line + " recall has told that chat too; to message it, use the recall MCP server's message_chat tool"
+            f' with me="{me}" and to="{s.id}".'
+        )
+        # The other side hears it from recall, so the two can agree who goes first.
+        about = f"{_span(lines)} of " if lines else ""
+        where = "in your working copy" if same else f"on branch {mine_where}"
+        note = (
+            f'"{my_title}" ({AGENTS.get(agent, agent)}, {where}) is about to change {about}{rel}, which you also '
+            f"have open changes to: {SITUATIONS[sit]}."
+        )
+        if spans:
+            note += f" Your edits there: {_span(spans)}."
+        if mine and mine.ask:
+            note += f' It was asked: "{_line(mine.ask, 140)}"'
+        note += " If you are changing the same part, agree with it who goes first."
+        mail.post(s.id, me, my_title, note, to_source=s.source, file=rel, repo=_repo_name(repo), sender_source=source)
+    out.append(_instruction(action, rel, _repo_name(repo), default))
     worst, other = max(((sit, s) for sit, s, *_ in fresh), key=lambda x: rank[x[0]])
-    words = {"same_copy": " in this working copy", "conflict": " and would conflict", "overlap": ""}[worst]
+    words = {
+        "same_copy": " in this working copy",
+        "conflict": " and would conflict",
+        "apart": ", on other lines",
+        "overlap": "",
+    }[worst]
     notice = f"recall: {os.path.basename(path)} is also open in “{other.title}”{words}"
-    return Decision(action, "\n".join(lines), notice)
+    return Decision(action, "\n".join(out), notice)
 
 
 def on_edit(event):
@@ -748,7 +900,11 @@ def on_edit(event):
     found = [
         d
         for f in event.files
-        if (d := check_edit(event.agent, event.session, f, event.cwd, since, event.acts, event.transcript))
+        if (
+            d := check_edit(
+                event.agent, event.session, f, event.cwd, since, event.acts, event.transcript, event.lines(f)
+            )
+        )
     ]
     if not found:
         return None

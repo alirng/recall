@@ -349,8 +349,9 @@ other chats until recall reads their history or hooks into them.
 - **Automatic:** the session-start hook loads your working preferences, a line for each
   always-on rule the repo gives another agent but not this one (a Cursor rule, say, in a
   Claude Code session), and the current project's notes, capped at 6,000 characters.
-- **On demand:** eight read-only MCP tools: `search_chats`, `read_chat`, `recent_chats`,
-  `memory_search`, `read_note`, `project_memory`, `list_projects` and `open_elsewhere`.
+- **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
+  `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and
+  `message_chat`, which leaves a message for another chat in recall's own mailbox.
 - **Explicit:** type `/recall what did we decide about auth` in any agent with skills.
 
 Agents treat notes and transcripts as background, not instructions: the current request and
@@ -432,15 +433,38 @@ offers presets; these are the recommended ones):
 
 ```toml
 [coordination]
-same_copy = "ask"    # another live chat is editing this same working copy
+same_copy = "ask"    # another live chat is editing the same lines of this working copy
 conflict = "tell"    # the two branches would conflict on this file if merged now
+apart = "tell"       # another live chat is editing this working copy, on other lines
 overlap = "off"      # open in both, but merges cleanly (or the other chat has gone quiet)
 ```
 
 `ask` stops the agent once so it checks with you; `worktree` stops it once and has it move
 its work into its own git worktree; `tell` lets the edit through and tells the agent, which
 mentions it to you; `off` does nothing. Each other chat is raised once, with every file the
-two share, and again only if things get worse.
+two share, and again only if things get worse. The hooks record which lines each edit
+changes, so two chats working on different parts of one file get `apart`, not `same_copy`.
+
+The other chat hears about it too: recall messages it which chat is about to change which
+lines, and what that chat was asked. Either agent can answer with the `message_chat` MCP
+tool, to agree who goes first or that they are on different parts. The menu bar shows the
+conversation under the file. A chat reads its messages:
+
+| | On its next edit | When it finishes a turn | On your next prompt |
+| --- | --- | --- | --- |
+| Claude Code | yes | yes: it keeps going to answer | yes |
+| Codex | yes | yes: it keeps going to answer | yes |
+| Cursor | yes, after the edit | yes: sent as a follow-up message | no (Cursor's prompt hook can only block) |
+
+Keeping an agent going is capped at three times an hour per sender (and Cursor's follow-ups
+at three in a row), so two agents cannot keep each other talking. A chat sitting idle hears
+nothing until one of these happens. Line ranges come from each agent's edit: the text
+Claude Code replaces, the hunks of a Codex patch, and the difference between the file and
+the whole new file Cursor writes.
+
+In the menu bar, **Resolve** on a shared file sends every chat involved a note asking it to
+agree with the others who goes first. Each chat reads it at the next of those moments, so
+nothing is interrupted; the row shows when it was sent and clears once the overlap does.
 
 ### What recall is used for
 
@@ -534,6 +558,7 @@ requires Obsidian. Why markdown rather than a vector or graph store:
 | `recall usage [--since 7d]` | how recall itself gets used, from its local log |
 | `recall status [--since 12h] [--json]` | what each agent is working on now, and files two chats both have open changes to |
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
+| `recall resolve --repo <repo> --file <file>` | message every chat in an overlap to agree who goes first (the menu bar's Resolve) |
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall install` · `uninstall [--only mcp,skill,hook]` | connect to agents (every config file is backed up first) |
 | `recall schedule enable \| disable \| status` | the nightly run |

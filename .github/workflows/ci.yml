@@ -94,6 +94,12 @@ jobs:
           echo "{\"session_id\":\"ci\",\"tool_input\":{\"file_path\":\"$readme\"}}" | recall hook --agent claude
           echo "{\"session_id\":\"ci\",\"hook_event_name\":\"SessionStart\",\"cwd\":\"$GITHUB_WORKSPACE\"}" | recall hook --agent codex
           echo "{\"session_id\":\"ci\",\"tool_input\":{\"file_path\":\"$readme\"}}" | recall status --hook --agent claude  # the old entry
+          echo '{"session_id":"ci","hook_event_name":"UserPromptSubmit"}' | recall hook --agent claude
+          echo '{"session_id":"ci","hook_event_name":"Stop"}' | recall hook --agent claude
+          echo '{"session_id":"ci","hook_event_name":"UserPromptSubmit","prompt":"hi"}' | recall hook --agent codex
+          echo '{"session_id":"ci","hook_event_name":"Stop","stop_hook_active":false}' | recall hook --agent codex
+          echo '{"conversation_id":"ci","hook_event_name":"stop","status":"completed","loop_count":0}' \
+            | recall hook --agent cursor
           # Cursor blocks the edit unless its hook answers, so the quiet answer must be "allow".
           echo "{\"conversation_id\":\"ci\",\"hook_event_name\":\"preToolUse\",\"tool_input\":{\"file_path\":\"$readme\"}}" \
             | recall hook --agent cursor | grep -q '"permission": "allow"'

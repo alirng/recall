@@ -1,4 +1,5 @@
-"""The MCP server every agent connects to. All tools read; none change anything.
+"""The MCP server every agent connects to. Every tool reads, except message_chat, which only
+adds a message to recall's own mailbox for another chat.
 
 Each call is noted in recall's usage log (usage.py) with the agent that made it, so recall
 can tell which of its tools agents actually use.
@@ -311,6 +312,32 @@ def open_elsewhere(path: str, ctx: Context = None) -> str:
     from .chats.store import parse_since
 
     return _logged(ctx, "open_elsewhere", {"cwd": path}, lambda: status.elsewhere(path, parse_since("12h")))
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+def message_chat(to: str, text: str, me: str, ctx: Context = None) -> str:
+    """Send a short message to another coding-agent chat (Claude Code, Codex, Cursor, …) that
+    recall told you about, to agree who changes a shared file first or that you are working on
+    different parts. `to` and `me` are the chat ids from recall's note. The other chat reads it
+    on its next edit, at the end of its turn, or when its user next writes."""
+    from . import mail, status
+    from .chats.store import parse_since
+
+    def run():
+        since = parse_since("12h")
+        sender, recipient = status.chat(me, since), status.chat(to, since)
+        mail.post(
+            to,
+            me,
+            sender.title if sender else me,
+            text,
+            to_source=recipient.source if recipient else None,
+            sender_source=sender.source if sender else None,
+        )
+        who = f'"{recipient.title}"' if recipient else to
+        return f"Sent to {who}. Its answer, if any, reaches you the same way."
+
+    return _logged(ctx, "message_chat", {"to": to}, run)
 
 
 @mcp.tool(annotations=READ_ONLY)
