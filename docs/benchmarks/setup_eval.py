@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import statistics
@@ -46,6 +47,7 @@ SECRETS = {
     for k in ("rc", "claude-env", "claude-mcp", "codex-auth", "codex-mcp", "cursor-token", "cursor-mcp")
 }
 EMAILS = {"claude": "pat.canary@example.test", "work": "sam.canary@corp.example", "cursor": "kim.canary@example.test"}
+DOMAINS = ("example.test", "corp.example")  # the masked hint hides the employer's domain too
 
 
 # --- building a sandbox -----------------------------------------------------------------------------
@@ -106,8 +108,8 @@ def claude_folder(sb: str, folder: str, email: str, global_file: str, chat: str 
         )
 
 
-def codex_folder(sb: str, chat: str) -> None:
-    d = os.path.join(sb, ".codex")
+def codex_folder(sb: str, chat: str, folder: str = ".codex") -> None:
+    d = os.path.join(sb, folder)
     put(
         os.path.join(d, "config.toml"),
         'model = "gpt"\n\n[mcp_servers.other]\ncommand = "npx"\nargs = ["x"]\n'
@@ -181,14 +183,15 @@ def shell_rc(sb: str, alias: bool) -> None:
 
 
 def turn_on(sb: str, on: bool = True) -> None:
-    """What `recall setup` records after the one-time yes."""
-    put(os.path.join(sb, ".agents", "recall", "config.toml"), f"[autopilot]\nconnect = {'true' if on else 'false'}\n")
+    """What `recall setup` records after the one-time yes: the setting and the hooks the yes covers
+    (through the real code, without running the check)."""
+    run_py(sb, f"from recall import autopilot; autopilot.set_enabled({on})")
 
 
 # --- running recall in it -------------------------------------------------------------------------
 
 
-def run(sb: str, *args: str, timeout: int = 120) -> tuple[int, str]:
+def sandbox_env(sb: str, extra: dict | None = None) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CODEX_", "CLAUDE", "CURSOR_", "RECALL_"))}
     env |= {
         "HOME": sb,
@@ -196,9 +199,13 @@ def run(sb: str, *args: str, timeout: int = 120) -> tuple[int, str]:
         "RECALL_MEMORY": os.path.join(sb, ".agents", "memory"),
         "PATH": os.path.join(sb, "bin") + os.pathsep + os.environ["PATH"],
     }
+    return env | (extra or {})
+
+
+def run(sb: str, *args: str, timeout: int = 120, env: dict | None = None) -> tuple[int, str]:
     done = subprocess.run(
         [sys.executable, "-m", "recall", *args],
-        env=env,
+        env=sandbox_env(sb, env),
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -207,17 +214,24 @@ def run(sb: str, *args: str, timeout: int = 120) -> tuple[int, str]:
     return done.returncode, done.stdout + done.stderr
 
 
+def run_py(sb: str, code: str, env: dict | None = None, timeout: int = 120) -> str:
+    """Python inside the sandbox, importing the recall under test."""
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        env=sandbox_env(sb, env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return done.stdout + done.stderr
+
+
 def session_start(sb: str, wait: bool = True) -> float:
     """What an agent does when a session starts: pipe the hook its JSON. Returns the wall time in ms;
     with wait, also lets the background run it starts finish."""
     payload = json.dumps({"hook_event_name": "SessionStart", "session_id": "s", "cwd": sb, "source": "startup"})
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("CODEX_", "CLAUDE", "CURSOR_", "RECALL_"))}
-    env |= {
-        "HOME": sb,
-        "RECALL_HOME": os.path.join(sb, ".agents", "recall"),
-        "RECALL_MEMORY": os.path.join(sb, ".agents", "memory"),
-        "PATH": os.path.join(sb, "bin") + os.pathsep + os.environ["PATH"],
-    }
+    env = sandbox_env(sb)
     start = time.perf_counter()
     subprocess.run(
         [sys.executable, "-m", "recall", "hook", "--agent", "claude"],
@@ -258,6 +272,8 @@ def agent_cli(*names: str) -> str | None:
     return None
 
 
+NAME = "recall"
+CURSOR = ("cursor-agent", os.path.expanduser("~/.local/bin/cursor-agent"))
 CODEX = ("codex", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
 
 
@@ -278,15 +294,20 @@ def readback(sb: str, rows: list[dict]) -> dict[str, str]:
         elif r["agent"] == "codex" and agent_cli(*CODEX):
             env["CODEX_HOME"] = r["path"]
             args, want = [agent_cli(*CODEX), "mcp", "get", "recall"], "enabled: true"
-        elif (
-            r["agent"] == "cursor"
-            and r["root"] == "cursor"
-            and agent_cli("cursor-agent", os.path.expanduser("~/.local/bin/cursor-agent"))
-        ):
-            args, want = (
-                [agent_cli("cursor-agent", os.path.expanduser("~/.local/bin/cursor-agent")), "mcp", "list"],
-                "recall",
+        elif r["agent"] == "cursor" and r["root"] == "cursor" and agent_cli(*CURSOR):
+            # Cursor lists a server it has not been told to load as "not loaded (needs approval)", which
+            # matches the word "recall" too. Approve it here, as a person would once per project, then
+            # the line must say it is ready.
+            subprocess.run(
+                [agent_cli(*CURSOR), "mcp", "enable", NAME],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=90,
+                cwd=sb,
+                stdin=subprocess.DEVNULL,
             )
+            args, want = [agent_cli(*CURSOR), "mcp", "list"], f"{NAME}: ready"
         if not args:
             continue
         try:
@@ -334,8 +355,22 @@ def diff(before: dict, after: dict) -> dict[str, str]:
     return d
 
 
-def judge(before: dict, after: dict) -> dict:
-    """touched / unbacked / unexpected / history / leaks, from two snapshots."""
+BACKUP_OF = re.compile(r"(\.\d{8}-\d{6}(-\d+)?)?\.recall-backup$")
+ROOT_DIRS = {".claude", ".codex", ".cursor", ".claude.json"}  # the agent folders every scenario has, by top-level name
+
+
+def backups_of(path: str, after: dict) -> list:
+    """What recall kept of a file: the first copy, <file>.recall-backup, and later ones, <file>.<time>.recall-backup."""
+    return [
+        v
+        for k, v in after.items()
+        if k == path + ".recall-backup" or (k.startswith(path + ".") and k.endswith(".recall-backup"))
+    ]
+
+
+def judge(before: dict, after: dict, roots: set | frozenset = ROOT_DIRS, links: dict | None = None) -> dict:
+    """touched / unbacked / unexpected / history / leaks, from two snapshots. `roots`: the top-level
+    folders of the agent roots this scenario has; a new config file anywhere else is unexpected."""
     changes = diff(before, after)
     own = lambda p: p.startswith(".agents" + os.sep)  # noqa: E731  recall's own folders
     touched, unbacked, unexpected, history = [], [], [], []
@@ -348,12 +383,16 @@ def judge(before: dict, after: dict) -> dict:
         if own(path) or base.endswith(".recall-backup") or "/backups/" in full:
             continue
         touched.append(f"{kind} {path}")
+        top = path.split(os.sep)[0]
         if kind == "modified":
-            backup = after.get(path + ".recall-backup")
-            if backup != before[path]:
+            if before[path] not in backups_of(path, after) + backups_of((links or {}).get(path, path), after):
                 unbacked.append(path)
+            if top not in roots:
+                unexpected.append(f"modified {path}")
         elif kind == "created":
-            ok = base in ROOT_FILES or "/skills/recall" in full or full.endswith("/skills")
+            ok = top in roots and (base in ROOT_FILES or "/skills/recall" in full or full.endswith("/skills"))
+            if base == ".claude.json" and top == ".claude":
+                ok = False  # recall never creates the file a launch with CLAUDE_CONFIG_DIR=~/.claude would use
             if not ok:
                 unexpected.append(path)
         else:
@@ -363,15 +402,18 @@ def judge(before: dict, after: dict) -> dict:
 
 def leaks(before: dict, after: dict, outputs: str) -> list[str]:
     """Secrets (and raw emails) in a place they were not in before: recall's own files, its output."""
-    needles = [*SECRETS.values(), *EMAILS.values()]
+    needles = [*SECRETS.values(), *EMAILS.values(), *DOMAINS]
     found = []
     for path, data in after.items():
         if isinstance(data, str):
             continue
         for n in needles:
             if n.encode() in data and not (path in before and n.encode() in before[path]):
-                if path.endswith(".recall-backup") and n.encode() in before.get(path[: -len(".recall-backup")], b""):
+                held = before.get(BACKUP_OF.sub("", path), b"")
+                if path.endswith(".recall-backup") and n.encode() in (held if isinstance(held, bytes) else b""):
                     continue  # a backup of a file that held it
+                if path.endswith(".recall-backup") and held and isinstance(held, str):
+                    continue  # a backup made of what a symlink points to
                 if "/backups/" in "/" + path:
                     continue  # Claude Code's own backup of its own file
                 found.append(f"{n} in {path}")
@@ -435,12 +477,16 @@ def fresh(agent: str):
     def act(sb: str, ctx: dict) -> None:
         seg(sb, ctx, "nightly", lambda: autopilot_run(sb))
         seg(sb, ctx, "next night", lambda: autopilot_run(sb))
+        ctx["status"] = run(sb, "status", "--since", "1h")[1]
 
     def check(sb: str, ctx: dict) -> list[str]:
         again = ctx["segments"][1]  # a second run must find nothing to do
         state = (*UNRELATED, ".agents/recall/autopilot.json")  # recall's own note of when it looked
         changed = [p for p in diff(again["before"], again["after"]) if not p.startswith(state)]
-        return [f"a second run changed {changed[:3]}"] if changed else []
+        errs = [f"a second run changed {changed[:3]}"] if changed else []
+        if agent == "codex" and ("awaiting Codex trust" not in ctx["status"] or "1 of 1 connected" in ctx["status"]):
+            errs.append("recall status counts Codex hooks nobody has trusted as connected")
+        return errs
 
     return build, act, check
 
@@ -481,6 +527,7 @@ def wipe_build(sb: str) -> None:
 
 
 def wipe_act(sb: str, ctx: dict) -> None:
+    ctx["pristine"] = slurp(os.path.join(sb, ".claude", "settings.json"))
     seg(sb, ctx, "connect", lambda: autopilot_run(sb), judged=False)
     # an update (or a sync of dotfiles) wipes recall's hooks and server entries
     p = os.path.join(sb, ".claude", "settings.json")
@@ -501,6 +548,12 @@ def wipe_check(sb: str, ctx: dict) -> list[str]:
     mine = [h["command"] for g in s["hooks"].get("Stop", []) for h in g["hooks"]]
     if s.get("env", {}).get("MY_TOKEN") != SECRETS["claude-env"] or "echo done" not in mine:
         return ["the person's own settings were lost"]
+    first = os.path.join(sb, ".claude", "settings.json.recall-backup")
+    later = [k for k in snap(sb) if k.startswith(".claude/settings.json.2") and k.endswith(".recall-backup")]
+    if slurp(first) != ctx["pristine"]:
+        return ["the first backup was overwritten by a later run"]
+    if not later:
+        return ["the second change to settings.json left no backup of its own"]
     return []
 
 
@@ -577,6 +630,626 @@ def uninstall_check(sb: str, ctx: dict) -> list[str]:
     return [f"something reconnected after uninstall: {changed[:3]}"] if changed else []
 
 
+# --- one scenario per review finding ----------------------------------------------------------------------
+
+
+def connect_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "autopilot", lambda: autopilot_run(sb))
+
+
+def rows_of(ctx: dict) -> list[str]:
+    return [r["root"] for r in ctx["rows"]]
+
+
+def default_named_build(sb: str) -> None:
+    # CLAUDE_CONFIG_DIR and CODEX_HOME naming the default folders, in the rc and in the environment
+    put(os.path.join(sb, ".zshrc"), 'export CLAUDE_CONFIG_DIR="$HOME/.claude"\nexport CODEX_HOME=$HOME/.codex\n')
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    turn_on(sb)
+
+
+def default_named_act(sb: str, ctx: dict) -> None:
+    env = {"CLAUDE_CONFIG_DIR": os.path.join(sb, ".claude"), "CODEX_HOME": os.path.join(sb, ".codex")}
+    ctx["env"] = env
+    seg(sb, ctx, "named, never launched that way", lambda: run(sb, "autopilot", env=env)[1])
+    ctx["no_second_file"] = not os.path.exists(os.path.join(sb, ".claude", ".claude.json"))
+    # someone launches Claude Code once with the variable: Claude Code makes ~/.claude/.claude.json itself
+    jput(os.path.join(sb, ".claude", ".claude.json"), {"oauthAccount": {"emailAddress": EMAILS["claude"]}})
+    seg(sb, ctx, "launched with the variable", lambda: run(sb, "autopilot", env=env)[1])
+
+
+def default_named_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if not ctx["no_second_file"]:
+        errs.append("recall created ~/.claude/.claude.json, which only a launch with the variable would use")
+    if rows_of(ctx) != ["claude", "codex"]:
+        errs.append(f"roots {rows_of(ctx)}, expected claude and codex")
+    for label, path in (("~/.claude.json", ".claude.json"), ("~/.claude/.claude.json", ".claude/.claude.json")):
+        found = json.loads(slurp(os.path.join(sb, path))).get("mcpServers", {})
+        if "recall" not in found:
+            errs.append(f"recall is missing from {label}")
+    if shutil.which("claude"):
+        env = sandbox_env(sb, {"CLAUDE_CONFIG_DIR": os.path.join(sb, ".claude")})
+        said = subprocess.run(
+            ["claude", "mcp", "get", "recall"], env=env, cwd=sb, capture_output=True, text=True, timeout=90
+        )
+        if "Connected" not in said.stdout + said.stderr:
+            errs.append("Claude Code started with CLAUDE_CONFIG_DIR=~/.claude does not see the MCP server")
+    return errs
+
+
+def echo_build(sb: str) -> None:
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    # folders an agent has used, which the rc only mentions
+    claude_folder(sb, "ghost-claude", EMAILS["work"], "ghost-claude/.claude.json", "a ghost chat")
+    codex_folder(sb, "a ghost chat", "ghost-codex")
+    put(
+        os.path.join(sb, ".zshrc"),
+        'echo "CLAUDE_CONFIG_DIR=$HOME/ghost-claude"\n'
+        "printf 'export CODEX_HOME=%s\\n' \"$HOME/ghost-codex\"\n"
+        'echo "a quoted line\nCLAUDE_CONFIG_DIR=$HOME/ghost-claude"   # don\'t follow this\n'
+        "alias show='echo CODEX_HOME=$HOME/ghost-codex'\n"
+        "# CLAUDE_CONFIG_DIR=$HOME/ghost-claude\n"
+        "note CODEX_HOME=$HOME/ghost-codex\n"
+        "grep -q CLAUDE_CONFIG_DIR=$HOME/ghost-claude notes.txt\n",
+    )
+    turn_on(sb)
+
+
+def echo_check(sb: str, ctx: dict) -> list[str]:
+    return [f"roots {rows_of(ctx)}, expected only claude"] if rows_of(ctx) != ["claude"] else []
+
+
+def home_build(sb: str) -> None:
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    put(
+        os.path.join(sb, ".zshrc"),
+        "export CLAUDE_CONFIG_DIR=$HOME\nexport CODEX_HOME=$HOME/..\nexport CODEX_HOME=/Users\n"
+        "alias cc='CLAUDE_CONFIG_DIR=\"${HOME}/\" claude'\n",
+    )
+    turn_on(sb)
+
+
+def home_check(sb: str, ctx: dict) -> list[str]:
+    return [f"roots {rows_of(ctx)}, expected claude and codex"] if rows_of(ctx) != ["claude", "codex"] else []
+
+
+def backup_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    for name in (".claude-backup", ".claude_old", ".claude-2026-09"):  # by name, by name, by its chats
+        shutil.copytree(os.path.join(sb, ".claude"), os.path.join(sb, name), symlinks=True)
+    claude_folder(sb, ".claude-work", EMAILS["work"], ".claude-work/.claude.json", "work account question")
+    turn_on(sb)
+
+
+def backup_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if rows_of(ctx) != ["claude", "claude-work"]:
+        errs.append(f"roots {rows_of(ctx)}, expected claude and claude-work")
+    if ctx["indexed"] != {"claude": 1, "claude-work": 1}:
+        errs.append(f"indexed {ctx['indexed']}: a backup's copies of chats must not be indexed again")
+    return errs
+
+
+def upgrade_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    code = """
+from recall.chats import store
+from recall.chats.transcript import Message, Session
+con = store.connect()
+for agent, nid, src in (
+    ("claude", "gone-1", "SANDBOX/.claude/projects/-sandbox-gone/gone-1.jsonl"),
+    ("codex", "gone-2", "SANDBOX/.codex/sessions/2026/09/01/rollout-gone-2.jsonl"),
+):
+    s = Session(agent, nid, src, project="/sandbox/gone", updated_at=1.79e9)
+    ask, answer = "an old question about pagination cursors", "ok"
+    s.messages = [Message("user", ask, 1.79e9), Message("assistant", answer, 1.79e9)]
+    store.upsert(con, s)
+# an index from before roots existed: no root column, schema number unchanged
+con.execute("update sessions set root = null")
+con.commit()
+con.execute("alter table sessions drop column root")
+con.commit()
+print(con.execute("select v from meta where k = 'chat_schema'").fetchone()[0])
+""".replace("SANDBOX", sb)
+    out = run_py(sb, code)
+    put(os.path.join(sb, ".agents", "recall", "old-schema"), out.strip() + "\n")
+
+
+def upgrade_act(sb: str, ctx: dict) -> None:
+    ctx["old_schema"] = slurp(os.path.join(sb, ".agents", "recall", "old-schema")).decode().strip()
+    seg(sb, ctx, "upgrade", lambda: run(sb, "index")[1], judged=False)
+
+
+def upgrade_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    db = sqlite3.connect(f"file:{os.path.join(sb, '.agents', 'recall', 'recall.db')}?mode=ro", uri=True)
+    schema = db.execute("select v from meta where k = 'chat_schema'").fetchone()[0]
+    if schema != ctx["old_schema"]:
+        errs.append(f"the chat schema went from {ctx['old_schema']} to {schema}: that rebuilds, and drops, the index")
+    rows = dict(db.execute("select native_id, root from sessions"))
+    if rows.get("gone-1") != "claude" or rows.get("gone-2") != "codex":
+        errs.append(f"chats whose files are gone: {rows}; expected them kept, named by the folder they were in")
+    if len(rows) != 4:
+        errs.append(f"{len(rows)} chats after the upgrade, expected 4 (2 old + 2 on disk)")
+    if (
+        db.execute(
+            "select count(*) from messages where session_id in (select id from sessions where native_id like 'gone-%')"
+        ).fetchone()[0]
+        != 4
+    ):
+        errs.append("the old chats lost their messages")
+    return errs
+
+
+def vanished_build(sb: str) -> None:
+    put(os.path.join(sb, ".zshrc"), "alias claude-acme='CLAUDE_CONFIG_DIR=\"$HOME/acme-claude\" claude'\n")
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    claude_folder(sb, "acme-claude", EMAILS["work"], "acme-claude/.claude.json", "an acme chat")
+    turn_on(sb)
+
+
+def vanished_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "connect", lambda: autopilot_run(sb))
+    ctx["connected_first"] = (
+        "recall" in json.loads(slurp(os.path.join(sb, "acme-claude", ".claude.json")))["mcpServers"]
+    )
+    shell_rc(sb, alias=False)  # the alias is taken out: acme-claude is no longer discovered
+    seg(sb, ctx, "uninstall", lambda: run(sb, "uninstall")[1], judged=False)
+    seg(sb, ctx, "afterwards", lambda: autopilot_run(sb) + str(session_start(sb)), judged=False)
+
+
+def clean(sb: str, folder: str, global_file: str) -> list[str]:
+    left = []
+    if "recall" in json.loads(slurp(os.path.join(sb, global_file))).get("mcpServers", {}):
+        left.append(f"MCP server in {global_file}")
+    if "recall hook" in slurp(os.path.join(sb, folder, "settings.json")).decode():
+        left.append(f"hooks in {folder}/settings.json")
+    if os.path.lexists(os.path.join(sb, folder, "skills", "recall")):
+        left.append(f"skill in {folder}/skills")
+    return left
+
+
+def vanished_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if not ctx["connected_first"]:
+        errs.append("the second account was never connected, so the scenario proves nothing")
+    for folder, global_file in (("acme-claude", "acme-claude/.claude.json"), (".claude", ".claude.json")):
+        left = clean(sb, folder, global_file)
+        if left:
+            errs.append(f"uninstall left recall in {folder}: {left}")
+    last = ctx["segments"][2]
+    changed = [p for p in diff(last["before"], last["after"]) if not p.startswith(UNRELATED)]
+    if changed:
+        errs.append(f"something reconnected after uninstall: {changed[:3]}")
+    if "connect = false" not in slurp(os.path.join(sb, ".agents", "recall", "config.toml")).decode():
+        errs.append("uninstall did not turn autopilot off")
+    return errs
+
+
+def midrun_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    cursor_home(sb)
+    cursor_build(sb, "Cursor", EMAILS["cursor"], "how do I retry a failing request", "cu-1")
+    turn_on(sb)
+
+
+MIDRUN = """
+from recall import autopilot
+from recall.integrations import agents
+real, calls = agents.connect_root, []
+def once(root, *a, **k):
+    calls.append(root.name)
+    autopilot.set_enabled(False)  # the person runs `recall autopilot off` while a run is going
+    return real(root, *a, **k)
+agents.connect_root = once
+autopilot.run("manual")
+print(calls)
+"""
+
+
+def midrun_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "turned off mid-run", lambda: run_py(sb, MIDRUN))
+    ctx["calls"] = ctx["segments"][0]["out"].strip().splitlines()[-1]
+
+
+def midrun_check(sb: str, ctx: dict) -> list[str]:
+    calls = json.loads(ctx["calls"].replace("'", '"'))
+    return [f"{len(calls)} roots were connected after autopilot was turned off: {calls}"] if len(calls) != 1 else []
+
+
+def prompt_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+
+
+def ask_in_terminal(sb: str, answer: str) -> str:
+    """onboarding's autopilot question, at a real (pseudo) terminal, answered with `answer` and Enter."""
+    import pty
+
+    master, slave = pty.openpty()
+    code = "from recall import config, onboarding; onboarding._autopilot(onboarding.Prompter(), config.load(), None)"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        env=sandbox_env(sb),
+        stdin=slave,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    os.close(slave)
+    os.write(master, (answer + "\n").encode())
+    out = proc.communicate(timeout=60)[0]
+    os.close(master)
+    return out
+
+
+def prompt_act(sb: str, ctx: dict) -> None:
+    ctx["asked"] = ask_in_terminal(sb, "")  # just Enter
+    ctx["after_enter"] = slurp(os.path.join(sb, ".agents", "recall", "config.toml")).decode()
+    ctx["consent_after_enter"] = os.path.exists(os.path.join(sb, ".agents", "recall", "autopilot.json"))
+    os.remove(os.path.join(sb, ".agents", "recall", "config.toml"))
+    ask_in_terminal(sb, "y")
+    ctx["after_yes"] = slurp(os.path.join(sb, ".agents", "recall", "config.toml")).decode()
+    state = os.path.join(sb, ".agents", "recall", "autopilot.json")
+    ctx["consent"] = json.loads(slurp(state)).get("consent", {}).get("hooks", []) if os.path.exists(state) else []
+
+
+def prompt_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if "connect = false" not in ctx["after_enter"] or ctx["consent_after_enter"]:
+        errs.append("Enter alone did not mean no")
+    for want in ("[n]", "hooks", "config folder", "continue a turn"):
+        if want not in ctx["asked"]:
+            errs.append(f"the question does not say {want!r}")
+    if "connect = true" not in ctx["after_yes"] or "claude:Stop" not in ctx["consent"]:
+        errs.append(f"y did not record the yes and the hook set: {ctx['consent']}")
+    return errs
+
+
+def kinds_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    turn_on(sb)
+
+
+def kinds_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "connect", lambda: autopilot_run(sb), judged=False)
+    # a release that did not have the Stop and exploration hooks was what the person said yes to
+    state = os.path.join(sb, ".agents", "recall", "autopilot.json")
+    data = json.loads(slurp(state))
+    old = [k for k in data["consent"]["hooks"] if k not in ("claude:Stop", "claude:PreToolUse:explore", "codex:Stop")]
+    data["consent"]["hooks"] = old
+    jput(state, data)
+    # and an update wipes hooks: SessionStart, edit and explore PreToolUse, Stop
+    p = os.path.join(sb, ".claude", "settings.json")
+    s = json.loads(slurp(p))
+    for event in ("SessionStart", "PreToolUse", "Stop"):
+        s["hooks"].pop(event, None)
+    jput(p, s)
+    seg(sb, ctx, "repair", lambda: autopilot_run(sb))
+    ctx["doctor"] = run(sb, "doctor")[1]
+    ctx["after_repair"] = json.loads(slurp(p))["hooks"]
+    seg(sb, ctx, "install", lambda: run(sb, "install")[1], judged=False)
+    ctx["doctor_after"] = run(sb, "doctor")[1]
+    ctx["after_install"] = json.loads(slurp(p))["hooks"]
+
+
+def kinds_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    h = ctx["after_repair"]
+    if "SessionStart" not in h or not any(g.get("matcher") for g in h.get("PreToolUse", [])):
+        errs.append("the consented hooks (SessionStart, the edit hook) were not repaired")
+    if "Stop" in h and any("recall" in x.get("command", "") for g in h["Stop"] for x in g.get("hooks", [])):
+        errs.append("autopilot installed the Stop hook, which the yes did not cover")
+    if any(g.get("matcher") == "Agent|Task" for g in h.get("PreToolUse", [])):
+        errs.append("autopilot installed the exploration hook, which the yes did not cover")
+    if "new hooks available" not in ctx["doctor"] or "claude:Stop" not in ctx["doctor"]:
+        errs.append("doctor does not list the new hooks")
+    ins = ctx["after_install"]
+    if not any("recall" in x.get("command", "") for g in ins.get("Stop", []) for x in g.get("hooks", [])):
+        errs.append("`recall install` did not add the new hooks")
+    if "new hooks available" in ctx["doctor_after"]:
+        errs.append("doctor still lists new hooks after `recall install`")
+    return errs
+
+
+def hook_commands(sb: str, rel: str) -> list[tuple[str, str]]:
+    """Every hook command in an agent's hooks file, in file order: (event, command)."""
+    hooks = json.loads(slurp(os.path.join(sb, rel))).get("hooks", {})
+    return [(ev, h["command"]) for ev, groups in hooks.items() for g in groups for h in g.get("hooks", [])]
+
+
+def twin_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    # the person's own Codex hooks, one before and one after where recall's will go
+    jput(
+        os.path.join(sb, ".codex", "hooks.json"),
+        {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo mine-first"}]}]}},
+    )
+    turn_on(sb)
+
+
+def twin_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "installed release", lambda: autopilot_run(sb))
+    codex = os.path.join(sb, ".codex", "hooks.json")
+    d = json.loads(slurp(codex))  # a hook of the person's, added after recall's
+    d["hooks"]["SessionStart"].append({"hooks": [{"type": "command", "command": "echo mine-last"}]})
+    jput(codex, d)
+    ctx["files"] = {p: hook_commands(sb, p) for p in (".codex/hooks.json", ".claude/settings.json")}
+    repo = os.path.join(sb, "repo", "bin", "recall")  # another checkout's recall, as `uv run recall` would be
+    put(repo, f'#!/bin/sh\nexec "{sys.executable}" -m recall "$@"\n')
+    os.chmod(repo, 0o755)
+    # the person's MCP entry goes missing, so a run has something to do
+    p = os.path.join(sb, ".claude.json")
+    d = json.loads(slurp(p))
+    d["mcpServers"].pop("recall")
+    jput(p, d)
+    seg(sb, ctx, "repo run", lambda: run(sb, "autopilot", env={"RECALL_BIN": repo})[1])
+    ctx["after_repo"] = {p: hook_commands(sb, p) for p in ctx["files"]}
+    os.remove(os.path.join(sb, "bin", "recall"))  # the installed release is gone
+    seg(sb, ctx, "release gone", lambda: run(sb, "autopilot", env={"RECALL_BIN": repo})[1])
+    ctx["codex_last"] = json.loads(slurp(codex))["hooks"]["SessionStart"]
+
+
+def twin_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    for p, before in ctx["files"].items():
+        if ctx["after_repo"][p] != before:
+            errs.append(f"{p}: hooks changed when a recall from another folder ran: it took them over")
+    commands = [x["command"] for g in ctx["codex_last"] for x in g["hooks"]]
+    if len(commands) != 3 or commands[0] != "echo mine-first" or commands[2] != "echo mine-last":
+        errs.append(f"Codex's SessionStart entries were reordered or rewritten: {commands}")
+    if "repo/bin/recall hook" not in commands[1]:
+        errs.append(f"the hook was not repointed once its recall was gone: {commands[1]}")
+    return errs
+
+
+def approval_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    cursor_home(sb)
+    cursor_build(sb, "Cursor", EMAILS["cursor"], "how do I retry a failing request", "cu-1")
+    turn_on(sb)
+
+
+def cursor_cli(sb: str, *args: str) -> str:
+    done = subprocess.run(
+        [agent_cli(*CURSOR), "mcp", *args],
+        env=sandbox_env(sb),
+        cwd=sb,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        stdin=subprocess.DEVNULL,
+    )
+    return " ".join((done.stdout + done.stderr).split())
+
+
+def approval_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "connect", lambda: autopilot_run(sb))
+    ctx["doctor_before"] = run(sb, "doctor")[1]
+    ctx["status_before"] = run(sb, "status", "--since", "1h")[1]
+    if agent_cli(*CURSOR):
+        ctx["list_before"] = cursor_cli(sb, "list")
+        cursor_cli(sb, "enable", "recall")
+        ctx["list_after"] = cursor_cli(sb, "list")
+        ctx["doctor_after"] = run(sb, "doctor")[1]
+        p = os.path.join(sb, ".cursor", "mcp.json")
+        d = json.loads(slurp(p))
+        d["mcpServers"]["recall"]["command"] += "x"  # an entry that changed is approved again
+        jput(p, d)
+        ctx["list_changed"] = cursor_cli(sb, "list")
+        d["mcpServers"]["recall"]["command"] = d["mcpServers"]["recall"]["command"][:-1]
+        jput(p, d)
+
+
+def approval_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if "approval pending" not in ctx["doctor_before"]:
+        errs.append("doctor does not say Cursor's approval is pending")
+    if "awaiting Cursor approval" not in ctx["status_before"] or "1 of 1 connected" in ctx["status_before"]:
+        errs.append("recall status counts a Cursor server nobody approved as connected")
+    if "list_before" in ctx:
+        if "needs approval" not in ctx["list_before"]:
+            errs.append(f"Cursor's own list does not show the pending state: {ctx['list_before'][:80]}")
+        if "recall: ready" not in ctx["list_after"]:
+            errs.append(f"after approval Cursor does not load the server: {ctx['list_after'][:80]}")
+        if "approved in 1 of 1" not in ctx["doctor_after"]:
+            errs.append("doctor does not read the approval Cursor wrote")
+        if "needs approval" not in ctx["list_changed"]:
+            errs.append("Cursor kept an approval for a changed entry: the README claim is wrong")
+    return errs
+
+
+def mining_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    claude_folder(sb, ".claude-work", EMAILS["work"], ".claude-work/.claude.json", "work account question")
+    claude_folder(sb, ".claude-private", EMAILS["work"], ".claude-private/.claude.json", "a private question")
+    put(os.path.join(sb, ".agents", "recall", "config.toml"), "[roots.claude-private]\nindex = false\n")
+
+
+PENDING = """
+from recall.chats import store
+from recall.memory import dream
+dream.MIN_MESSAGES = 1
+con = store.connect()
+dream.ensure_tables(con)
+print(sorted(r["root"] for r in dream.pending_chats(con)))
+"""
+
+
+def mining_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "index", lambda: run(sb, "index")[1], judged=False)
+    cfg = os.path.join(sb, ".agents", "recall", "config.toml")
+    ctx["default"] = run_py(sb, PENDING).strip().splitlines()[-1]
+    put(cfg, "[roots.claude-private]\nindex = false\n\n[roots.claude-work]\nmine = true\n")
+    ctx["opted_in"] = run_py(sb, PENDING).strip().splitlines()[-1]
+    put(cfg, "[roots.claude]\nmine = false\n\n[roots.claude-work]\nmine = true\n")
+    ctx["excluded"] = run_py(sb, PENDING).strip().splitlines()[-1]
+    ctx["doctor"] = run(sb, "doctor")[1]
+    put(cfg, "[roots.claude-private]\nindex = false\n")
+
+
+def mining_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    for key, want in (
+        ("default", "['claude']"),
+        ("opted_in", "['claude', 'claude-work']"),
+        ("excluded", "['claude-work']"),
+    ):
+        if ctx[key] != want:
+            errs.append(f"dream would read {ctx[key]} ({key}), expected {want}")
+    if "not mined" not in ctx["doctor"]:
+        errs.append("doctor does not say claude-work is indexed but not mined")
+    return errs
+
+
+def skip_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    claude_folder(sb, ".claude-work", EMAILS["work"], ".claude-work/.claude.json", "work account question")
+    turn_on(sb)
+
+
+def skip_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "connect", lambda: autopilot_run(sb), judged=False)
+    seg(sb, ctx, "disconnect", lambda: run(sb, "uninstall", "--root", "claude-work")[1], judged=False)
+    ctx["work_clean"] = not clean(sb, ".claude-work", ".claude-work/.claude.json")
+    ctx["default_kept"] = "recall" in json.loads(slurp(os.path.join(sb, ".claude.json"))).get("mcpServers", {})
+    seg(sb, ctx, "nightly and session start", lambda: autopilot_run(sb) + str(session_start(sb)))
+    ctx["still_clean"] = not clean(sb, ".claude-work", ".claude-work/.claude.json")
+    ctx["doctor_skipped"] = run(sb, "doctor")[1]
+    seg(sb, ctx, "reconnect", lambda: run(sb, "install", "--root", "claude-work")[1], judged=False)
+    ctx["reconnected"] = len(clean(sb, ".claude-work", ".claude-work/.claude.json")) == 3
+
+
+def skip_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if not ctx["work_clean"]:
+        errs.append("`recall uninstall --root claude-work` left recall in it")
+    if not ctx["default_kept"]:
+        errs.append("`recall uninstall --root claude-work` removed recall from the other account")
+    if not ctx["still_clean"]:
+        errs.append("autopilot connected a root the person disconnected")
+    if "skipped by you" not in ctx["doctor_skipped"]:
+        errs.append("doctor does not show the skipped root")
+    cfg = slurp(os.path.join(sb, ".agents", "recall", "config.toml")).decode()
+    if "connect = false" in cfg.split("[roots.claude-work]")[-1]:
+        errs.append("`recall install --root claude-work` left the root switched off")
+    if not ctx["reconnected"]:
+        errs.append("`recall install --root claude-work` did not connect it again")
+    quiet = ctx["segments"][2]
+    changed = [p for p in diff(quiet["before"], quiet["after"]) if not p.startswith(".agents")]
+    if changed:
+        errs.append(f"a run with the root switched off changed {changed[:3]}")
+    return errs
+
+
+def dry_build(sb: str) -> None:
+    shell_rc(sb, alias=True)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    cursor_home(sb)
+    cursor_build(sb, "Cursor", EMAILS["cursor"], "how do I retry a failing request", "cu-1")
+    claude_folder(sb, ".claude-work", EMAILS["work"], ".claude-work/.claude.json", "work account question")
+    turn_on(sb)
+
+
+def dry_act(sb: str, ctx: dict) -> None:
+    def everything() -> str:
+        return "\n".join(
+            run(sb, *a)[1]
+            for a in (
+                ("autopilot", "--dry-run"),
+                ("autopilot", "on", "--dry-run"),
+                ("autopilot", "off", "--dry-run"),
+                ("install", "--dry-run"),
+            )
+        )
+
+    seg(sb, ctx, "dry runs", everything)
+
+
+def dry_check(sb: str, ctx: dict) -> list[str]:
+    s = ctx["segments"][0]
+    changed = diff(s["before"], s["after"])  # nothing excused: not the usage log, not the lock, not the state
+    errs = [f"a dry run wrote {k} {p}" for p, k in sorted(changed.items())]
+    if "would connect" not in s["out"] and "[dry run]" not in s["out"]:
+        errs.append("the dry runs said nothing about what they would do")
+    return errs
+
+
+def links_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    claude_folder(sb, ".claude", EMAILS["claude"], ".claude.json", "how do I retry a failing request")
+    codex_folder(sb, "how do I retry a failing request")
+    dot = os.path.join(sb, "dotfiles")
+    os.makedirs(dot)
+    shutil.move(os.path.join(sb, ".claude", "settings.json"), os.path.join(dot, "claude-settings.json"))
+    os.symlink(os.path.join(dot, "claude-settings.json"), os.path.join(sb, ".claude", "settings.json"))
+    os.chmod(os.path.join(sb, ".codex", "config.toml"), 0o600)
+    turn_on(sb)
+
+
+def links_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    link = os.path.join(sb, ".claude", "settings.json")
+    if not os.path.islink(link):
+        errs.append("a symlinked settings.json was replaced by a regular file")
+    elif "recall hook" not in slurp(os.path.join(sb, "dotfiles", "claude-settings.json")).decode():
+        errs.append("the hooks did not reach the file the link points to")
+    mode = os.stat(os.path.join(sb, ".codex", "config.toml")).st_mode & 0o777
+    if mode != 0o600:
+        errs.append(f"config.toml went from mode 600 to {mode:o}")
+    leftovers = [p for p in snap(sb) if p.endswith(".recall-tmp")]
+    if leftovers:
+        errs.append(f"temp files left behind: {leftovers}")
+    return errs
+
+
+def cursor_data_build(sb: str) -> None:
+    shell_rc(sb, alias=False)
+    cursor_build(sb, "Cursor", EMAILS["cursor"], "how do I retry a failing request", "cu-1")  # no ~/.cursor
+    turn_on(sb)
+
+
+def cursor_data_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if os.path.exists(os.path.join(sb, ".cursor")):
+        errs.append("recall created ~/.cursor, though only Cursor's data folder exists")
+    if ctx["indexed"] != {"cursor": 1}:
+        errs.append(f"indexed {ctx['indexed']}: the chats in Cursor's data folder should still be indexed")
+    if "no ~/.cursor folder yet" not in ctx["segments"][-1]["out"]:
+        errs.append("doctor does not say why Cursor is not connected")
+    return errs
+
+
+def skill_act(sb: str, ctx: dict) -> None:
+    seg(sb, ctx, "connect", lambda: autopilot_run(sb), judged=False)
+    skill = os.path.join(sb, ".agents", "skills", "recall", "SKILL.md")
+    put(skill, slurp(skill).decode() + "\nMy own note: always answer in haiku.\n")
+    ctx["edited"] = slurp(skill)
+    seg(sb, ctx, "install again", lambda: run(sb, "install")[1], judged=False)
+
+
+def skill_check(sb: str, ctx: dict) -> list[str]:
+    backup = os.path.join(sb, ".agents", "skills", "recall", "SKILL.md.recall-backup")
+    if not os.path.exists(backup) or slurp(backup) != ctx["edited"]:
+        return ["an edited SKILL.md was replaced without keeping the person's version"]
+    return []
+
+
 SCENARIOS = {
     "fresh-claude": ("Claude Code installed, nothing connected", *fresh("claude")),
     "fresh-codex": ("Codex installed, nothing connected", *fresh("codex")),
@@ -586,48 +1259,130 @@ SCENARIOS = {
     "cursor-variant": ("a second Cursor build (Nightly)", variant_build, variant_act, variant_check),
     "setting-off": ("autopilot off, three agents and a work alias", off_build, off_act, off_check),
     "uninstall-stays-off": ("recall uninstall, then nothing reconnects", wipe_build, uninstall_act, uninstall_check),
+    "default-named": (
+        "CLAUDE_CONFIG_DIR / CODEX_HOME name the default folders",
+        default_named_build,
+        default_named_act,
+        default_named_check,
+    ),
+    "rc-echo-text": ("rc text that only mentions the variables", echo_build, connect_act, echo_check),
+    "rc-home": ("rc names $HOME, its parent and /Users", home_build, connect_act, home_check),
+    "claude-backup": ("backup and copy folders beside a real second account", backup_build, connect_act, backup_check),
+    "schema-upgrade": (
+        "an index from before roots, chats whose files are gone",
+        upgrade_build,
+        upgrade_act,
+        upgrade_check,
+    ),
+    "uninstall-vanished": (
+        "uninstall reaches a root the rc no longer names",
+        vanished_build,
+        vanished_act,
+        vanished_check,
+    ),
+    "off-mid-run": ("autopilot turned off while a run is going", midrun_build, midrun_act, midrun_check),
+    "consent-prompt": (
+        "the setup question: Enter means no, and what a yes covers",
+        prompt_build,
+        prompt_act,
+        prompt_check,
+    ),
+    "new-hook-kinds": ("a yes covers the hooks it was given for", kinds_build, kinds_act, kinds_check),
+    "two-binaries": ("a recall run from a repo leaves another's hooks alone", twin_build, twin_act, twin_check),
+    "cursor-approval": ("Cursor loads the server only once approved", approval_build, approval_act, approval_check),
+    "mining-gate": ("a second account is indexed, mined only when opted in", mining_build, mining_act, mining_check),
+    "root-skipped": ("a root the person disconnected stays disconnected", skip_build, skip_act, skip_check),
+    "dry-run": ("dry runs write nothing", dry_build, dry_act, dry_check),
+    "symlinked-dotfiles": (
+        "symlinked settings and a 0600 config keep their form",
+        links_build,
+        connect_act,
+        links_check,
+    ),
+    "cursor-data-only": ("Cursor's data folder but no ~/.cursor", cursor_data_build, connect_act, cursor_data_check),
+    "edited-skill": ("an edited SKILL.md is kept before it is replaced", fresh("claude")[0], skill_act, skill_check),
 }
-NOTHING_CHANGES = {"setting-off"}  # connection is not expected there
-NO_INDEX = {"setting-off", "uninstall-stays-off"}
+# Per scenario: roots (top-level folders of the agent roots it has besides the defaults: any other new
+# config file fails), nothing_changes (autopilot is off: no file may change), no_index, no_connected (the
+# scenario ends with recall removed or withheld), no_readback, indexed (what the index must hold).
+OPTIONS = {
+    "fresh-claude": {"indexed": {"claude": 1}},
+    "fresh-codex": {"indexed": {"codex": 1}},
+    "fresh-cursor": {"indexed": {"cursor": 1}},
+    "claude-alias": {"roots": {".claude-work"}},
+    "setting-off": {"roots": {".claude-work"}, "nothing_changes": True, "no_index": True, "no_connected": True},
+    "uninstall-stays-off": {"no_index": True, "no_connected": True},
+    "default-named": {"indexed": {"claude": 1, "codex": 1}},
+    "rc-echo-text": {"indexed": {"claude": 1}},
+    "rc-home": {"indexed": {"claude": 1, "codex": 1}},
+    "claude-backup": {"roots": {".claude-work"}},
+    "schema-upgrade": {"no_index": True, "no_connected": True},
+    "uninstall-vanished": {"roots": {"acme-claude"}, "no_index": True, "no_connected": True},
+    "off-mid-run": {"no_index": True, "no_connected": True},
+    "consent-prompt": {"no_index": True, "no_connected": True},
+    "new-hook-kinds": {},
+    "two-binaries": {"no_readback": True},
+    "cursor-approval": {"no_readback": True},
+    "mining-gate": {
+        "roots": {".claude-work", ".claude-private"},
+        "no_connected": True,
+        "indexed": {"claude": 1, "claude-work": 1},
+    },
+    "root-skipped": {"roots": {".claude-work"}},
+    "dry-run": {"roots": {".claude-work"}, "nothing_changes": True, "no_index": True, "no_connected": True},
+    "symlinked-dotfiles": {
+        "roots": {"dotfiles"},
+        "links": {"dotfiles/claude-settings.json": ".claude/settings.json"},
+        "no_readback": True,
+    },
+    "cursor-data-only": {"no_readback": True},
+    "edited-skill": {},
+}
 
 
 def scenario(name: str) -> dict:
     title, build, act, check = SCENARIOS[name]
+    opt = OPTIONS.get(name, {})
+    allowed = ROOT_DIRS | set(opt.get("roots", ()))
     sb = new_sandbox()
     try:
         build(sb)
-        ctx: dict = {}
+        ctx: dict = {"sb": sb}
         start = time.perf_counter()
-        act(sb, ctx)
+        crashed = []
+        try:
+            act(sb, ctx)
+        except Exception as e:  # a recall that cannot run the scenario fails it, it does not stop the eval
+            crashed = [f"the scenario could not run: {e!r}"[:200]]
         ctx["seconds"] = round(time.perf_counter() - start, 1)
         # the report commands and the index run last, still inside a watched segment
         report: dict = {}
 
         def finish() -> str:
             report["rows"] = doctor(sb)
-            report["indexed"] = {} if name in NO_INDEX else indexed(sb)
+            report["indexed"] = {} if opt.get("no_index") else indexed(sb)
             return run(sb, "doctor")[1] + run(sb, "autopilot", "--dry-run")[1]
 
         seg(sb, ctx, "report", finish)
         ctx["indexed"] = report["indexed"]
+        ctx["rows"] = report["rows"]
         have, want, trust = parts_ok(report["rows"])
         judged = [x for x in ctx["segments"] if x["judged"]]
         j = {"touched": [], "unbacked": [], "unexpected": [], "history": []}
         lk = []
         for x in judged:
-            one = judge(x["before"], x["after"])
+            one = judge(x["before"], x["after"], allowed, opt.get("links"))
             for k in j:
                 j[k] += one[k]
             lk += leaks(x["before"], x["after"], x["out"])
-        errs = list(check(sb, ctx))
-        if name not in NOTHING_CHANGES and name != "uninstall-stays-off" and have < want:
+        try:
+            errs = crashed or list(check(sb, ctx))
+        except Exception as e:
+            errs = [f"the check could not read the result: {e!r}"[:200]]
+        if not opt.get("no_connected") and have < want:
             errs.append(f"{want - have} of {want} parts not connected")
-        if name == "fresh-claude" and ctx["indexed"] != {"claude": 1}:
-            errs.append(f"indexed {ctx['indexed']}, expected one chat in claude")
-        if name == "fresh-codex" and ctx["indexed"] != {"codex": 1}:
-            errs.append(f"indexed {ctx['indexed']}, expected one chat in codex")
-        if name == "fresh-cursor" and ctx["indexed"] != {"cursor": 1}:
-            errs.append(f"indexed {ctx['indexed']}, expected one chat in cursor")
+        if "indexed" in opt and ctx["indexed"] != opt["indexed"]:
+            errs.append(f"indexed {ctx['indexed']}, expected {opt['indexed']}")
         if j["unbacked"]:
             errs.append(f"changed without a backup: {j['unbacked']}")
         if j["unexpected"]:
@@ -636,10 +1391,10 @@ def scenario(name: str) -> dict:
             errs.append(f"chat history touched: {j['history']}")
         if lk:
             errs.append(f"leaks: {lk[:3]}")
-        if name in NOTHING_CHANGES and j["touched"]:
+        if opt.get("nothing_changes") and j["touched"]:
             errs.append(f"changed with the setting off: {j['touched']}")
         seen = {}
-        if name not in NOTHING_CHANGES and name != "uninstall-stays-off":
+        if not opt.get("no_connected") and not opt.get("no_readback"):
             seen = readback(sb, report["rows"])
             errs += [
                 f"{root}: the agent's own CLI says {said}" for root, said in seen.items() if said.startswith("NOT")
