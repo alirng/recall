@@ -340,6 +340,22 @@ def _by_context(prefs: list[Note]) -> list[tuple[str, list[Note]]]:
     return list(groups.items())
 
 
+def audience(n: Note, table: dict[str, list[str]]) -> str | None:
+    """Who may be handed a global preference mid-session (jit.py), by the rule session start
+    applies when it compiles the index (compile and _by_context above). None: everyone, for a
+    preference judged to hold everywhere or not judged yet. Otherwise a JSON list of who:
+    `project:<key>` when its chats ran in a single project (it is that project's preference),
+    else `ctx:<name>` for each context they ran in; empty when they ran outside every one."""
+    if n.scope != "global" or n.reach != "context":
+        return None
+    seen = contexts.projects_of_chats(n.sources)
+    if len(seen) == 1:
+        return json.dumps([f"project:{next(iter(seen))}"])
+    if not table:
+        return None
+    return json.dumps([f"ctx:{c}" for c in sorted(contexts.of_chats(n.sources, table))])
+
+
 def _index_line(note: Note, href: str) -> str:
     first = re.split(r"(?<=[.!?])\s", " ".join(note.body.split()), maxsplit=1)[0]
     hook = first if len(first) <= 160 else first[:157] + "…"

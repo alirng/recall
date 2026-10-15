@@ -471,7 +471,7 @@ def candidates(
     if chats:
         out += _chat_candidates(con, query, project, own, until, now, words)
     if notes:
-        out += _note_candidates(con, query, project, now, words, allowed_notes)
+        out += _note_candidates(con, query, project, now, words, allowed_notes, cwd)
     named = files_named(query)
     vector = vector() if callable(vector) else vector
     for c in out:
@@ -671,7 +671,38 @@ def rank_features(cid: str, order: list[str], explain: dict) -> dict:
     }
 
 
-def _note_candidates(con, query, project, now, words, allowed) -> list[Item]:
+def _note_scope(con, project: dict | None, cwd: str | None) -> tuple[str, list]:
+    """SQL (with its parameters, in order) for the notes a session in `cwd` may be handed: the
+    current project's own, and global ones whose audience (memory/notes.py) includes it. A
+    preference learned in one context is not handed to another's sessions: work and personal
+    stay apart as at session start. Notes with no audience reach every folder. An index
+    written before audiences existed cannot tell, so with contexts configured it hands over
+    no global note until the notes are indexed again (the next MCP server start or nightly run)."""
+    from . import contexts
+
+    keys = project["keys"] if project else []
+    sql, args = "n.scope = 'global'", []
+    try:
+        table = contexts.roots()
+    except Exception:  # a config.toml recall cannot read: no contexts
+        table = {}
+    if any(r[1] == "audience" for r in con.execute("pragma table_info(notes)")):
+        try:
+            here = contexts.of_folder(cwd, table)
+        except Exception:
+            here = None
+        who = [f"project:{k}" for k in keys] + ([f"ctx:{here}"] if here else [])
+        sql += " and (n.audience is null" + " or instr(n.audience, ?) > 0" * len(who) + ")"
+        args = [json.dumps(w) for w in who]
+    elif table:
+        sql = "0"
+    if keys:
+        sql = f"({sql}) or n.project in ({','.join('?' * len(keys))})"
+        args += keys
+    return sql, args
+
+
+def _note_candidates(con, query, project, now, words, allowed, cwd=None) -> list[Item]:
     """Notes for the current project and global ones, ranked by keywords and title words, with
     the same features as chats."""
     from .chats import store
@@ -679,16 +710,15 @@ def _note_candidates(con, query, project, now, words, allowed) -> list[Item]:
     q = store.fts_query(query, "or")
     if not q:
         return []
-    keys = project["keys"] if project else []
-    where = "n.scope = 'global'" + (f" or n.project in ({','.join('?' * len(keys))})" if keys else "")
     try:
+        where, args = _note_scope(con, project, cwd)
         rows = con.execute(
             f"""select n.id, n.title, n.body, n.project, n.scope, n.last_seen, n.type,
                        bm25(notes_fts, 0, 5.0, 1.0, 2.0) s
                 from notes_fts f join notes n on n.id = f.id
                 where notes_fts match ? and ({where})
                 order by s limit 30""",
-            [q, *keys],
+            [q, *args],
         ).fetchall()
     except Exception:  # no notes index yet
         return []
@@ -769,7 +799,7 @@ def file_items(
         return items
     if project is False:
         project = _project(con, cwd or root)
-    items += _file_notes(con, names, project)
+    items += _file_notes(con, names, project, cwd or root)
     if project and rel:
         items += _file_chats(con, names, project, own)
     return items
@@ -823,15 +853,14 @@ def _glob(rel: str, pattern: str) -> bool:
     return "/" not in pattern and fnmatch.fnmatch(os.path.basename(rel), pattern)
 
 
-def _file_notes(con, names: list[str], project: dict | None) -> list[Item]:
-    keys = project["keys"] if project else []
-    scope = "n.scope = 'global'" + (f" or n.project in ({','.join('?' * len(keys))})" if keys else "")
+def _file_notes(con, names: list[str], project: dict | None, cwd: str | None) -> list[Item]:
     match = " or ".join(["instr(n.body, ?) > 0 or instr(n.title, ?) > 0"] * len(names))
     try:
+        scope, args = _note_scope(con, project, cwd)
         rows = con.execute(
             f"""select n.id, n.title, n.body, n.last_seen from notes n
                 where ({scope}) and ({match}) order by n.last_seen desc limit 2""",
-            [*keys, *[x for name in names for x in (name, name)]],
+            [*args, *[x for name in names for x in (name, name)]],
         ).fetchall()
     except Exception:
         return []
