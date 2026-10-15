@@ -727,8 +727,10 @@ def _log(tool: str, e, info: dict) -> None:
 
 
 def _jsonl(path: str):
+    from .chats.sources import compressed
+
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with compressed.open_text(path) as f:  # also a Codex rollout that has since become .jsonl.zst
             for line in f:
                 try:
                     yield json.loads(line)
@@ -889,11 +891,7 @@ def _past_codex(index) -> list[Past]:
     for sid, source, folder, ts, start in index.execute(
         "select id, source, project, updated_at, started_at from sessions where agent = 'codex' and origin = 'subagent'"
     ):
-        try:
-            with open(source) as f:
-                meta = (json.loads(f.readline()).get("payload")) or {}
-        except (OSError, json.JSONDecodeError):
-            continue
+        meta = (next(_jsonl(source), None) or {}).get("payload") or {}
         role = meta.get("agent_role") or ""
         if is_explorer(role) and (prompt := codex_task(source)) and (report := last_reply(source)):
             out.append(Past(sid, "codex", role, folder or meta.get("cwd"), ts, prompt, report, start, sid))

@@ -30,6 +30,7 @@ import time
 
 from . import paths
 from .chats import archive
+from .chats.sources import compressed
 
 
 class Ambiguous(LookupError):
@@ -107,13 +108,15 @@ def describe(con: sqlite3.Connection, ids: list[str]) -> list[dict]:
         s = con.execute("select title, agent, source, n_messages from sessions where id = ?", (sid,)).fetchone()
         copies = archive.copies(con, sid) if archive.enabled(con) else []
         held = archive.unpack(copies[-1]["data"]) if copies and not s else None  # only the archive has it
+        # A chat Codex has compressed is keyed by its .jsonl path, but the .jsonl.zst is what holds it.
+        files = {c["source"] for c in copies} | ({s["source"]} if s else set())
         out.append(
             {
                 "chat_id": sid,
                 "title": s["title"] if s else held and (held.title or next((m.text[:80] for m in held.messages), None)),
                 "messages": s["n_messages"] if s else len(held.messages) if held else 0,
                 "archive_copies": len(copies),
-                "files": sorted({c["source"] for c in copies} | ({s["source"]} if s else set())),
+                "files": sorted({compressed.resolve(f) or f for f in files}),
             }
         )
     return out

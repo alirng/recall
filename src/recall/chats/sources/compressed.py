@@ -8,11 +8,16 @@ that file or its `.zst` twin. Everything here takes the stable path, tries the p
 
 Decoders, in order: Python 3.14's `compression.zstd`, the `zstandard` package (the `zstd`
 extra), then the `zstd` command. Nothing is ever written next to the original.
+
+A file that cannot be read raises OSError whichever decoder is in use (a damaged or cut-off
+file, a `zstd` that fails or stops writing), so callers that already catch OSError for a
+missing file need nothing more.
 """
 
 import contextlib
 import io
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -22,6 +27,9 @@ SUFFIX = ".zst"
 MAGIC = b"\x28\xb5\x2f\xfd"
 # Hooks and scheduled jobs run with a minimal PATH, so look where Homebrew and distros put it.
 COMMAND_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin")
+# A `zstd` that writes nothing for this long (or does not exit after its output ends) is hung.
+# Only its silence counts, not the time a caller spends parsing what it already wrote.
+STALL_SECONDS = 60
 
 
 def plain_path(path: str) -> str:
@@ -115,8 +123,8 @@ def size(path: str) -> int | None:
     declared = content_size(found)
     if declared is not None:
         return declared
-    with open_text(found) as f:
-        return sum(len(line.encode("utf-8", "replace")) for line in f)
+    with _binary(found) as raw:  # no size in the header: count the bytes
+        return sum(len(chunk) for chunk in iter(lambda: raw.read(1 << 20), b""))
 
 
 @contextlib.contextmanager
@@ -139,42 +147,116 @@ def open_text(path: str):
 def _open(path: str):
     if not path.endswith(SUFFIX):
         return open(path, encoding="utf-8", errors="replace")
+    return _text(path)
+
+
+@contextlib.contextmanager
+def _text(path: str):
+    with _binary(path) as raw:
+        buffered = io.BufferedReader(raw, 1 << 20)
+        with io.TextIOWrapper(buffered, encoding="utf-8", errors="replace") as text:
+            yield text
+
+
+class _Checked(io.RawIOBase):
+    """The decoded bytes of a .zst file. Each decoder fails differently on a damaged file (the
+    standard library raises EOFError or its own ZstdError, zstandard its own, the command exits
+    non-zero) and zstandard reads a cut-off one without complaint; here every failure is an
+    OSError, and a stream that ends before the size its header declares is one too."""
+
+    def __init__(self, source, path: str):
+        self.source, self.path, self.read_so_far = source, path, 0
+        self.declared = content_size(path)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        try:
+            data = self.source.read(len(b))
+        except OSError:
+            raise
+        except Exception as e:
+            raise OSError(f"zstd could not decode {self.path}: {e}") from e
+        n = len(data)
+        b[:n] = data
+        self.read_so_far += n
+        if n == 0 and self.read_so_far < (1 if self.declared is None else self.declared):
+            raise OSError(f"{self.path} ends early or is empty ({self.read_so_far} bytes decoded)")
+        return n
+
+
+@contextlib.contextmanager
+def _binary(path: str):
+    """The decoded bytes of a .zst file, as a binary stream."""
+    with _decode(path) as source:
+        yield _Checked(source, path)
+
+
+@contextlib.contextmanager
+def _decode(path: str):
     use = backend()
     if use == "python":
         from compression import zstd
 
-        return zstd.open(path, "rt", encoding="utf-8", errors="replace")
-    if use == "zstandard":
-        return _zstandard(path)
-    if use == "zstd command":
-        return _command(path)
-    raise OSError(f"{path} is zstd-compressed and no decoder is installed: {fix_hint()}")
+        with zstd.open(path, "rb") as f:
+            yield f
+    elif use == "zstandard":
+        import zstandard
+
+        with open(path, "rb") as raw:
+            yield zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True)
+    elif use == "zstd command":
+        with _command(path) as pipe:
+            yield pipe
+    else:
+        raise OSError(f"{path} is zstd-compressed and no decoder is installed: {fix_hint()}")
 
 
-@contextlib.contextmanager
-def _zstandard(path: str):
-    import zstandard
+class _Pipe(io.RawIOBase):
+    """The output of a `zstd` process, which gives up on one that has gone quiet."""
 
-    with open(path, "rb") as raw:
-        reader = zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True)
-        with io.TextIOWrapper(io.BufferedReader(reader), encoding="utf-8", errors="replace") as text:
-            yield text
+    def __init__(self, out):
+        self.out = out
+        self.poll = select.poll()
+        self.poll.register(out, select.POLLIN)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        if not self.poll.poll(STALL_SECONDS * 1000):
+            raise OSError(f"zstd wrote nothing for {STALL_SECONDS} s")
+        data = self.out.read(len(b)) or b""
+        b[: len(data)] = data
+        return len(data)
 
 
 @contextlib.contextmanager
 def _command(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    proc = subprocess.Popen([command(), "-dc", "--", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    # No shell, the path after `--`, nothing on stdin, and stderr to the bin so it cannot fill a pipe.
+    proc = subprocess.Popen(
+        [command(), "-dc", "--", path],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0,
+    )
     try:
-        yield io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="replace")
-        while proc.stdout.read(1 << 20):  # a reader that stopped early must not make zstd's exit look like a failure
+        pipe = _Pipe(proc.stdout)
+        yield pipe
+        while pipe.read(1 << 20):  # a reader that stopped early must not make zstd's exit look like a failure
             pass
-    except BaseException:
+        code = proc.wait(timeout=STALL_SECONDS)
+    except BaseException as e:
         proc.kill()
         proc.wait()
+        if isinstance(e, subprocess.TimeoutExpired):
+            raise OSError(f"zstd did not exit after decoding {path}") from e
         raise
     finally:
         proc.stdout.close()
-    if proc.wait() != 0:
+    if code != 0:
         raise OSError(f"zstd could not decode {path}")

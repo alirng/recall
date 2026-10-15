@@ -258,9 +258,9 @@ The `embeddings` extra is only needed for [semantic search](#semantic-search-opt
 command is `recall` either way.
 
 Codex compresses chats it has not touched for a week to `.jsonl.zst`. recall reads them with
-Python 3.14's built-in zstd, the `zstd` command (`brew install zstd`) or the `zstd` extra
-(`uv tool install 'recall-agents[zstd]'`), whichever it finds first. With none of them,
-`recall index`, `recall stats` and `recall status` say how many Codex chats they cannot read.
+Python 3.14's built-in zstd, else the `zstd` extra (`uv tool install 'recall-agents[zstd]'`),
+else the `zstd` command (`brew install zstd`). With none of them, `recall index`,
+`recall stats` and `recall status` say how many Codex chats they cannot read.
 
 ## Quick start
 
