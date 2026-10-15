@@ -9,6 +9,8 @@ from ..projects import is_scratch
 from ..transcript import Message, Session, clean_assistant_text, clean_user_text
 from . import Item, append, iso_ts, read_jsonl, text_blocks
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 ROOT = os.path.expanduser("~/.claude/projects")  # the default root's; roots.discover() finds the rest
 
 

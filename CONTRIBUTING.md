@@ -28,7 +28,13 @@ After you change dependencies, run the same command with `--force`.
 
 ```bash
 uvx ruff@0.16.10 format src && uvx ruff@0.16.10 check src
+python tools/changelog.py --check
 ```
+
+Add a changelog fragment, `changes/<topic>.<section>.md`, and leave CHANGELOG.md alone (see
+`changes/README.md`); CI fails a PR that edits CHANGELOG.md unless its branch is named `release-*`.
+Keep your branch current by merging `origin/main` into it instead of rebasing, so each conflict is
+resolved once. PRs are squash-merged.
 
 ## How changes are checked
 
@@ -125,10 +131,12 @@ An agent source reads one agent's chat history and gives the index a list of cha
    the agent's own id for it, its input, the index in `Session.messages` it came after or
    None, and `signature(output)` when it failed) and set `Session.tool_errors = calls.errors()`.
    It goes to its own table, never into the messages, and the helpers redact whole before they cut.
-5. If a parser change alters what the index should hold, bump `CHAT_SCHEMA_VERSION` in
-   `src/recall/chats/store.py`. The chat tables rebuild from the agents' files, and chats whose
+5. If a parser change alters what the index should hold, change the `CHAT_SCHEMA` string (a date
+   and a reason) of the module you changed. `src/recall/chats/store.py` hashes every module's
+   string into `CHAT_SCHEMA_VERSION`, and a new value makes the chat tables rebuild from the agents' files, and chats whose
    files are gone come back from recall's archive (`src/recall/chats/archive.py`), which a
-   rebuild never drops. Never drop the archive, the memory tables or the notes: they are not
+   rebuild never drops. A new agent source declares its own `CHAT_SCHEMA` and is added to `_PARTS` in
+   `store.py`. Never drop the archive, the memory tables or the notes: they are not
    derived data. A change that should stop indexing some chats must also delete their archive
    copies, or the rebuild restores them.
 
@@ -210,9 +218,9 @@ paste them.
 - [ ] If the change touches search or extraction, you ran the evals several times and
       put the averages in the PR description.
 - [ ] A prompt change bumps its version line when it should re-run past work.
-- [ ] A parser change bumps `CHAT_SCHEMA_VERSION` when the index needs a rebuild.
+- [ ] A parser change edits its module's `CHAT_SCHEMA` string when the index needs a rebuild.
 - [ ] Nothing private is in the diff, and any examples are made up.
-- [ ] README, `docs/` or CHANGELOG.md is updated when a command, option, provider or behavior
+- [ ] README, `docs/` or a `changes/` fragment is updated when a command, option, provider or behavior
       changes. Detail goes in `docs/`; the README gets a few lines and a link.
 
 ## Roadmap
@@ -223,7 +231,8 @@ Code plugin package.
 
 ## Releasing (maintainers)
 
-1. Move the "Unreleased" notes in CHANGELOG.md under a new version heading, and bump
+1. On a `release-X.Y.Z` branch, run `python tools/changelog.py --release X.Y.Z --date YYYY-MM-DD`
+   (it writes the section into CHANGELOG.md and deletes the fragments), and bump
    `version` in pyproject.toml and `__version__` in src/recall/__init__.py.
 2. Commit, then tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
 3. The Release workflow builds the package and publishes it to PyPI through trusted

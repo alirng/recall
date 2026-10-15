@@ -2,6 +2,7 @@
 #
 # What it checks:
 #   - Style: ruff format and ruff lint over src/.
+#   - Changelog: fragments in changes/ are valid, and a PR edits CHANGELOG.md only on a release-* branch.
 #   - Packaging: the sdist and wheel build, and the wheel installs into a fresh venv.
 #   - Smoke test, run from outside the checkout so only the installed wheel is tested:
 #     every module imports, both memory prompts load, and the core commands
@@ -42,6 +43,21 @@ jobs:
 
       - name: Lint
         run: uvx ruff@0.16.10 check src
+
+      - name: Changelog fragments
+        run: python3 tools/changelog.py --check
+
+      - name: CHANGELOG.md is edited by releases only
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        env:
+          BRANCH: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          if [[ "$BRANCH" != release-* ]] && ! git diff --quiet "origin/$BASE HEAD" -- CHANGELOG.md; then
+            echo "::error::Add a changes/<topic>.<section>.md fragment instead of editing CHANGELOG.md (see changes/README.md)."
+            exit 1
+          fi
 
       - name: Build
         run: uv build --out-dir "$RUNNER_TEMP/dist"

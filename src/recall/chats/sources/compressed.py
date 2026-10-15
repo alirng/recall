@@ -23,6 +23,8 @@ import subprocess
 import sys
 from functools import cache
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 SUFFIX = ".zst"
 MAGIC = b"\x28\xb5\x2f\xfd"
 # Hooks and scheduled jobs run with a minimal PATH, so look where Homebrew and distros put it.

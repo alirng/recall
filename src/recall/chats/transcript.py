@@ -5,6 +5,8 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 
 @dataclass
 class Message:

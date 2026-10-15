@@ -43,6 +43,8 @@ from .redact import redact, redact_many
 from .sources import compressed
 from .transcript import Message, Session, clean_user_text, drop_compaction_summary, fallback_title
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 SCHEMA = """
 create table if not exists chat_archive (
   id text, source text, agent text,

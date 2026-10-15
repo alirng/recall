@@ -20,6 +20,8 @@ import hashlib
 import re
 from collections import Counter
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 MARK = "[REDACTED]"
 
 _TOKCH = r"[A-Za-z0-9_\-+/=.~%\\]"  # what a pasted key is made of, with the \_ a markdown escape adds
