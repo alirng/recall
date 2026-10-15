@@ -17,8 +17,12 @@ marked only when all three hold:
    one only by losing its mark.
 
 Otherwise `said_by` stays unset, which readers must treat as "unknown", never as the agent's
-or the developer's word. These are heuristics. A paste with no fence, quote mark or heading
-(a log or an email pasted bare) still passes as typed; the PR lists the limits.
+or the developer's word. Even when set it is a hint, not authentication: it shows the words
+were typed in that chat, not that the rule means what they said, and anything that can write
+the notes folder can write the field. Nothing may act on a rule because of it.
+
+These are heuristics. A paste with no fence, quote mark or heading (a log or an email pasted
+bare) still passes as typed; the PR lists the limits.
 Whatever the mark, a convention never authorizes a network, destructive or exfiltrating
 action: a reader that shows `said_by` must say so next to it.
 """
