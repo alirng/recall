@@ -644,6 +644,7 @@ def cmd_autopilot(a) -> None:
 
 def cmd_doctor(a) -> None:
     from . import autopilot
+    from .chats.sources import codex
 
     rows = autopilot.report()
     if a.json:
@@ -698,6 +699,8 @@ def cmd_doctor(a) -> None:
         print("  `recall install --repoint` points the hooks at this recall; autopilot never moves them")
     for line in autopilot.recent():
         print(f"  {line}")
+    if note := codex.unreadable_note():
+        print(f"\n{note}")
 
 
 def _ago(ts: float | None) -> str:

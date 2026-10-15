@@ -91,6 +91,7 @@ def report(deep: bool = True) -> list[dict]:
     read-only, so it never creates or migrates it. deep=False skips the sign-in lookups, one of
     which opens Cursor's multi-GB database: `recall status`, which a menu bar polls, leaves them out."""
     from . import roots
+    from .chats.sources import codex
     from .integrations import agents
 
     found = roots.discover()
@@ -112,6 +113,7 @@ def report(deep: bool = True) -> list[dict]:
             new = [k for k in agents.hook_kinds(r.agent) if k not in consent]
             new = agents._hook_gaps(r, cmd, set(new)) if new else []
         elsewhere = agents.other_runners(r, cmd) if live and cmd else []
+        unreadable = codex.unreadable([r]) if live and r.agent == "codex" else 0
         approval = agents.cursor_approval(r) if live and r.agent == "cursor" and have.get("mcp") else None
         rows.append(
             {
@@ -132,6 +134,7 @@ def report(deep: bool = True) -> list[dict]:
                 "index": roots.option(r, "index", cfg),
                 "new_hooks": new,
                 "hooks_run": elsewhere,
+                "unreadable": unreadable,  # zstd-compressed Codex chats nothing here can decode
                 "this_recall": cmd,
                 "has_cursor_config": os.path.isdir(r.path) if r.agent == "cursor" else None,
                 **indexed.get(r.name, {}),
