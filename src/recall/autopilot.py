@@ -124,6 +124,8 @@ def run(trigger: str = "manual", dry_run: bool = False, log=None) -> list[dict]:
             return _run(trigger, dry_run, log or (lambda _: None))
         except Exception as e:
             usage.record("autopilot", "error", client="autopilot", note=repr(e)[:200], trigger=trigger)
+            if log:
+                log(f"error: {e!r}")
             return []
 
 
@@ -143,9 +145,9 @@ def _run(trigger: str, dry_run: bool, log) -> list[dict]:
         entry = known.get(r.name)
         hint = roots.account(r) if r.exists else None
         if entry is None and not first_run:
-            changes.append(_note(r, "found", trigger, via=r.via, exists=r.exists))
+            changes.append(_note(r, "found", trigger, how=r.via, exists=r.exists))
         elif entry and not entry.get("exists", True) and r.exists:
-            changes.append(_note(r, "appeared", trigger, via=r.via))  # a named folder was created
+            changes.append(_note(r, "appeared", trigger, how=r.via))  # a named folder was created
         elif entry and entry.get("account") and hint and entry["account"] != hint:
             changes.append(_note(r, "account", trigger, was=entry["account"], now=hint))
         known[r.name] = {
@@ -206,7 +208,7 @@ def _describe(c: dict) -> str:
         state = "" if c.get("ok", True) else " FAILED"
         return f"{c['root']}: {c['tool']} {what}{state} ({c['file']})"
     if c["tool"] == "found":
-        return f"{c['root']}: new root ({c['via']})" + ("" if c["exists"] else ", not created yet")
+        return f"{c['root']}: new root ({c['how']})" + ("" if c["exists"] else ", not created yet")
     if c["tool"] == "appeared":
         return f"{c['root']}: folder created, connecting"
     return f"{c['root']}: account changed"
