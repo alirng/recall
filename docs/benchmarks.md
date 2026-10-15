@@ -33,6 +33,11 @@ counts come from the runs' transcripts via
   a laptop busy with other evals, so an upper bound).
   Only the nightly notes need a language model, and you choose which.
 
+Re-checked for 0.4.0: search is unchanged. The model-free runs on 0.4.0's code gave the same
+figures as before (SWE-ContextBench Lite, below; LongMemEval_S and LoCoMo, keywords only: 97.4%
+and 87.2%, 89.6% and 77.2%). The figures labelled 0.3.0 are those releases' runs; the notes
+and agent results were not re-measured for 0.4.0, except where the new section says so.
+
 ## Finding past work
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/swecb-dark.svg"><img src="benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.3.0 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.3.0 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.3.0 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
@@ -144,12 +149,35 @@ with search alone, three runs; with the notes the agent took in about a third fe
 tokens. The session-start block has changed since both runs, and 0.2.1's notes at session start
 were not measured.
 
+## Which model writes your notes
+
+The notes are written by whichever model you pick, and the choice matters. MemoryCode's test
+split (40 histories), through the same extraction and consolidation pipeline, scored by the share
+of facts the notes hold:
+
+| Model that writes the notes | Facts in the notes |
+| --- | --- |
+| gpt-6-luna (Codex) | 59% to 68% across runs |
+| Claude Haiku 4.5 (what `claude:haiku` ran before 0.4.0) | 80.9% |
+| Claude Haiku 5.5, API | 94.6% |
+| Claude Haiku 5.5, Claude subscription CLI (one run) | 97.6% |
+
+Sonnet 5.5 for consolidation added nothing over Haiku 5.5 alone (-2 points, within run noise),
+and packing 8 chats to a call instead of 12 made no difference. So `claude:haiku` on a Claude
+subscription, or Haiku 5.5 on an API key, is the better start; 0.4.0's Claude provider now runs
+the 5.5 models. These are one benchmark's synthetic coding histories, and the Haiku 5.5 CLI
+figure is a single run.
+
+The consolidation change in 0.4.0 (notes hold rules, changed one at a time) was measured on a
+consolidation-only replay of the same extracted facts: facts lost when notes merge fell from
+12.5% to 8.1%, recall rose from 70.5% to 75.3%, and stale notes fell from 9.3% to 4.8%.
+
 ## Chat-memory benchmarks
 
 LongMemEval and LoCoMo are the benchmarks memory products usually report. They are built from
 synthetic personal-assistant chats rather than coding work, so recall runs them as a check that
 its search stays sound, with each benchmark's own metrics and prompts. In the 0.3.0 release run
-their keyword retrieval was identical to 0.2.1's, and the title change cannot reach them: their
+their keyword retrieval was identical to 0.2.1's (and 0.4.0's is the same), and the title change cannot reach them: their
 chats have no titles. Retrieval is deterministic (one run); each answer-accuracy figure is one
 run.
 

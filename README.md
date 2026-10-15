@@ -77,7 +77,8 @@ the method, the caveats and the commands.
 - **Agents follow your latest conventions.** On MemoryCode, with the notes loaded at session
   start, Claude Haiku 5.5 writes code that follows the latest conventions on histories of 20 to
   100 sessions 62% of the time, against 40% with search alone. The notes, written by
-  gpt-6-luna, hold about three in five of the conventions in their latest form.
+  gpt-6-luna, hold about three in five of the conventions in their latest form; written by
+  Claude Haiku 5.5 they hold more than nine in ten of the facts ([which model to pick](docs/benchmarks.md#which-model-writes-your-notes)).
 - **No LLM calls to index or to search.** On ~2,800 chats a search takes about 15 ms, or
   50 ms with embeddings (median, on a laptop).
 
