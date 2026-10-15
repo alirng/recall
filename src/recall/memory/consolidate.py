@@ -7,9 +7,12 @@ rules: confirm, refine, retire or add one, or create a note. Plain code applies 
 checking each one, and nothing is written until the whole batch is checked:
 - a confirm, refine or retire must name a rule that exists in the scope;
 - a candidate from a chat older than a rule's last sighting can neither retire nor refine
-  it, so a chat read late (the nightly job reads newest first) cannot undo a newer rule;
+  it, and one older than a rule's retirement cannot add it back, so a chat read late (the
+  nightly job reads newest first) cannot undo a newer rule;
 - a rule leaves a note only through a retire that names it: one that went missing any
-  other way is put back, and the log says so.
+  other way is put back, and the log says so;
+- a note whose file changed while the batch ran (a hand edit) is not written from the stale
+  copy: its candidates stay for the next run.
 Candidates the model skips, or whose only operations were refused, are retried.
 """
 
@@ -29,6 +32,7 @@ SYSTEM, _ = prompts.load("consolidate")
 BATCH = 20
 CONTEXT_NOTES = 40
 RETIRED_SHOWN = 2  # per note: recent retired rules, so a restated old form reads as outdated
+REJECTED_SHOWN = 30  # per kind, in a prompt: notes deleted by hand, and rules removed by hand
 MAX_ATTEMPTS = 2
 OPEN_TTL_DAYS = 14
 LOW_TTL_DAYS = 180
@@ -139,17 +143,30 @@ class Consolidation:
     def __init__(self, con, store: NoteStore, notes: dict[str, Note], log=print):
         self.con, self.store, self.notes, self.log = con, store, notes, log
         self.stats = Counter()
-        for note in notes.values():
+        for note in list(notes.values()):
             if note.edited_by_hand:  # keep the rules read back from a hand edit
+                emptied = not note.body.strip() and bool(note.rules)
                 store.write(note)
                 self.stats["edited by hand"] += 1
-        removed = [
-            {"title": n.title, "body": r.text, "scope": n.scope, "project": n.project}
-            for n in store.load(include_archived=True).values()
-            for r in n.rules
-            if r.reason == REMOVED_BY_HAND
-        ]
-        rejected = store.rejected() + removed
+                if emptied:  # nothing is lost: the rules stay in the file, retired
+                    log(
+                        f"  {note.title!r}: its body was emptied by hand, so its rules were retired as "
+                        f"removed by hand and the note archived (git revert undoes it)"
+                    )
+                if note.status != "active":
+                    del notes[note.id]
+        # What the developer deleted: whole notes (the ledger) and single rules removed from a note.
+        # Each kind has its own cap, so a long run of rule edits cannot push a deleted note out.
+        removed = sorted(
+            (
+                (r.retired, {"title": n.title, "body": r.text, "scope": n.scope, "project": n.project})
+                for n in store.load(include_archived=True).values()
+                for r in n.rules
+                if r.reason == REMOVED_BY_HAND
+            ),
+            key=lambda pair: pair[0],
+        )
+        deleted = store.rejected()
         self.groups = []
         for g in con.execute(
             f"""select scope, {_GROUP_KEY} key, max(project_name) name, count(*) n
@@ -160,8 +177,9 @@ class Consolidation:
                 f"select * from candidates where status='new' and scope=? and {_GROUP_KEY}=? order by chat_ts, id",
                 (g["scope"], g["key"]),
             ).fetchall()
-            mine = [r for r in rejected if r.get("scope") == scope.kind and r.get("project") == scope.key]
-            self.groups.append(Group(scope, candidates, mine[-30:]))
+            here = [r for r in deleted if r.get("scope") == scope.kind and r.get("project") == scope.key]
+            here_rules = [r for _, r in removed if r.get("scope") == scope.kind and r.get("project") == scope.key]
+            self.groups.append(Group(scope, candidates, here[-REJECTED_SHOWN:] + here_rules[-REJECTED_SHOWN:]))
 
     def prepare(self, group: Group) -> Request | None:
         if group.start >= len(group.candidates):
@@ -188,7 +206,15 @@ class Consolidation:
         group.start, group.prompt, group.retry = group.start + BATCH, None, False
 
     def finish(self) -> Counter:
-        self.stats["expired"] = expire(self.store, self.notes)
+        """Close the run: expire stale notes. Call it once prepare() has returned None for every
+        group. A group left unfinished (a model call failed, the caller stopped early) still
+        holds candidates that may confirm a note, so while any group is unfinished nothing
+        expires; a run that completes expires it."""
+        unfinished = sum(g.start < len(g.candidates) for g in self.groups)
+        if unfinished:
+            self.log(f"expiry skipped: {unfinished} groups still have candidates to read")
+        else:
+            self.stats["expired"] = expire(self.store, self.notes)
         return self.stats
 
 
@@ -311,19 +337,30 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
                 _insert(note, rule, _new_rules(b, note, texts[1:], candidates))
             else:  # retire
                 new = _new_rules(b, note, texts, candidates)
-                rule.status, rule.retired, rule.reason = "retired", when, op["reason"].strip()[:300]
+                rule.status, rule.retired, rule.reason = "retired", when, redact(op["reason"].strip())[:300]
                 rule.replaced_by = new[0].id if new else None
                 b.retired.add((note.id, rule.id))
                 _insert(note, rule, new)
             kind = "confirm" if kind == "refine" and not texts else kind
         else:  # add
-            note = b.note(op["note_id"])
+            note, refused, done = b.note(op["note_id"]), None, False
             for text in texts or fallback:
                 same = next((r for r in note.rules if r.active and _same(r.text, text)), None)
+                gone = next((r for r in note.rules if not r.active and _same(r.text, text) and when < r.retired), None)
                 if same:
                     _support(b, same, candidates)
+                elif gone:  # a chat read late cannot bring back a rule that was retired after it
+                    refused = gone
+                    continue
                 else:
                     note.rules += _new_rules(b, note, [text], candidates)
+                done = True
+            if not done:
+                stats["refused, older than the rule"] += 1
+                log(f"  refused add of {refused.id}: candidate from {when}, rule retired {refused.retired}")
+                for c in candidates:
+                    b.discarded.setdefault(c["id"], f"older than rule {refused.id}, retired {refused.retired}")
+                continue
         if kind != "create" and op["title"].strip():
             note.title = op["title"].strip()
         note.confidence = max(note.confidence, op["confidence"], key=lambda c: CONFIDENCE.get(c, 0))
@@ -333,7 +370,7 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
         for c in candidates:
             b.merged.setdefault(c["id"], note.id)
     _restore(b, stats, log)
-    _commit(con, store, notes, b, by_number)
+    _commit(con, store, notes, b, by_number, stats, log)
 
 
 def _restore(b: _Batch, stats: Counter, log) -> None:
@@ -354,13 +391,27 @@ def _restore(b: _Batch, stats: Counter, log) -> None:
             log(f"  restored rule {before.id} in {note_id}: it went missing without a retire")
 
 
-def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number: dict) -> None:
+def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number: dict, stats: Counter, log) -> None:
+    deferred: set[int] = set()  # candidates merged into a note that was not written
     for note in [*b.work.values(), *b.created.values()]:
         sync(note)
         if len(note.sources) >= 3:
             note.confidence = "high"  # corroborated across several chats
         if note.id in b.work and _state(note) == _state(b.notes[note.id]):
             continue  # looked at, not changed
+        if note.id in b.work and store.changed(b.notes[note.id]):
+            # The file changed (a hand edit) or went while the batch ran, so this copy is stale and
+            # writing it would undo that. Later batches work from the file as it is now; these
+            # candidates stay new, and the next run folds them in.
+            fresh = store.reread(b.notes[note.id])
+            if fresh and fresh.status == "active":
+                notes[note.id] = fresh
+            else:
+                notes.pop(note.id, None)
+            deferred |= {c for c, n in b.merged.items() if n == note.id}
+            stats["deferred, note changed on disk"] += 1
+            log(f"  not written: {note.title!r} changed on disk during the batch; its candidates stay for the next run")
+            continue
         note.updated = today()
         store.write(note)  # also renders the body, and archives a note with no rule left
         if note.status == "active":
@@ -368,7 +419,8 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
         else:
             notes.pop(note.id, None)
     con.executemany(
-        "update candidates set status='merged', note_id=? where id=?", [(n, c) for c, n in b.merged.items()]
+        "update candidates set status='merged', note_id=? where id=?",
+        [(n, c) for c, n in b.merged.items() if c not in deferred],
     )
     con.executemany(
         "update candidates set status='discarded', reason=? where id=?",
@@ -424,17 +476,18 @@ def _new_rules(b: _Batch, note: Note, texts: list[str], candidates) -> list[Rule
 
 def _support(b: _Batch, rule: Rule, candidates) -> None:
     """Record that these candidates state the rule: dates, source chats, who said it, a quote.
-    The rule counts as the developer's when a candidate attributed to the user has its quote
-    in a turn the developer typed (said.py) and the rule asks for no command, URL or network,
-    destructive or exfiltrating action. A rule nothing vouches for keeps no mark, except one
-    that only the agent stated, which is marked so."""
+    The rule counts as the developer's when a candidate attributed to the user has a quote that
+    the developer typed and that supports this rule's text (said.py), and the rule asks for no
+    command, URL, network, destructive or exfiltrating action. Each rule is judged on its own:
+    one quote does not vouch for the other rules written beside it. A rule nothing vouches for
+    keeps no mark, except one that only the agent stated, which is marked so."""
     new = not rule.sources and not rule.edited
     rule.last_seen = max(rule.last_seen, _date(max(c["chat_ts"] or 0 for c in candidates)))
     rule.sources = sorted(set(rule.sources) | {c["session_id"] for c in candidates})
     if said.risky(rule.text):
         rule.said_by = None
         return
-    typed = next((c for c in candidates if b.typed(c)), None)
+    typed = next((c for c in candidates if b.typed(c) and said.supports(c["evidence"], rule.text)), None)
     if typed and rule.said_by != "developer":
         rule.said_by, rule.evidence = "developer", said.clean_rule(typed["evidence"] or "")[:200]
     elif new and not typed and all(c["speaker"] == "assistant" for c in candidates):
