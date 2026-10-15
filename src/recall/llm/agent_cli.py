@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -16,6 +17,13 @@ from .base import FatalError, LLMError, Profile, Provider, Result, parse_json
 
 CODEX_IN_CHATGPT_APP = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
 CODEX_HOME = os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
+
+# Claude Code resolves its own aliases, and an installed copy can lag the API: 2.1.287 serves
+# `haiku` as claude-haiku-4-5, a generation behind the claude-haiku-5-5 that recall's evals and
+# prices take "haiku" to mean. The short names recall offers are pinned to explicit ids, so the
+# label, the cache key and the --model flag all name the model that runs.
+CLAUDE_MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+_warned: set[str] = set()
 
 
 def plan_env(*api_key_vars: str) -> dict:
@@ -132,7 +140,8 @@ class Claude(Provider):
     profile = Profile(batch_chars=60_000, batch_chats=8, workers=3)
 
     def __init__(self, model: str = "haiku"):
-        super().__init__(model or "haiku")
+        model = model or "haiku"
+        super().__init__(CLAUDE_MODELS.get(model, model))  # a full id passes through unchanged
         self.bin = shutil.which("claude")
 
     def check(self) -> str | None:
@@ -161,7 +170,8 @@ class Claude(Provider):
             "project",
             "--no-session-persistence",
         ]
-        # Extended thinking adds 3-5x the output tokens to extraction and no quality.
+        # On Haiku 4.5 this stops thinking, which added 3-5x the output tokens to extraction and no
+        # quality. Haiku 5.5 ignores it and thinks adaptively at Claude Code's default effort.
         env = {**plan_env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"), "MAX_THINKING_TOKENS": "0"}
         start = time.time()
         # An empty folder: Claude Code indexes its working folder at startup, and the shared
@@ -181,8 +191,20 @@ class Claude(Provider):
                 raise FatalError(f"Claude Code is not signed in: {message}")
             raise LLMError(f"claude: {message}")
         data = out.get("structured_output") or parse_json(str(out.get("result", "")))
+        self._check_served(out)
         usage = out.get("usage", {})
         tokens_in = sum(
             usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
         )
         return Result(data, tokens_in, usage.get("output_tokens", 0), time.time() - start)
+
+    def _check_served(self, out: dict) -> None:
+        """Say once when Claude Code ran another model than the one asked for (an old install, or a
+        plan that serves something else). The reply's modelUsage keys name the models that ran."""
+        served = list(out.get("modelUsage") or [])
+        want = self.model.split("[")[0]
+        if not want.startswith("claude-") or not served or any(want in m for m in served):
+            return
+        if self.model not in _warned:
+            _warned.add(self.model)
+            print(f"warning: asked Claude Code for {self.model}, it ran {', '.join(served)}", file=sys.stderr)
