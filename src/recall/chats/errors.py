@@ -28,6 +28,8 @@ from dataclasses import dataclass, fields, replace
 
 from .redact import Chat, redact, redact_tool
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 SIGNATURE_CHARS = 200
 COMMAND_CHARS = 120
 _LOOK = 6_000  # characters, from each end, of a command, output or reply that redaction and line picking read

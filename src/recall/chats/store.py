@@ -1,6 +1,9 @@
 """The chat index: sessions and messages in SQLite with full-text search, and the queries over it."""
 
 import contextlib
+import hashlib
+import importlib
+import json
 import os
 import re
 import sqlite3
@@ -14,13 +17,38 @@ from .projects import resolve
 from .redact import Chat, redact
 from .transcript import Message, Session, conversation_fingerprint, fallback_title, opening_prompt
 
+CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+
 MAX_MESSAGE_CHARS = 20_000
 # Text read past a cut so that a secret straddling it is redacted whole before the cut is made.
 REDACT_MARGIN = 512
-# Bumping this rebuilds the chat tables on next run: chats are re-read from their sources,
-# and the ones whose source is gone come back from the archive (archive.py), which a
-# rebuild never drops.
-CHAT_SCHEMA_VERSION = "7"
+# The chat tables rebuild on the next run when this changes: chats are re-read from their sources,
+# and the ones whose source is gone come back from the archive (archive.py), which a rebuild never
+# drops. It is a hash of the CHAT_SCHEMA string each module below declares, so a change that alters
+# what the index holds edits its own module's line (and two changes to one module conflict) instead of
+# both bumping one shared number.
+_PARTS = (
+    "archive",
+    "errors",
+    "projects",
+    "redact",
+    "sources",
+    "sources.claude",
+    "sources.codex",
+    "sources.compressed",
+    "sources.cursor",
+    "transcript",
+)
+
+
+def chat_schema_version() -> str:
+    """A short stable hash of every part's CHAT_SCHEMA, sorted by module name."""
+    parts = [(name, importlib.import_module(f"{__package__}.{name}").CHAT_SCHEMA) for name in _PARTS]
+    parts.append(("store", CHAT_SCHEMA))
+    return "p-" + hashlib.sha1(json.dumps(sorted(parts)).encode()).hexdigest()[:10]
+
+
+CHAT_SCHEMA_VERSION = chat_schema_version()
 CHAT_TABLES = (
     "sessions",
     "messages",
