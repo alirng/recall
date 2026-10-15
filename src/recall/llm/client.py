@@ -167,7 +167,9 @@ class Client:
 
     def store(self, key: str, data: dict) -> None:
         with self._lock:
-            self._write("insert or replace into llm_cache values (?,?,?)", (key, json.dumps(redact_json(data)), time.time()))
+            self._write(
+                "insert or replace into llm_cache values (?,?,?)", (key, json.dumps(redact_json(data)), time.time())
+            )
 
     def out_of_credits(self, failed: Provider, e: CreditsExhausted) -> None:
         """Switch to the fallback provider for the rest of the run, or stop the run cleanly."""
@@ -242,10 +244,11 @@ class Client:
                 ),
             )
 
-    def _write(self, sql: str, args: tuple) -> None:
+    def _write(self, sql: str, args: tuple) -> bool:
         """Cache and log writes are best-effort: a busy database must not fail a model call."""
         try:
             self._db.execute(sql, args)
             self._db.commit()
+            return True
         except sqlite3.OperationalError:
-            pass
+            return False

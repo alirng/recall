@@ -213,7 +213,6 @@ class Batcher:
         self.waits.append(time.time() - o.submitted)
         minutes = round(self.waits[-1] / 60, 1)
         self.log(f"batch {o.batch_id}: {len(answers)} of {len(o.sent)} answered in {minutes} min")
-        self._mark(o.batch_id, "collected")
         client = self.client
         for rid, s in o.sent.items():
             answer = answers.get(rid)
@@ -239,6 +238,9 @@ class Batcher:
                 continue
             client.accepted(s.call.purpose, s.provider, s.key, s.estimate, answer)
             out[s.index] = answer.data
+        # Marked only once every answer is in the cache: a run killed before this point finds the
+        # batch still running next time and collects it again, rather than losing paid-for answers.
+        self._mark(o.batch_id, "collected")
 
     def _cancel(self, o: _Open, out: list, direct: list) -> None:
         try:
@@ -358,10 +360,12 @@ class Batcher:
             requests[rid] = [s.key, schemas.setdefault(text, f"s{len(schemas)}")]
         saved = {"requests": requests, "schemas": {sid: json.loads(text) for text, sid in schemas.items()}}
         with self.client._lock:
-            self.client._write(
+            ok = self.client._write(
                 "insert or replace into llm_batches values (?,?,?,?,?,?)",
                 (o.batch_id, o.provider.label, o.submitted, "running", json.dumps(saved), None),
             )
+        if not ok:  # the batch is billed either way; say so, so its id can be found in the provider's console
+            self.log(f"could not record batch {o.batch_id}: a run killed now cannot collect it next time")
 
     def _mark(self, batch_id: str, status: str) -> None:
         with self.client._lock:
