@@ -9,7 +9,10 @@ Claude Code deletes transcripts older than `cleanupPeriodDays` (default 30, mini
 An organisation can set it through managed settings, which override the user's. They come
 from, highest first (code.claude.com/docs/en/managed-settings):
 
-1. server-managed settings, cached at ~/.claude/remote-settings.json;
+1. server-managed settings, cached at ~/.claude/remote-settings.json (the path is in Claude
+   Code's documentation; the format of the file is not, so reading `cleanupPeriodDays` from
+   it as a top-level key of a settings object is an assumption, unverified against a real
+   organisation's cache);
 2. an MDM profile: the com.anthropic.claudecode managed preferences domain on macOS;
 3. managed-settings.json, then managed-settings.d/*.json, in the system directory.
 

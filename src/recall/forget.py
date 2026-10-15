@@ -1,13 +1,21 @@
-"""`recall forget`: remove chats from everything recall holds about them.
+"""`recall forget`: remove chats from recall's index and archive.
 
 For each chat that means its index rows (sessions, messages and their full-text index, its
 project assignment, the list of files already read), its embedding vectors, its archive
-copies, its extraction record and candidate memories, and the cached model answers that
-quote it. Its id then goes on a forgotten list, so a later index run does not read it back
-from the agent's files, which recall never deletes.
+copies, its extraction record and candidate memories, and the cached model answers that quote
+it. The database file is then rewritten, so the words are not left in its free pages. The
+chat's id goes on a forgotten list, so a later index run does not read it back from the
+agent's files, which recall never deletes.
 
-Notes are the person's own files, so forget does not edit them. It lists the notes that cite
-a forgotten chat, and the git command that removes them from the notes folder's history.
+What it does not remove:
+* Notes. They are the person's own files, so forget does not edit them. It lists the notes
+  that cite a forgotten chat, and the git command that removes them from the notes folder's
+  history.
+* Cached model answers that only paraphrase a chat. Nothing ties those to it; forget finds
+  the ones whose evidence is found in the chat's text and the ones that repeat one of its
+  candidate memories word for word.
+* The usage log, which holds the words asked and chat ids, never chat text.
+* Anything a model provider already received when the chat was read for memory.
 """
 
 import json
