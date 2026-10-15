@@ -7,29 +7,43 @@ import glob
 import os
 import sqlite3
 
+from ...roots import Root
 from ..transcript import Message, Session, clean_assistant_text, clean_user_text
 from . import Item, append, compressed, iso_ts, read_jsonl, text_blocks
 
-ROOT = os.path.expanduser("~/.codex")
+ROOT = os.path.expanduser("~/.codex")  # the default root's; roots.discover() finds the rest
 CATALOG = os.path.join(ROOT, "sqlite", "codex-dev.db")
 
 
-def _catalog() -> dict[str, dict]:
+def _catalog(folder: str = ROOT) -> dict[str, dict]:
     """Thread titles, cwd and branch from the Codex app's own thread catalogue."""
     try:
-        con = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{os.path.join(folder, 'sqlite', 'codex-dev.db')}?mode=ro", uri=True)
         rows = con.execute("select thread_id, display_title, cwd, git_branch from local_thread_catalog").fetchall()
     except sqlite3.Error:
         return {}
     return {r[0]: {"title": r[1], "cwd": r[2], "branch": r[3]} for r in rows}
 
 
-def _threads() -> dict[str, str]:
-    """Every rollout on disk: its plain .jsonl path -> the file that holds it now. A chat in both
-    forms (Codex is mid-way between them) counts once, as the plain file."""
+def _folders(roots) -> list[tuple[str | None, str]]:
+    """(root name, folder) for each root with a sessions folder, once per real folder."""
+    if roots is None:
+        roots = [Root("codex", "codex", ROOT, default=True)]
+    out, seen = [], set()
+    for r in roots:
+        real = os.path.realpath(os.path.join(r.path, "sessions"))
+        if os.path.isdir(os.path.join(r.path, "sessions")) and real not in seen:
+            seen.add(real)
+            out.append((r.name, r.path))
+    return out
+
+
+def _threads(folder: str = ROOT) -> dict[str, str]:
+    """Every rollout in one Codex folder: its plain .jsonl path -> the file that holds it now. A chat
+    in both forms (Codex is mid-way between them) counts once, as the plain file."""
     found: dict[str, str] = {}
     for d in ("sessions", "archived_sessions"):
-        base = os.path.join(ROOT, d, "**")
+        base = os.path.join(folder, d, "**")
         for path in glob.glob(os.path.join(base, "*.jsonl"), recursive=True):
             found[path] = path
         for path in glob.glob(os.path.join(base, "*.jsonl" + compressed.SUFFIX), recursive=True):
@@ -37,46 +51,58 @@ def _threads() -> dict[str, str]:
     return found
 
 
-def detect() -> int | None:
-    if not os.path.isdir(os.path.join(ROOT, "sessions")):
+def detect(roots=None) -> int | None:
+    folders = _folders(roots)
+    if not folders:
         return None
-    return len(_threads())
+    return sum(len(_threads(f)) for _, f in folders)
 
 
-def unreadable() -> int:
-    """Chats that exist only as .jsonl.zst while nothing here can decode zstd."""
+def unreadable(roots=None) -> int:
+    """Chats that exist only as .jsonl.zst while nothing here can decode zstd, in every Codex root
+    recall reads (roots: those to look in; default, all the discovered ones with indexing on)."""
     if compressed.backend():
         return 0
-    return sum(1 for stable, path in _threads().items() if path != stable)
+    return sum(1 for _, f in _folders(_indexed(roots)) for stable, path in _threads(f).items() if path != stable)
 
 
-def unreadable_note() -> str | None:
-    n = unreadable()
+def unreadable_note(roots=None) -> str | None:
+    n = unreadable(roots)
     if not n:
         return None
     return f"{n:,} Codex chats are zstd-compressed and cannot be read: {compressed.fix_hint()}"
 
 
-def items():
-    catalog = None
+def _indexed(roots) -> list:
+    from ... import config
+    from ... import roots as harness
+
+    cfg = config.load()
+    found = harness.discover() if roots is None else roots
+    return [r for r in found if r.agent == "codex" and harness.option(r, "index", cfg)]
+
+
+def items(roots=None):
     readable = compressed.backend() is not None
-    for stable, path in _threads().items():
-        if path != stable and not readable:
-            continue  # not yielded, so no "seen" row stops it being read once a decoder exists
-        fingerprint = compressed.fingerprint(stable)
-        if fingerprint is None:
-            continue  # gone since the listing
+    for name, folder in _folders(roots):
+        catalog = None
+        for stable, path in _threads(folder).items():
+            if path != stable and not readable:
+                continue  # not yielded, so no "seen" row stops it being read once a decoder exists
+            fingerprint = compressed.fingerprint(stable)
+            if fingerprint is None:
+                continue  # gone since the listing
 
-        def load_one(p=stable):
-            nonlocal catalog
-            if catalog is None:
-                catalog = _catalog()
-            return load(p, catalog)
+            def load_one(p=stable, n=name, f=folder):
+                nonlocal catalog
+                if catalog is None:
+                    catalog = _catalog(f)
+                return load(p, catalog, n)
 
-        yield Item(stable, fingerprint, load_one)
+            yield Item(stable, fingerprint, load_one)
 
 
-def load(path: str, catalog: dict[str, dict]) -> Session | None:
+def load(path: str, catalog: dict[str, dict], root: str | None = None) -> Session | None:
     s = None
     messages: list[Message] = []
     path = compressed.plain_path(path)
@@ -85,6 +111,7 @@ def load(path: str, catalog: dict[str, dict]) -> Session | None:
         ts = iso_ts(d.get("timestamp"))
         if d.get("type") == "session_meta" and s is None:
             s = Session("codex", payload.get("id") or os.path.basename(path), path)
+            s.root = root
             s.project = payload.get("cwd")
             s.branch = (payload.get("git") or {}).get("branch")
             s.started_at = iso_ts(payload.get("timestamp")) or ts

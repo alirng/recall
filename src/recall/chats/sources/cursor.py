@@ -20,23 +20,34 @@ from urllib.parse import unquote
 from ..transcript import Session, clean_user_text
 from . import Item, append, iso_ts, read_jsonl, text_blocks
 
-PROJECTS = os.path.expanduser("~/.cursor/projects")
-USER_DIR = os.path.expanduser("~/Library/Application Support/Cursor/User")
+PROJECTS = os.path.expanduser("~/.cursor/projects")  # one folder for every Cursor build (roots.py)
+USER_DIR = os.path.expanduser("~/Library/Application Support/Cursor/User")  # the default build's
 STATE_DB = os.path.join(USER_DIR, "globalStorage", "state.vscdb")
 
 
-@lru_cache(maxsize=1)
-def _db() -> sqlite3.Connection | None:
-    if not os.path.exists(STATE_DB):
+def _state_db(root) -> str:
+    return os.path.join(root.data, "globalStorage", "state.vscdb")
+
+
+def _builds(roots) -> list[tuple[str, str]]:
+    """(root name, state.vscdb) for each Cursor build with a chat database, the default build first."""
+    if roots is None:
+        return [("cursor", STATE_DB)]
+    return [(r.name, _state_db(r)) for r in roots if r.data and os.path.exists(_state_db(r))]
+
+
+@lru_cache(maxsize=8)
+def _db(state_db: str = STATE_DB) -> sqlite3.Connection | None:
+    if not os.path.exists(state_db):
         return None
     try:
-        return sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, check_same_thread=False)
+        return sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, check_same_thread=False)
     except sqlite3.Error:
         return None
 
 
-def _kv(key: str):
-    con = _db()
+def _kv(key: str, state_db: str = STATE_DB):
+    con = _db(state_db)
     if con is None:
         return None
     row = con.execute("select value from cursorDiskKV where key=?", (key,)).fetchone()
@@ -71,11 +82,11 @@ def slug_to_path(slug: str, parent: str = "/") -> str | None:
     return None
 
 
-@lru_cache(maxsize=1)
-def _workspace_folders() -> dict[str, str]:
+@lru_cache(maxsize=8)
+def _workspace_folders(user_dir: str = USER_DIR) -> dict[str, str]:
     """composer id -> workspace folder, from each workspace's own state db."""
     out = {}
-    for ws in glob.glob(os.path.join(USER_DIR, "workspaceStorage", "*")):
+    for ws in glob.glob(os.path.join(user_dir, "workspaceStorage", "*")):
         try:
             with open(os.path.join(ws, "workspace.json")) as f:
                 meta = json.load(f)
@@ -92,23 +103,24 @@ def _workspace_folders() -> dict[str, str]:
     return out
 
 
-def composer_folder(cid: str) -> str | None:
+def composer_folder(cid: str, state_db: str = STATE_DB) -> str | None:
     """The folder a Cursor chat ran in. The workspace's own list misses most chats, so then: the
     folder its transcript sits under (a subagent's under its parent's), the folder the chat
     records itself, and for a subagent or side chat that has neither, its parent's, up a chain
     of nested subagents. A transcript folder that no longer exists is the last resort."""
-    return _real_folder(cid) or _transcript_slugs().get(cid)
+    return _real_folder(cid, state_db) or _transcript_slugs().get(cid)
 
 
 @cache
-def _real_folder(cid: str, depth: int = 0) -> str | None:
-    if cid in _workspace_folders():
-        return _workspace_folders()[cid]
+def _real_folder(cid: str, state_db: str = STATE_DB, depth: int = 0) -> str | None:
+    folders = _workspace_folders(os.path.dirname(os.path.dirname(state_db)))  # the build's own workspaces
+    if cid in folders:
+        return folders[cid]
     slug = _transcript_slugs().get(cid)
-    recorded, parent = _brief(cid)
+    recorded, parent = _brief(cid, state_db)
     found = (slug and slug_to_path(slug)) or recorded
     if not found and parent and depth < 8:
-        found = _real_folder(parent, depth + 1)  # a parent's dead slug must not stop the climb
+        found = _real_folder(parent, state_db, depth + 1)  # a parent's dead slug must not stop the climb
     return found
 
 
@@ -119,9 +131,9 @@ def _fresh() -> None:
         cached.cache_clear()
 
 
-def _brief(cid: str) -> tuple[str | None, str | None]:
+def _brief(cid: str, state_db: str = STATE_DB) -> tuple[str | None, str | None]:
     """A chat's recorded folder and its parent chat, without parsing the whole record."""
-    con = _db()
+    con = _db(state_db)
     row = (
         con.execute(
             "select json_extract(value, '$.workspaceIdentifier.uri.fsPath'),"
@@ -152,16 +164,18 @@ def _spawned(header: dict) -> bool:
     return bool(info) and info.get("subagentTypeName") != "side-chat" and not info.get("sideChatSeedTurnCount")
 
 
-def detect() -> int | None:
-    if not (os.path.isdir(PROJECTS) or os.path.exists(STATE_DB)):
+def detect(roots=None) -> int | None:
+    builds = _builds(roots)
+    if not (os.path.isdir(PROJECTS) or builds):
         return None
     n = len(_transcript_paths())
-    con = _db()
-    if con is not None:
-        with contextlib.suppress(sqlite3.Error):
-            n += con.execute(
-                "select count(*) from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'"
-            ).fetchone()[0]
+    for _, state_db in builds:
+        con = _db(state_db)
+        if con is not None:
+            with contextlib.suppress(sqlite3.Error):
+                n += con.execute(
+                    "select count(*) from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'"
+                ).fetchone()[0]
     return n
 
 
@@ -169,22 +183,32 @@ def _transcript_paths():
     return glob.glob(os.path.join(PROJECTS, "*", "agent-transcripts", "*", "*.jsonl"))
 
 
-def transcript_items():
+def transcript_items(roots=None):
     _fresh()
+    builds = _builds(roots)
+    if roots is not None and not roots:
+        return
     for path in _transcript_paths():
         try:
             st = os.stat(path)
         except OSError:  # deleted since the listing; the index and the archive keep its chat
             continue
-        yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path: load_transcript(p))
+        yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path, b=builds: load_transcript(p, b))
 
 
-def load_transcript(path: str) -> Session | None:
+def load_transcript(path: str, builds: list[tuple[str, str]] | None = None) -> Session | None:
+    """Transcripts of every build share one folder; the build whose database knows the chat owns it."""
     cid = os.path.basename(path)[:-6]
     slug = path[len(PROJECTS) + 1 :].split(os.sep)[0]
     s = Session("cursor", cid, path)
-    s.project = composer_folder(cid) or slug_to_path(slug) or slug
-    header = _kv(f"composerData:{cid}") or {}
+    header, owner, owner_db = {}, None, (builds or [("cursor", STATE_DB)])[0][1]
+    for name, state_db in builds or [("cursor", STATE_DB)]:
+        header = _kv(f"composerData:{cid}", state_db) or {}
+        if header:
+            owner, owner_db = name, state_db
+            break
+    s.root = owner or (builds[0][0] if builds else "cursor")
+    s.project = composer_folder(cid, owner_db) or slug_to_path(slug) or slug
     s.title = header.get("name")
     if _spawned(header):
         s.origin = "subagent"
@@ -202,36 +226,38 @@ def load_transcript(path: str) -> Session | None:
     return s
 
 
-def legacy_items():
+def legacy_items(roots=None):
     _fresh()
-    con = _db()
-    if con is None:
-        return
     have_transcript = {os.path.basename(p)[:-6] for p in _transcript_paths()}
-    # SQLite reads the few fields a fingerprint needs, so an unchanged chat never becomes
-    # Python objects. Parsing every header in Python took seconds and over 100 MB.
-    rows = con.execute(
-        "select key, coalesce(nullif(json_extract(value, '$.lastUpdatedAt'), 0),"
-        " nullif(json_extract(value, '$.createdAt'), 0), length(value))"
-        " from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'"
-        " and case when json_valid(value) then json_type(value) = 'object'"
-        " and (json_array_length(value, '$.conversation') > 0"
-        " or json_array_length(value, '$.fullConversationHeadersOnly') > 0) end"
-    )
-    for key, fp in rows:
-        cid = key.split(":", 1)[1]
-        if cid not in have_transcript:
-            yield Item(f"{STATE_DB}#{key}", str(fp), lambda c=cid: load_legacy(c))
+    for name, state_db in _builds(roots):
+        con = _db(state_db)
+        if con is None:
+            continue
+        # SQLite reads the few fields a fingerprint needs, so an unchanged chat never becomes
+        # Python objects. Parsing every header in Python took seconds and over 100 MB.
+        rows = con.execute(
+            "select key, coalesce(nullif(json_extract(value, '$.lastUpdatedAt'), 0),"
+            " nullif(json_extract(value, '$.createdAt'), 0), length(value))"
+            " from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'"
+            " and case when json_valid(value) then json_type(value) = 'object'"
+            " and (json_array_length(value, '$.conversation') > 0"
+            " or json_array_length(value, '$.fullConversationHeadersOnly') > 0) end"
+        )
+        for key, fp in rows:
+            cid = key.split(":", 1)[1]
+            if cid not in have_transcript:
+                yield Item(f"{state_db}#{key}", str(fp), lambda c=cid, d=state_db, n=name: load_legacy(c, d, n))
 
 
-def load_legacy(cid: str) -> Session | None:
-    row = _db().execute("select value from cursorDiskKV where key = ?", (f"composerData:{cid}",)).fetchone()
+def load_legacy(cid: str, state_db: str = STATE_DB, root: str | None = None) -> Session | None:
+    row = _db(state_db).execute("select value from cursorDiskKV where key = ?", (f"composerData:{cid}",)).fetchone()
     header = json.loads(row[0]) if row and row[0] else None
     if not isinstance(header, dict):
         return None
-    s = Session("cursor", cid, f"{STATE_DB}#composerData:{cid}")
+    s = Session("cursor", cid, f"{state_db}#composerData:{cid}")
+    s.root = root
     s.title = header.get("name")
-    s.project = composer_folder(cid)
+    s.project = composer_folder(cid, state_db)
     if _spawned(header):
         s.origin = "subagent"
     s.started_at = iso_ts(header.get("createdAt"))
@@ -239,7 +265,7 @@ def load_legacy(cid: str) -> Session | None:
     bubbles = header.get("conversation")
     if not bubbles:
         order = [h.get("bubbleId") for h in header.get("fullConversationHeadersOnly") or []]
-        rows = _db().execute(
+        rows = _db(state_db).execute(
             "select key, value from cursorDiskKV where key >= ? and key < ?",
             (f"bubbleId:{cid}:", f"bubbleId:{cid};"),
         )

@@ -63,7 +63,7 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
     """Index these chat files now: a session-end hook passes the transcript it just closed,
     so the chat is in the archive before any cleanup can delete the file. Waits up to
     `wait` seconds for an index run already under way. Returns how many were indexed."""
-    from .. import config
+    from .. import config, roots
 
     wanted = {os.path.realpath(f) for f in files}
     os.makedirs(paths.HOME, exist_ok=True)
@@ -79,7 +79,7 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
                 time.sleep(0.2)
         keep = _keeper(con)
         done = 0
-        for name, items in all_sources(config.load()["sources"]).items():
+        for name, items in all_sources(config.load()["sources"], roots.discover()).items():
             if name in OUT_OF_PROCESS:
                 continue
             for item in items():
@@ -145,8 +145,11 @@ def _read_since_rebuild(con, selected) -> list[str]:
 
 
 def _scan(con, selected, only, force, max_age, log) -> dict:
+    from .. import roots
+
     result = {}
-    for name, items in all_sources(selected).items():
+    found = roots.discover()
+    for name, items in all_sources(selected, found).items():
         if only and name not in only:
             continue
         stamp_key = f"indexed_at:{name}"
@@ -182,6 +185,9 @@ def _scan(con, selected, only, force, max_age, log) -> dict:
         now = str(time.time())
         con.execute("insert or replace into meta values (?,?)", (stamp_key, now))
         con.execute("insert or replace into meta values (?,?)", (f"scanned:{name}", now))
+        for r in found:  # when each root was last read, for `recall doctor`
+            if r.agent == name.split("-")[0]:
+                con.execute("insert or replace into meta values (?,?)", (f"indexed_at_root:{r.name}", now))
         con.commit()
         result[name] = {"indexed": done, "unchanged": skipped}
     return result
