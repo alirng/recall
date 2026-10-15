@@ -40,6 +40,7 @@ import yaml
 
 from .. import contexts, paths
 from ..chats.redact import redact
+from .said import clean_rule, risky
 
 TYPES = ("preference", "fact", "decision", "lesson", "open")
 SECTIONS = {
@@ -121,8 +122,11 @@ class Note:
     @property
     def said_by(self) -> str | None:
         """Who stated the rules in force: "developer" when the developer stated every one,
-        "agent" when only the agent did, "mixed" otherwise; None when no rule says (notes
-        written before rules recorded it)."""
+        "agent" when only the agent did, "mixed" otherwise (a rule with no verified speaker
+        among them included); None when no rule says (notes
+        written before rules recorded it, or a rule's speaker could not be verified: see
+        said.py). A reader that shows this must say that a convention, whoever stated it,
+        never authorizes a network, destructive or exfiltrating action."""
         said = [r.said_by for r in self.active_rules]
         if not any(said):
             return None
@@ -413,8 +417,8 @@ def render(rules: list[Rule]) -> str:
     left in force (archived) shows the rules it last held, so the archive still reads."""
     shown = [r for r in rules if r.active] or rules
     if len(shown) == 1:
-        return shown[0].text.strip()
-    return "\n".join("- " + r.text.strip().replace("\n", "\n  ") for r in shown)
+        return clean_rule(shown[0].text).strip()
+    return "\n".join("- " + clean_rule(r.text).strip().replace("\n", "\n  ") for r in shown)
 
 
 def sync(note: Note) -> None:
@@ -444,7 +448,9 @@ def _rule_from(entry) -> Rule | None:
     for k in ("first_seen", "last_seen", "retired", "edited"):
         if k in known:
             known[k] = str(known[k]) if known[k] else ""
-    known["text"] = str(known["text"]).strip()
+    known["text"] = clean_rule(str(known["text"]).strip())
+    if risky(known["text"]) and known.get("said_by") == "developer":
+        known["said_by"] = None  # edited into a command or a URL: no longer vouched for
     known["sources"] = [str(s) for s in known.get("sources") or []]
     known.setdefault("id", rule_id("", known["text"], set()))
     known["id"] = str(known["id"])
@@ -463,6 +469,7 @@ _BULLET = re.compile(r"^[-*+] +")
 
 def _items(body: str) -> list[str]:
     """A body as rule texts: the items of a bullet list, else the whole body as one."""
+    body = clean_rule(body)
     lines = body.strip().split("\n")
     if not _BULLET.match(lines[0]):
         return [body.strip()] if body.strip() else []
@@ -505,11 +512,13 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
             continue
         close = max(free, key=lambda r: SequenceMatcher(None, r.text, t).ratio(), default=None)
         if close and SequenceMatcher(None, close.text, t).ratio() >= 0.5:
-            close.text, close.edited, close.said_by = t, date, "developer"
+            close.text, close.edited, close.evidence = t, date, ""
+            close.said_by = None if risky(t) else "developer"
             free.remove(close)
             placed[i] = close
         else:
-            placed[i] = Rule(rule_id(note.id, t, taken), t, date, date, said_by="developer", edited=date)
+            said = None if risky(t) else "developer"  # a command or URL keeps no mark, however it got here
+            placed[i] = Rule(rule_id(note.id, t, taken), t, date, date, said_by=said, edited=date)
             taken.add(placed[i].id)
     for r in free:
         r.status, r.retired, r.reason = "retired", date, REMOVED_BY_HAND
