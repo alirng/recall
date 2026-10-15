@@ -75,7 +75,7 @@ def run_search(con, cases_path: str | None, sample: int, paraphrased: str | None
     for r in rng.sample(rows, min(len(rows), sample * 2)):
         query = _vague_query(r["first_prompt"], rng)
         if query:
-            cases.append({"query": query, "agent": r["agent"], "expect": r["id"]})
+            cases.append({"id": r["id"], "query": query, "agent": r["agent"], "expect": r["id"]})
         if len(cases) == sample:
             break
     out["known_item"] = _score_search(con, cases, "known_item")
