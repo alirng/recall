@@ -32,7 +32,13 @@ WINDOW_CHARS and WINDOW_FIRES per context window (compaction starts a new one). 
 rules are framed as the developer's standing guidance, past chats as records. Every fire is
 logged to the usage log with ids only, and `recall usage` sums them up.
 
-Hooks must be fast: nothing here imports numpy, the llm package or mcp. No model calls.
+Contexts (contexts.py): memory pushed into a session never crosses one. A global preference is
+handed over only within the contexts it was learned in (_note_scope), a past chat only within
+the context it ran in (_chat_scope). Searching chats (search_chats) is not narrowed.
+
+Hooks must be fast: nothing here imports numpy, the llm package or mcp. No model calls. They
+open the index read-only (_connect) and stay silent when it is missing or of another chat
+schema, which the indexer rebuilds.
 """
 
 import contextlib
@@ -261,8 +267,10 @@ def on_read(e: "Event") -> "Reply | None":
             path = os.path.abspath(os.path.join(e.cwd or "", path))
             if path in state.d["files"]:
                 continue
-            state.d["files"].append(path)
             con = con or _connect()
+            if con is None:  # no index to read: this file is still new to the next read
+                break
+            state.d["files"].append(path)
             items += file_items(con, e.agent, path, e.cwd, _own(e), state, _project_of(con, e.cwd, state))
         return _reply(e, state, "read", items, file=_repo_path(e.files[0], e.cwd))
 
@@ -275,9 +283,8 @@ def on_tool_failure(e: "Event") -> "Reply | None":
             return None
         items = _after_compaction(e, state)
         sig = error_signature(e.error or "")
-        if sig and sig["key"] not in state.d["errors"]:
+        if sig and sig["key"] not in state.d["errors"] and (con := _connect()) is not None:
             state.d["errors"].append(sig["key"])
-            con = _connect()
             command = ((e.raw or {}).get("tool_input") or {}).get("command")
             items += failure_items(con, sig, e.cwd, _own(e), _project_of(con, e.cwd, state), command=command)
         return _reply(e, state, "tool_failure", items)
@@ -388,7 +395,8 @@ def _log(e: "Event", event: str, picked: list[Item], text: str, considered: list
 def _prompt_items(e: "Event", state: State, prompt: str, chats: bool = True) -> list[Item]:
     if not askable(prompt):
         return []
-    con = _connect()
+    if (con := _connect()) is None:
+        return []
     project = _project_of(con, e.cwd, state)
     return match_prompt(con, prompt, e.cwd, _own(e), chats=chats, project=project, keep_all=True)
 
@@ -469,7 +477,7 @@ def candidates(
         project = _project(con, cwd)
     out = []
     if chats:
-        out += _chat_candidates(con, query, project, own, until, now, words)
+        out += _chat_candidates(con, query, project, own, until, now, words, cwd)
     if notes:
         out += _note_candidates(con, query, project, now, words, allowed_notes, cwd)
     named = files_named(query)
@@ -599,14 +607,17 @@ def embed_query(text: str, timeout: float = EMBED_WAIT) -> list[float] | None:
     return [x / norm for x in v]
 
 
-def _chat_candidates(con, query, project, own, until, now, words) -> list[Item]:
+def _chat_candidates(con, query, project, own, until, now, words, cwd=None) -> list[Item]:
     from .chats import store
 
     explain: dict = {}
     until_iso = _iso(until) if until else None
     # Keyword ranking only: the full meaning ranking loads every vector (numpy, ~300 ms cold);
-    # the query vector instead scores the candidates (_meaning).
-    rows = store.search(con, query, limit=8, until=until_iso, exclude=own, vector=False, explain=explain)
+    # the query vector instead scores the candidates (_meaning). Chats of another context are
+    # out before the ranking, so they cannot take a place or lower a margin.
+    rows = store.search(
+        con, query, limit=8, until=until_iso, exclude=own, vector=False, explain=explain, where=_chat_scope(con, cwd)
+    )
     if not rows:
         return []
     meta = {
@@ -675,18 +686,26 @@ def _note_scope(con, project: dict | None, cwd: str | None) -> tuple[str, list]:
     """SQL (with its parameters, in order) for the notes a session in `cwd` may be handed: the
     current project's own, and global ones whose audience (memory/notes.py) includes it. A
     preference learned in one context is not handed to another's sessions: work and personal
-    stay apart as at session start. Notes with no audience reach every folder. An index
-    written before audiences existed cannot tell, so with contexts configured it hands over
-    no global note until the notes are indexed again (the next MCP server start or nightly run)."""
+    stay apart as at session start. Notes with no audience reach every folder.
+
+    The audiences were worked out when the notes were indexed, against the contexts configured
+    then (contexts.fingerprint). With contexts configured, an index that cannot say which, or
+    says other than the config now, hands over no global note until the notes are indexed again
+    (the next MCP server start or nightly run): that covers an index written before audiences
+    existed, a config.toml edited since, and one that could not be read while indexing, whose
+    notes all came out with no audience. A config.toml that cannot be read now counts the same."""
     from . import contexts
 
     keys = project["keys"] if project else []
     sql, args = "n.scope = 'global'", []
     try:
-        table = contexts.roots()
-    except Exception:  # a config.toml recall cannot read: no contexts
-        table = {}
-    if any(r[1] == "audience" for r in con.execute("pragma table_info(notes)")):
+        table, now = contexts.read()
+    except Exception:
+        table, now = {}, contexts.UNKNOWN
+    audiences = any(r[1] == "audience" for r in con.execute("pragma table_info(notes)"))
+    if now != contexts.NONE and not (audiences and contexts.audiences_current(con, now)):
+        sql = "0"
+    elif audiences:
         try:
             here = contexts.of_folder(cwd, table)
         except Exception:
@@ -694,12 +713,42 @@ def _note_scope(con, project: dict | None, cwd: str | None) -> tuple[str, list]:
         who = [f"project:{k}" for k in keys] + ([f"ctx:{here}"] if here else [])
         sql += " and (n.audience is null" + " or instr(n.audience, ?) > 0" * len(who) + ")"
         args = [json.dumps(w) for w in who]
-    elif table:
-        sql = "0"
     if keys:
         sql = f"({sql}) or n.project in ({','.join('?' * len(keys))})"
         args += keys
     return sql, args
+
+
+def _chat_scope(con, cwd: str | None) -> tuple[str, list]:
+    """SQL (starting with "and", over `sessions s`) and its parameters for the chats a session in
+    `cwd` may be handed. Memory pushed into a session never crosses a context: with contexts
+    configured, a chat is eligible only when its folder is in the same context as `cwd`, and a
+    chat outside every context only for a session that is too. Searching chats (the search_chats
+    tool) is not narrowed: it answers a person's question, and they asked. With no contexts
+    nothing is narrowed; a config.toml that cannot be read now leaves no chat eligible."""
+    import functools
+
+    from . import contexts
+
+    try:
+        table, now = contexts.read()
+        if now == contexts.NONE:
+            return "", []
+        if now == contexts.UNKNOWN:
+            return " and 0", []
+        here = contexts.of_folder(cwd, table) or ""
+    except Exception:
+        return " and 0", []
+
+    @functools.cache
+    def context_of(folder: str | None) -> str:
+        try:
+            return contexts.of_folder(folder, table) or ""
+        except Exception:
+            return "\0"  # in no context that a session can be in
+
+    con.create_function("recall_context", 1, context_of, deterministic=True)
+    return " and recall_context(s.project) = ?", [here]
 
 
 def _note_candidates(con, query, project, now, words, allowed, cwd=None) -> list[Item]:
@@ -801,7 +850,7 @@ def file_items(
         project = _project(con, cwd or root)
     items += _file_notes(con, names, project, cwd or root)
     if project and rel:
-        items += _file_chats(con, names, project, own)
+        items += _file_chats(con, names, project, own, cwd or root)
     return items
 
 
@@ -867,7 +916,7 @@ def _file_notes(con, names: list[str], project: dict | None, cwd: str | None) ->
     return [Item(r[0], "note", _note_line(r[0], r[1], r[2], r[3])) for r in rows]
 
 
-def _file_chats(con, names: list[str], project: dict, own: list[str]) -> list[Item]:
+def _file_chats(con, names: list[str], project: dict, own: list[str], cwd: str | None = None) -> list[Item]:
     """The latest finished chat in this project whose agent named the file (its path, or its
     name when distinctive) in a reply, with what that reply said about it. Chats active in the
     last quarter hour are left to the edit hooks (status.py), which know what is live."""
@@ -876,6 +925,7 @@ def _file_chats(con, names: list[str], project: dict, own: list[str]) -> list[It
     if not phrase:
         return []
     keys = project["keys"]
+    scope, scope_args = _chat_scope(con, cwd)  # a project listed in projects.yaml can span contexts
     rows = con.execute(
         f"""select m.session_id sid, max(m.seq) seq, s.title, s.updated_at
             from messages_fts f join messages m on m.id = f.rowid join sessions s on s.id = m.session_id
@@ -883,8 +933,9 @@ def _file_chats(con, names: list[str], project: dict, own: list[str]) -> list[It
               and s.project_key in ({",".join("?" * len(keys))}) and s.updated_at < ?
               and ({" or ".join(["instr(m.text, ?) > 0"] * len(files))})
               {f"and s.id not in ({','.join('?' * len(own))})" if own else ""}
+              {scope}
             group by m.session_id order by s.updated_at desc limit 1""",
-        [f'"{phrase}"', *keys, time.time() - LIVE_SECONDS, *files, *own],
+        [f'"{phrase}"', *keys, time.time() - LIVE_SECONDS, *files, *own, *scope_args],
     ).fetchall()
     out = []
     for r in rows:
@@ -958,16 +1009,17 @@ def failure_items(
 ) -> list[Item]:
     """Past chats where the same error came up, newest in this project first, with the first
     line of the agent's reply after it. From the index's tool errors when it keeps them, else
-    from pasted copies in messages. A signature found in many chats is common knowledge, so
-    it stays silent."""
+    from pasted copies in messages, among the chats of this session's context (_chat_scope). A
+    signature found in many chats is common knowledge, so it stays silent."""
     words = [w for w in sig["words"] if re.fullmatch(r"\w+", w)]
     if len(words) < 3:
         return []
     if project is False:
         project = _project(con, cwd)
     keys = project["keys"] if project else []
+    scope, scope_args = _chat_scope(con, cwd)
     if TOOL_ERRORS and _has_table(con, "tool_errors"):
-        return _tool_error_items(con, words, keys, own, until, command)
+        return _tool_error_items(con, words, keys, own, until, command, scope, scope_args)
     # Every word within a short span, as in a pasted copy of the same error line.
     q = f"NEAR({' '.join(chr(34) + w + chr(34) for w in words)}, {len(words) + 6})"
     rows = con.execute(
@@ -976,8 +1028,9 @@ def failure_items(
             where messages_fts match ? and s.origin = 'interactive'
               {f"and s.id not in ({','.join('?' * len(own))})" if own else ""}
               {"and m.ts < ? and s.started_at < ?" if until else ""}
+              {scope}
             group by m.session_id order by s.updated_at desc limit 40""",
-        [q, *own, *([until, until] if until else [])],
+        [q, *own, *([until, until] if until else []), *scope_args],
     ).fetchall()
     if not rows or len(rows) > 20:
         return []
@@ -997,7 +1050,9 @@ def failure_items(
     return out
 
 
-def _tool_error_items(con, words: list[str], keys: list[str], own: list[str], until, command) -> list[Item]:
+def _tool_error_items(
+    con, words: list[str], keys: list[str], own: list[str], until, command, scope: str = "", scope_args=()
+) -> list[Item]:
     """Past failed tool calls (chats/errors.py) whose one-line signature holds every word of
     this one. A bare exit code never matches (too few words); a match counts in this project,
     or elsewhere when the command starts the same way."""
@@ -1009,8 +1064,9 @@ def _tool_error_items(con, words: list[str], keys: list[str], own: list[str], un
             where tool_errors_fts match ? and s.origin = 'interactive'
               {f"and e.session_id not in ({','.join('?' * len(own))})" if own else ""}
               {"and e.ts < ?" if until else ""}
+              {scope}
             order by e.ts desc limit 60""",
-        [" AND ".join(f'"{w}"' for w in words[:6]), *own, *([until] if until else [])],
+        [" AND ".join(f'"{w}"' for w in words[:6]), *own, *([until] if until else []), *scope_args],
     ).fetchall()
     chats = list(dict.fromkeys(r["sid"] for r in rows))
     if not rows or len(chats) > 20:
@@ -1080,9 +1136,28 @@ def _recent_asks(agent: str, transcript: str | None, n: int = 3) -> str:
 
 
 def _connect():
+    """The chat index, opened read-only, or None when a hook has nothing to read: no index yet,
+    or one built under another chat schema (store.CHAT_SCHEMA_VERSION). A hook never builds or
+    rebuilds it: the first one after a release that bumped the schema would spend seconds on a
+    rebuild the indexer does at the next MCP server start or nightly run, and a hook of an older
+    release would rebuild a newer index backwards. Until then the hooks stay silent."""
+    import sqlite3
+
     from .chats import store
 
-    return store.connect()
+    try:
+        con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True, timeout=1)
+    except sqlite3.Error:
+        return None
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute("select v from meta where k = 'chat_schema'").fetchone()
+        if row and row[0] == store.CHAT_SCHEMA_VERSION:
+            return con
+    except sqlite3.Error:
+        pass
+    con.close()
+    return None
 
 
 def _own(e: "Event") -> list[str]:
