@@ -588,7 +588,7 @@ def cmd_install(a) -> None:
         for r in chosen or ():  # asking for a root by name is saying yes to it again
             if not roots.option(r, "connect") and not dry_run:
                 roots.set_option(r, "connect", True)
-        lines = agents.install(parts, dry_run, chosen or found)
+        lines = agents.install(parts, dry_run, chosen or found, repoint=a.repoint)
         if not dry_run:
             autopilot.record_connected(found)  # so uninstall finds these roots even if discovery later loses them
             if "hook" in parts and autopilot.consented() is not None:
@@ -680,6 +680,8 @@ def cmd_doctor(a) -> None:
         elif not r["mine"] and r["exists"]:
             seen += f"; not mined (mine = true in [roots.{r['root']}] turns its chats into memory)"
         print(f"{r['root']:15} {where}\n{'':15} {text}; {seen}" + (f"; {r['account']}" if r["account"] else ""))
+        if r["hooks_run"]:
+            print(f"{'':15} hooks run {', '.join(r['hooks_run'])}, not this recall ({r['this_recall']})")
     on = autopilot.enabled()
     print(
         f"\nautopilot: {'on' if on else 'off'}"
@@ -692,6 +694,8 @@ def cmd_doctor(a) -> None:
     new = sorted({k for r in rows for k in r["new_hooks"]})
     if new:
         print(f"  new hooks available ({', '.join(new)}): run `recall install` to add them")
+    if any(r["hooks_run"] for r in rows):
+        print("  `recall install --repoint` points the hooks at this recall; autopilot never moves them")
     for line in autopilot.recent():
         print(f"  {line}")
 
@@ -1003,6 +1007,11 @@ def _parser() -> argparse.ArgumentParser:
         )
         if name == "install":
             sp.add_argument("--dry-run", action="store_true")
+            sp.add_argument(
+                "--repoint",
+                action="store_true",
+                help="point hooks that run another recall at this one (Codex asks to trust them again)",
+            )
     sp = command("autopilot", cmd_autopilot, "connect new agent folders by itself (on, off, or run the check now)")
     sp.add_argument("action", nargs="?", choices=["run", "on", "off"], default="run")
     sp.add_argument("--dry-run", action="store_true", help="show what would be connected")

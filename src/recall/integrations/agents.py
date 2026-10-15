@@ -37,13 +37,16 @@ OPENCODE_SOURCE = os.path.join(os.path.dirname(__file__), "opencode", "recall.js
 _CODEX_BLOCK = re.compile(rf"\n?\[mcp_servers\.{NAME}\]\n(?:(?!\[).*\n?)*")
 
 
-def install(components=COMPONENTS, dry_run: bool = False, roots: list | None = None) -> list[str]:
+def install(
+    components=COMPONENTS, dry_run: bool = False, roots: list | None = None, repoint: bool = False
+) -> list[str]:
     """Connect every root recall found (roots.discover()), or just `roots`. A root the person turned
-    off ([roots.NAME] connect = false) is left alone."""
+    off ([roots.NAME] connect = false) is left alone. Hooks that run another existing recall stay on it
+    and are reported; repoint=True (`recall install --repoint`) points them at this one."""
     cmd = _recall_bin()
-    report = _roots(components, cmd, dry_run, roots)
+    report = _roots(components, cmd, dry_run, roots, repoint=repoint)
     if "hook" in components:
-        report.append(f"Gemini CLI   {_hook_gemini(cmd, dry_run)}")
+        report.append(f"Gemini CLI   {_hook_gemini(cmd, dry_run, repoint=repoint)}")
         report.append(f"OpenCode     {_hook_opencode(cmd, dry_run)}")
     return report
 
@@ -63,7 +66,9 @@ def uninstall(components=COMPONENTS, roots: list | None = None, whole: bool | No
     return report
 
 
-def _roots(components, cmd: str, dry_run: bool, roots: list | None, remove: bool = False) -> list[str]:
+def _roots(
+    components, cmd: str, dry_run: bool, roots: list | None, remove: bool = False, repoint: bool = False
+) -> list[str]:
     from .. import config
     from .. import roots as harness
 
@@ -78,7 +83,7 @@ def _roots(components, cmd: str, dry_run: bool, roots: list | None, remove: bool
             if not remove and not harness.option(r, "connect", cfg):
                 report.append(f"{r.label:12} skipped: [roots.{r.name}] connect = false")
                 continue
-            report += connect_root(r, cmd, components, dry_run, remove)
+            report += connect_root(r, cmd, components, dry_run, remove, repoint=repoint)
     return report
 
 
@@ -96,11 +101,19 @@ def connectable(roots: list, removal: bool = False) -> list:
 
 
 def connect_root(
-    root, cmd: str, components=COMPONENTS, dry_run: bool = False, remove: bool = False, allow: set | None = None
+    root,
+    cmd: str,
+    components=COMPONENTS,
+    dry_run: bool = False,
+    remove: bool = False,
+    allow: set | None = None,
+    repoint: bool = False,
 ) -> list[str]:
     """Install (or remove) recall's MCP server, skill and hooks in one root. Each config file is
     backed up beside itself first; a part that is already in place is left alone. allow: the hook
-    kinds (hooks.consent_key) this call may add, repair or leave alone; None means all of them."""
+    kinds (hooks.consent_key) this call may add, repair or leave alone; None means all of them.
+    repoint: also move hooks that run another existing recall onto `cmd`. Only a person's explicit
+    `recall install --repoint` sets it; autopilot never does."""
     f = root_files(root)
     lead = f"{root.label:12}"
     out = []
@@ -110,7 +123,7 @@ def connect_root(
     if "skill" in components:
         out += _skill(dry_run, remove, {root.label: f["skills"]})
     if "hook" in components:
-        out.append(f"{lead} {_hook_agent(root.agent, f['hook'], cmd, dry_run, remove, allow)}")
+        out.append(f"{lead} {_hook_agent(root.agent, f['hook'], cmd, dry_run, remove, allow, repoint)}")
     return out
 
 
@@ -356,23 +369,25 @@ def hook_kinds(agent: str) -> list[str]:
     return list(dict.fromkeys(edit_hooks.consent_key(agent, ev, e.get("matcher")) for ev, e in _entries(agent, "x")))
 
 
-def _hook_agent(agent: str, path: str, cmd: str, dry_run: bool, remove: bool, allow: set | None = None) -> str:
+def _hook_agent(
+    agent: str, path: str, cmd: str, dry_run: bool, remove: bool, allow: set | None = None, repoint: bool = False
+) -> str:
     """Claude Code reads SessionStart output into the session's context, so new, resumed and compacted
     sessions all start with the memory block. Codex runs its hooks from hooks.json once you have trusted
     them in /hooks; Cursor reloads hooks.json on save."""
     label = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[agent]
     if not os.path.isdir(os.path.dirname(path)):
         return f"{label} not found, skipped"
-    report = _hook_file(path, agent, cmd, dry_run, remove, agent == "cursor", allow)
+    report = _hook_file(path, agent, cmd, dry_run, remove, agent == "cursor", allow, repoint)
     if agent == "codex" and " written " in report:
-        report += "; trust them once with /hooks in Codex"
+        report += f"; trust them {'again' if 'repointed' in report else 'once'} with /hooks in Codex"
     return report
 
 
-def _hook_gemini(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
+def _hook_gemini(cmd: str, dry_run: bool = False, remove: bool = False, repoint: bool = False) -> str:
     if not (shutil.which("gemini") or os.path.exists(GEMINI_SETTINGS)):
         return "Gemini CLI not found, skipped"
-    return _hook_file(GEMINI_SETTINGS, "gemini", cmd, dry_run, remove)
+    return _hook_file(GEMINI_SETTINGS, "gemini", cmd, dry_run, remove, repoint=repoint)
 
 
 def _hook_opencode(cmd: str, dry_run: bool = False, remove: bool = False) -> str:
@@ -402,17 +417,20 @@ def _hook_file(
     remove: bool,
     flat: bool = False,
     allow: set | None = None,
+    repoint: bool = False,
 ) -> str:
     """Make recall's entries in one agent's hooks file what this release installs, keyed by (event,
     matcher): add the missing, leave a working one exactly as it is, replace one whose recall is gone
     or that is an older kind of entry, leave everyone else's alone. One write, so the backup holds the
     file as it was. Claude Code, Codex and Gemini CLI wrap commands in groups under each event; Cursor
-    lists them directly (flat). allow: only these hook kinds are managed (None: all)."""
+    lists them directly (flat). allow: only these hook kinds are managed (None: all). A hook that runs
+    another existing recall is left on it and named in the report, unless repoint is set."""
     try:
         config = json.loads(_read(path) or "{}")
     except json.JSONDecodeError:
         return f"{path} is not valid JSON, skipped"
-    changed = _reconcile(config, agent, cmd, remove, flat, allow)
+    elsewhere = [] if remove else _runners(config, agent, cmd, flat)
+    changed = _reconcile(config, agent, cmd, remove, flat, allow, repoint)
     if flat and changed:
         config.setdefault("version", 1)
     if changed and not dry_run:
@@ -420,7 +438,14 @@ def _hook_file(
     events = ", ".join(dict.fromkeys(k.split(":")[1] for k in changed))
     if remove:
         return f"hooks removed ({events})" if changed else "no hooks installed"
-    return f"hooks written to {path} ({events})" if changed else "hooks already installed"
+    left = [] if repoint else elsewhere
+    note = f"hooks run {', '.join(left)}, not this recall ({cmd}); `recall install --repoint` points them here"
+    if not changed:
+        return note if left else "hooks already installed"
+    text = f"hooks written to {path} ({events})"
+    if repoint and elsewhere:
+        text += f"; repointed from {', '.join(elsewhere)} to {cmd}"
+    return f"{text}; {note}" if left else text
 
 
 def _hook_gaps(root, cmd: str, allow: set | None = None) -> list[str]:
@@ -434,12 +459,16 @@ def _hook_gaps(root, cmd: str, allow: set | None = None) -> list[str]:
     return _reconcile(config, root.agent, cmd, False, root.agent == "cursor", allow)
 
 
-def _reconcile(config: dict, agent: str, cmd: str, remove: bool, flat: bool, allow: set | None) -> list[str]:
+def _reconcile(
+    config: dict, agent: str, cmd: str, remove: bool, flat: bool, allow: set | None, repoint: bool = False
+) -> list[str]:
     """Edit `config` in place; returns the hook kinds that changed (or would). A present entry is
     judged by its command, not by who wrote it: if it runs an existing `recall hook --agent <agent>`
     it stays where it is (Codex ties its trust to the entry, so reordering or rewriting one costs the
     person a re-trust), and only a field that differs is refreshed. It is repointed to `cmd` only when
-    the recall it runs is gone, so a recall run from a repo never takes hooks over from the installed one."""
+    the recall it runs is gone, so a recall run from a repo never takes hooks over from the installed
+    one; or when `repoint` is set, which only a person's explicit `recall install --repoint` does
+    (an entry that already runs `cmd` through a symlink is not rewritten)."""
     wanted = {(ev, en.get("matcher")): en for ev, en in _entries(agent, cmd)}
 
     def kind(event, matcher):
@@ -473,7 +502,8 @@ def _reconcile(config: dict, agent: str, cmd: str, remove: bool, flat: bool, all
             else:
                 satisfied.add(key)
                 exe = _runs(e, agent, flat)
-                target = _rebase(wanted[key], cmd, exe) if exe and _exists(exe) else wanted[key]
+                stays = exe and _exists(exe) and (not repoint or _same(exe, cmd))
+                target = _rebase(wanted[key], cmd, exe) if stays else wanted[key]
                 if e != target:
                     changed.append(kind(*key))
                 keep.append(target if e != target else e)
@@ -503,6 +533,34 @@ def _runs(entry: dict, agent: str, flat: bool) -> str | None:
 
 def _exists(exe: str) -> bool:
     return os.access(exe, os.X_OK) if os.path.isabs(exe) else shutil.which(exe) is not None
+
+
+def _same(exe: str, cmd: str) -> bool:
+    """Whether a hook's executable is the recall at `cmd`, through any symlink."""
+    found = exe if os.path.isabs(exe) else shutil.which(exe)
+    return bool(found) and os.path.realpath(found) == os.path.realpath(cmd)
+
+
+def _runners(config: dict, agent: str, cmd: str, flat: bool) -> list[str]:
+    """The other recalls this config's recall hooks run: existing ones that are not `cmd`. A recall
+    that is gone is not listed: that hook is a gap, and gets repointed without being asked."""
+    out = []
+    hooks = config.get("hooks")
+    for entries in hooks.values() if isinstance(hooks, dict) else ():
+        for e in entries if isinstance(entries, list) else ():
+            exe = _runs(e, agent, flat) if isinstance(e, dict) else None
+            if exe and _exists(exe) and not _same(exe, cmd):
+                out.append(exe if os.path.isabs(exe) else shutil.which(exe))
+    return list(dict.fromkeys(out))
+
+
+def other_runners(root, cmd: str) -> list[str]:
+    """The recalls other than `cmd` that this root's hooks run, for `recall doctor`. Reads only."""
+    try:
+        config = json.loads(_read(root_files(root)["hook"]) or "{}")
+    except json.JSONDecodeError:
+        return []
+    return _runners(config, root.agent, cmd, root.agent == "cursor")
 
 
 def _rebase(entry: dict, old: str, new: str):
