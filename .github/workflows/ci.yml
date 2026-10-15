@@ -54,7 +54,7 @@ jobs:
           BASE: ${{ github.base_ref }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE"
-          if [[ "$BRANCH" != release-* ]] && ! git diff --quiet "origin/$BASE HEAD" -- CHANGELOG.md; then
+          if [[ "$BRANCH" != release-* ]] && git diff --name-only "origin/$BASE" HEAD | grep -qx CHANGELOG.md; then
             echo "::error::Add a changes/<topic>.<section>.md fragment instead of editing CHANGELOG.md (see changes/README.md)."
             exit 1
           fi
