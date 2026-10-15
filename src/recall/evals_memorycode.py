@@ -35,11 +35,12 @@ Each history's notes are kept in the run folder (notes/<id>/r<repeat>/) for --ar
 
 --from-candidates RUN_DIR freezes extraction: each history's candidates come from that earlier
 extraction run (repeat r replays its repeat r, cycling when it has fewer; --candidates-repeat K
-replays its repeat K every time) and only consolidation and grading run again, so a
-consolidation change is measured without extraction noise. It takes the earlier run's histories
-unless --case picks some, and always calls the model afresh. Consolidation is most of an
-extraction run's model calls (about 85% on MemoryCode), so a replay costs nearly as much as a
-fresh run; what it removes is extraction's share of the noise.
+replays its repeat K every time, and is an error past the run's last repeat) and only
+consolidation and grading run again, so a consolidation change is measured without extraction
+noise. It takes the earlier run's histories unless --case picks some, and always calls the
+model afresh. Consolidation is most of an extraction run's model calls (about 85% on MemoryCode),
+so a replay costs nearly as much as a fresh run; what it removes is extraction's share of the
+noise.
 
 Agent mode gives the history's final coding requests to Claude Code (evals_agent.run_agent) and
 grades its code with the benchmark's checks, ported from the authors' evaluate_model_output.py
@@ -50,10 +51,15 @@ the code contains, averaged per history. Arms:
   notes  tools, plus the notes an extraction run wrote (--notes RUN_DIR)
   hook   as notes, and the system prompt also gets what the session-start hook injects for the
          history's folder (memory.context.session_context over those notes), as in production
-  placebo  the priming control: as hook, with another history's notes of about the same size
-         (moved into this project, people and company renamed) in place of this history's. A
-         gain of hook over tools that placebo also shows comes from having notes, not from what
-         they say
+  placebo  as hook, with another history's notes of about the same size in place of this
+         history's: moved into this project, people and company renamed, note ids and sources
+         made this history's. The donor shares no convention object and no quoted token with
+         this history (a history with no such donor is skipped), and each row logs the donor
+         and its overlap and conflicting counts (0 by the filter). Hook minus placebo is an
+         upper bound on what the notes' content is worth; placebo minus tools is the effect
+         of loading notes that are not this history's. Without the filter (runs before
+         2026-10-15) the donor often held this history's conventions or contradicted them, so
+         such a placebo is not a priming control
   full   the whole history in the prompt and no tools, as the paper's history setting; every
          history fits (the longest is about 72k tokens)
 Arms are classes in ARMS (see Arm): a new arm subclasses one and registers itself there.
@@ -82,6 +88,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from . import config
 from . import evals_harness as h
@@ -328,6 +335,7 @@ def from_args(a) -> dict:
         replay = getattr(a, "from_candidates", None)
         if replay:
             source = candidate_index(replay)
+            h.check_candidates_repeat(getattr(a, "candidates_repeat", None), source)
             if not a.case:  # the histories the earlier run read
                 histories = [x for x in histories if any(k[0] == str(x.id) for k in source["rows"])]
             fixed = getattr(a, "candidates_repeat", None)
@@ -946,7 +954,7 @@ def run_agent(
     if not shutil.which("claude"):
         sys.exit("Claude Code is not installed: `claude` is not on PATH")
     arm = ARMS[arm]
-    run.meta.update(server=evals_agent._server_code() if arm.tools else None)
+    run.meta.update(server=evals_agent._server_code() if arm.tools else None, agent_harness=evals_agent.HARNESS)
     empty = os.path.join(run.dir, "no-mcp.json")
     with open(empty, "w") as f:
         json.dump({"mcpServers": {}}, f)
@@ -1040,6 +1048,7 @@ def run_agent(
         "tokens_in": h.spread([r["tokens_in"] for r in scored]),
         "tokens_out": h.spread([r["tokens_out"] for r in scored]),
         "tool_calls": {**h.spread([r["tool_calls"] for r in scored]), "by_tool": dict(sorted(tools.items()))},
+        "tool_search_calls": h.spread([r["tool_search_calls"] for r in scored]),
         "tool_result_chars": h.spread([r["tool_chars"] for r in scored]),
         "seconds": h.spread([r["seconds"] for r in scored]),
         "cost_usd_api_equivalent": round(sum(r["cost_usd"] for r in scored), 2),
@@ -1169,34 +1178,59 @@ class Hook(Notes):
 
 
 class Placebo(Hook):
-    """The priming control: as hook, but the notes are another history's, about the same size,
-    moved into this history's project with the people and company renamed. Notes that help only
-    because they are there (any rules prime the agent to follow rules) help here too; notes that
-    help because they hold this history's conventions do not."""
+    """Loads another history's notes in place of this history's, to see what part of the notes'
+    gain comes from their content. The donor's notes are about the same size, moved into this
+    history's project with the people and company renamed and the note ids and sources made
+    this history's. A donor shares no convention object and no quoted token (in any form) with
+    this history, so its notes state none of this history's conventions and contradict none of
+    them; a history with no such donor is skipped (no_donor). Each row logs the donor and how
+    many of its conventions still overlap or conflict (see _overlap), which is 0 by the filter.
+
+    This is not a pure priming control, and what it measures depends on the filter. Read hook
+    minus placebo as an upper bound on what the notes' content is worth (the placebo also
+    carries the cost of notes that are not this history's), and placebo minus tools as the
+    effect of loading notes that are not this history's. Run unfiltered (the placebo x3 test
+    run of 2026-10-13), the donor shared a latest-form convention with the history in 21 of
+    40 histories and had a conflicting one on the same object in 26, so that run's placebo
+    minus tools is mostly the harm of misleading notes."""
 
     name = "placebo"
-    help = "as hook, with another history's notes of about the same size in place of this history's"
+    help = "as hook, with the notes of another history that shares no convention object or token"
 
     def setup(self, x: History, ctx: ArmContext) -> dict:
         own = _notes_chars(ctx.notes_of(x.id))
         if own is None:
             return {"skip": "no_notes", "detail": f"no notes for history {x.id} in {ctx.notes_run}"}
-        donors = []
+        mine = _signature(x)
+        donors, excluded = [], 0
         for name in os.listdir(os.path.join(os.path.expanduser(ctx.notes_run), "notes")):
-            if name.isdigit() and int(name) != x.id and int(name) in ctx.histories:
-                size = _notes_chars(ctx.notes_of(int(name)))
-                if size is not None:  # a donor whose company can be renamed comes first
-                    named = (ctx.histories[int(name)].company is None) != (x.company is None)
-                    donors.append((named, abs(size - own), int(name), size))
+            if not name.isdigit() or int(name) == x.id or int(name) not in ctx.histories:
+                continue
+            other = ctx.histories[int(name)]
+            size = _notes_chars(ctx.notes_of(other.id))
+            if size is None:
+                continue
+            theirs = _signature(other)
+            if mine.objects & theirs.objects or mine.tokens & theirs.tokens:
+                excluded += 1
+                continue
+            # a donor whose company can be renamed (both have one, or neither) comes first
+            donors.append(((other.company is None) != (x.company is None), abs(size - own), other.id, size))
         if not donors:
-            return {"skip": "no_donor", "detail": "the --notes run has notes for no other history"}
+            return {
+                "skip": "no_donor",
+                "detail": f"every one of the {excluded} other histories with notes shares a convention object or "
+                f"token with history {x.id}",
+            }
         _, _, donor, size = min(donors)
+        overlap, conflicting = _overlap(x, ctx.histories[donor])
         _transplant(ctx.notes_of(donor), ctx.memory, ctx.histories[donor], x)
         from .memory import context
         from .memory.notes import NoteStore
 
         injected = context.session_context(x.folder, NoteStore(ctx.memory), agent="claude")
-        return {"memory": injected, "row": {"donor": donor, "notes_chars": own, "donor_chars": size}}
+        row = {"donor": donor, "overlap": overlap, "conflicting": conflicting, "notes_chars": own, "donor_chars": size}
+        return {"memory": injected, "row": row}
 
 
 class Full(Arm):
@@ -1266,33 +1300,80 @@ def _read_notes(folder: str) -> list:
     return out
 
 
+class _Signature(NamedTuple):
+    objects: frozenset  # what the history's conventions are about ("function argument")
+    tokens: frozenset  # the quoted tokens of every form of every convention, as _states reads them
+
+
+def _tokens(*forms: str) -> frozenset:
+    return frozenset(t.lower().lstrip("@") for f in forms for t in QUOTED.findall(f))
+
+
+def _signature(x: History) -> _Signature:
+    return _Signature(
+        frozenset(c.object for c in x.conventions), frozenset().union(*(_tokens(*c.forms) for c in x.conventions))
+    )
+
+
+def _overlap(x: History, donor: History) -> tuple[int, int]:
+    """(overlap, conflicting): how many of the donor's conventions state one of x's in its
+    latest form (the same quoted tokens), and how many are about an object x has a convention
+    on, with other tokens. The placebo filter keeps both at 0."""
+    mine = [(c.object, _tokens(c.latest)) for c in x.conventions]
+    overlap = conflicting = 0
+    for c in donor.conventions:
+        latest = _tokens(c.latest)
+        overlap += bool(latest) and any(latest == t for _, t in mine)
+        conflicting += any(c.object == obj and latest != t for obj, t in mine)
+    return overlap, conflicting
+
+
 def _transplant(source: str, target: str, donor: History, x: History) -> None:
     """Write the donor history's notes into target as if they were x's: project notes move to
-    x's project, and the donor's company and people take x's names."""
+    x's project, the donor's company and people take x's names (one pass, so a name is never
+    replaced twice), and nothing of the donor's is left in the note ids, file names or sources.
+    A donor with a company when x has none gets "the company"."""
     from .chats.projects import resolve
-    from .memory.notes import NoteStore
+    from .memory.notes import NoteStore, new_id
 
     project = resolve(x.folder)
-    names = [(donor.company, x.company), (donor.mentor, x.mentor), (donor.mentee, x.mentee)]
-    names = [(a, b) for a, b in names if a and b and a != b]
+    names = {
+        a.lower(): b
+        for a, b in [
+            (donor.company, x.company or "the company"),
+            (donor.mentor, x.mentor),
+            (donor.mentee, x.mentee),
+        ]
+        if a and b and a.lower() != b.lower()
+    }
+    pattern = re.compile(r"\b(" + "|".join(map(re.escape, sorted(names, key=len, reverse=True))) + r")\b", re.I)
 
     def rename(text: str) -> str:
-        for old, new in names:
-            text = re.sub(
-                rf"\b{re.escape(old)}\b",
-                lambda m, new=new: (
-                    new.upper() if m.group(0).isupper() else new.title() if m.group(0).istitle() else new
-                ),
-                text,
-                flags=re.I,
-            )
-        return text
+        def one(m):
+            new = names[m.group(1).lower()]
+            return new.upper() if m.group(0).isupper() else new.title() if m.group(0).istitle() else new
 
+        return pattern.sub(one, text) if names else text
+
+    notes = _read_notes(source)
+    ids: dict[str, str] = {}  # the donor's note ids -> ids made from the renamed titles
+    for n in notes:
+        title = rename(n.title)
+        new, salt = new_id(title), 0
+        while new in ids.values():  # two notes with one title
+            salt += 1
+            new = new_id(title, salt=str(salt))
+        ids[n.id] = new
     store_ = NoteStore(target)
-    for n in _read_notes(source):
+    store_.titles = {ids[n.id]: rename(n.title) for n in notes}  # so related-note links read well
+    for n in notes:
         n.title, n.body, n.path = rename(n.title), rename(n.body), ""
-        if n.scope == "project" and project:
-            n.project, n.project_name = project.key, project.name
+        n.id = ids[n.id]
+        n.supersedes = [ids[i] for i in n.supersedes if i in ids]
+        n.superseded_by = ids.get(n.superseded_by or "")
+        n.related = [ids[i] for i in n.related if i in ids]
+        n.sources = [re.sub(rf"\bmc{donor.id:03d}-", f"mc{x.id:03d}-", s) for s in n.sources]
+        n.project, n.project_name = (project.key, project.name) if n.scope == "project" and project else (None, None)
         store_.write(n)
     store_.compile(store_.load())
 

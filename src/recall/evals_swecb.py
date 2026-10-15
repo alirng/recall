@@ -356,7 +356,9 @@ def run_agent(
     mcp = evals_agent.write_mcp_config(
         os.path.join(run.dir, "mcp.json"), {"RECALL_HOME": home, "RECALL_MEMORY": memory}
     )
-    run.meta.update(recall_home=home, recall_memory=memory, server=evals_agent._server_code())
+    run.meta.update(
+        recall_home=home, recall_memory=memory, server=evals_agent._server_code(), agent_harness=evals_agent.HARNESS
+    )
     known = set(bench.sessions)
     done, lock = [0], threading.Lock()
 
@@ -420,6 +422,7 @@ def run_agent(
         "tokens_in": h.spread([r["tokens_in"] for r in scored]),
         "tokens_out": h.spread([r["tokens_out"] for r in scored]),
         "tool_calls": {**h.spread([r["tool_calls"] for r in scored]), "by_tool": dict(sorted(tools.items()))},
+        "tool_search_calls": h.spread([r["tool_search_calls"] for r in scored]),
         "tool_result_chars": h.spread([r["tool_chars"] for r in scored]),
         "chats_named": h.spread([r["n_cited"] for r in scored]),
         "seconds": h.spread([r["seconds"] for r in scored]),

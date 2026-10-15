@@ -41,6 +41,10 @@ TMP_PREFIX = "recall-eval-agent-"
 REPLY_CHARS = 20_000  # of a reply the judge reads
 # Claude Code replaces an MCP result over its token limit with this message.
 TOOL_LIMIT = "exceeds maximum allowed tokens"
+# What the agent is given, recorded in each run's meta as agent_harness so that `eval compare`
+# can tell runs made with different tool setups. Bump when the tools, flags or settings change.
+HARNESS = "toolsearch-v1"  # tool search on: MCP tools are deferred, as in a default session
+TOOL_SEARCH = "ToolSearch"  # the built-in that loads deferred tools; not a recall tool call
 
 
 def run(
@@ -61,7 +65,7 @@ def run(
     if not shutil.which("claude"):
         sys.exit("Claude Code is not installed: `claude` is not on PATH")
     mcp = write_mcp_config(os.path.join(run.dir, "mcp.json"))
-    run.meta.update(server=_server_code(), model=model, judge=judge, judge_version=JUDGE_VERSION)
+    run.meta.update(server=_server_code(), agent_harness=HARNESS, model=model, judge=judge, judge_version=JUDGE_VERSION)
     grader = h.judge_client(judge)
     jobs = [(c, r) for r in range(1, repeats + 1) for c in cases]
     done = [0]
@@ -118,6 +122,7 @@ def run(
         "tokens_in": h.spread([r["tokens_in"] for r in scored]),
         "tokens_out": h.spread([r["tokens_out"] for r in scored]),
         "tool_calls": {**h.spread([r["tool_calls"] for r in scored]), "by_tool": dict(sorted(tools.items()))},
+        "tool_search_calls": h.spread([r["tool_search_calls"] for r in scored]),
         "tool_result_chars": h.spread([r["tool_chars"] for r in scored]),
         "seconds": h.spread([r["seconds"] for r in scored]),
         "cost_usd_api_equivalent": {
@@ -198,7 +203,7 @@ def run_agent(
         # ToolSearch too, and Claude Code would then load every MCP tool upfront, which a
         # default session does not: there only the tool names, server instructions and
         # tools marked anthropic/alwaysLoad load at the start.
-        "ToolSearch",
+        TOOL_SEARCH,
         "--allowedTools",
         "mcp__recall",
         "--permission-prompts",
@@ -348,8 +353,12 @@ def _parse(out: str, err: str, code: int | None, timed_out: bool, seconds: float
         status, detail = "mcp_error", "the recall server failed during the run"
     elif not answer.strip():
         status, detail = "api_error", "empty reply"
+    # tool_calls, tools and tool_chars count recall's tools only, so they read the same with tool
+    # search on or off; the searches that load those tools are counted apart.
+    searches = [c for c in calls.values() if c["tool"] == TOOL_SEARCH]
+    used = [c for c in calls.values() if c["tool"] != TOOL_SEARCH]
     tools: dict[str, int] = {}
-    for c in calls.values():
+    for c in used:
         tools[c["tool"]] = tools.get(c["tool"], 0) + 1
     row = {
         "status": status,
@@ -363,9 +372,11 @@ def _parse(out: str, err: str, code: int | None, timed_out: bool, seconds: float
         "cache_write": usage.get("cache_creation_input_tokens") or 0,
         "cache_read": usage.get("cache_read_input_tokens") or 0,
         "tokens_out": usage.get("output_tokens") or 0,
-        "tool_calls": len(calls),
+        "tool_calls": len(used),
+        "tool_search_calls": len(searches),
         "tools": tools,
-        "tool_chars": sum(c["chars"] or 0 for c in calls.values()),
+        "tool_chars": sum(c["chars"] or 0 for c in used),
+        "tool_search_chars": sum(c["chars"] or 0 for c in searches),
         "tool_errors": sum(c["error"] for c in calls.values()),
         "tool_truncations": sum(bool(c.get("truncated")) for c in calls.values()),
         "api_calls": len(messages - {None}),
