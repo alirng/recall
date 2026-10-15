@@ -200,8 +200,11 @@ def cmd_links(a) -> None:
 
 
 def cmd_dream(a) -> None:
+    from . import autopilot
     from .llm import FatalError
     from .memory import dream
+
+    autopilot.run("nightly", log=lambda m: print(time.strftime("%H:%M:%S"), "autopilot:", m, file=sys.stderr))
 
     opts = dream.Options(
         model=a.model,
@@ -502,13 +505,15 @@ def cmd_status(a) -> None:
 
     if a.hook:  # the edit hook's first command; `recall hook` answers it now
         return cmd_hook(a)
+    from . import autopilot
     from .chats.sources import codex, compressed
 
     s = status.status(store.parse_since(a.since))
     if n := codex.unreadable():
         s["unreadable"] = {"agent": "codex", "chats": n, "fix": compressed.fix_hint()}
+    rows = autopilot.report()
     if a.json:
-        print(json.dumps(s, indent=2))
+        print(json.dumps({**s, "roots": rows}, indent=2))
         return
     names = {x["id"]: f"{status.AGENTS.get(x['agent'], x['agent'])} · {x['title'][:40]}" for x in s["sessions"]}
     for o in s["overlaps"]:
@@ -527,6 +532,7 @@ def cmd_status(a) -> None:
         print(f"  {repo:14} {', '.join(dict.fromkeys(x['branch'] or '?' for x in xs))}")
     if note := codex.unreadable_note():
         print(f"\n{note}")
+    print("\n" + autopilot.summary_line(rows))
 
 
 def cmd_resolve(a) -> None:
@@ -547,7 +553,7 @@ def cmd_resolve(a) -> None:
 def cmd_setup(a) -> None:
     from . import onboarding
 
-    onboarding.run(assume_yes=a.yes, model=a.model, embeddings=a.embeddings)
+    onboarding.run(assume_yes=a.yes, model=a.model, embeddings=a.embeddings, autopilot=a.autopilot)
 
 
 def cmd_model(a) -> None:
@@ -575,6 +581,79 @@ def cmd_install(a) -> None:
     print("\n".join(("[dry run] " if dry_run else "") + line for line in lines))
     if a.cmd == "install" and not dry_run:
         print("Restart open Codex and Cursor windows to pick up the changes.")
+    if a.cmd == "uninstall":
+        from . import autopilot
+
+        if autopilot.enabled():  # or the next session start would connect everything again
+            autopilot.set_enabled(False)
+            print("Autopilot is off.")
+
+
+def cmd_autopilot(a) -> None:
+    from . import autopilot
+
+    if a.action in ("on", "off"):
+        autopilot.set_enabled(a.action == "on")
+        print(
+            f"autopilot {a.action}: "
+            + ("recall keeps every agent folder connected." if a.action == "on" else "nothing changes by itself.")
+        )
+        if a.action == "off":
+            return
+    elif not autopilot.enabled():
+        if not a.quiet:
+            print("autopilot is off: `recall autopilot on` lets recall connect new agent folders by itself")
+        return
+    changes = autopilot.run("manual", a.dry_run, log=None if a.quiet else print)
+    if not changes and not a.quiet:
+        print("everything is connected")
+
+
+def cmd_doctor(a) -> None:
+    from . import autopilot
+
+    rows = autopilot.report()
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return
+    home = os.path.expanduser("~")
+    for r in rows:
+        where = r["path"].replace(home, "~") + (f"  [{r['data'].replace(home, '~')}]" if r["data"] else "")
+        if not r["exists"]:
+            state = "waiting for first launch (not created yet)"
+        else:
+            have = [
+                ("MCP", r["parts"].get("mcp")),
+                ("hooks", r["parts"].get("hook")),
+                ("skill", r["parts"].get("skill")),
+            ]
+            state = (
+                "connected" if r["connected"] else "NOT connected: missing " + ", ".join(n for n, ok in have if not ok)
+            )
+            if r["needs_trust"]:
+                state += " (trust the hooks once with /hooks in Codex)"
+        seen = f"{r['chats']:,} chats, last indexed {_ago(r['indexed_at'])}" if "chats" in r else "not indexed yet"
+        print(f"{r['root']:15} {where}\n{'':15} {state}; {seen}" + (f"; {r['account']}" if r["account"] else ""))
+    on = autopilot.enabled()
+    print(
+        f"\nautopilot: {'on' if on else 'off'}"
+        + ("" if on else " (`recall autopilot on` connects new folders by itself)")
+    )
+
+
+def _ago(ts: float | None) -> str:
+    if not ts:
+        return "never"
+    secs = time.time() - ts
+    return (
+        "just now"
+        if secs < 90
+        else f"{secs / 60:.0f} min ago"
+        if secs < 5400
+        else f"{secs / 3600:.0f} h ago"
+        if secs < 172800
+        else f"{secs / 86400:.0f} days ago"
+    )
 
 
 def cmd_schedule(a) -> None:
@@ -755,6 +834,11 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--yes", action="store_true", help="accept every default")
     sp.add_argument("--model", help="who writes memories, e.g. claude:haiku, chatgpt:gpt-6-luna, local:qwen3:4b")
     sp.add_argument("--embeddings", metavar="NAME", help="turn on semantic search with this Ollama model")
+    sp.add_argument(
+        "--autopilot",
+        action=argparse.BooleanOptionalAction,
+        help="keep every agent folder connected automatically (asked once otherwise; --yes does not say yes to it)",
+    )
     sp = command("model", cmd_model, "choose which model writes memories")
     sp.add_argument("--show", action="store_true", help="print the current choice")
 
@@ -859,6 +943,12 @@ def _parser() -> argparse.ArgumentParser:
         sp.add_argument("--only", help="comma-separated subset of: mcp,skill,hook (install: also retention)")
         if name == "install":
             sp.add_argument("--dry-run", action="store_true")
+    sp = command("autopilot", cmd_autopilot, "connect new agent folders by itself (on, off, or run the check now)")
+    sp.add_argument("action", nargs="?", choices=["run", "on", "off"], default="run")
+    sp.add_argument("--dry-run", action="store_true", help="show what would be connected")
+    sp.add_argument("--quiet", action="store_true")
+    sp = command("doctor", cmd_doctor, "each agent folder recall found: connected or not, and when last indexed")
+    sp.add_argument("--json", action="store_true")
     sp = command("schedule", cmd_schedule, "run the memory update nightly")
     sp.add_argument("action", choices=["enable", "disable", "status"])
     sp.add_argument("--at", default="03:30", help="HH:MM, local time")
