@@ -14,10 +14,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from .. import config, paths
+from .. import config, contexts, paths
 from ..chats import indexer, store
 from ..llm import BudgetExceeded, Client, FatalError, LLMError, from_spec
-from . import consolidate, context, extract, links, routing
+from . import consolidate, context, extract, links, reach, routing
 from .notes import NoteStore, today, writing
 
 MIN_MESSAGES = 2
@@ -188,6 +188,14 @@ def _fold_notes(con, client: Client, log) -> Counter:
     except (BudgetExceeded, LLMError) as e:
         log(f"consolidation stopped early ({e}); the next run continues from here")
     changes = {k: v for k, v in stats.items() if v and k != "batches"}
+    if refiled := routing.refile(con, notes_store, notes):
+        changes["refiled"] = refiled
+    if contexts.roots():
+        try:
+            if placed := reach.run(client, notes_store, notes):
+                changes["placed"] = placed
+        except (BudgetExceeded, LLMError) as e:
+            log(f"judging where preferences apply stopped early ({e}); the next run continues")
     relinked = links.relink(notes_store, notes)
     if relinked:
         changes["relinked"] = relinked

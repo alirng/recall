@@ -487,6 +487,11 @@ def cmd_eval(a) -> None:
             )
         else:
             evals.run_longmemeval(a.cases, a.limit, a.user_only, embedder=embedder, cache=cache, official=a.official)
+    elif a.kind == "session":
+        cases = a.cases or os.path.join(paths.EVALS, "session_cases.json")
+        if not os.path.exists(cases):
+            sys.exit(f"no session-start cases at {cases}; evals.py describes the format")
+        evals.run_session(cases, None if a.split == "all" else a.split)
     elif a.kind == "memory":
         evals.run_memory(store.connect(), a.cases or os.path.join(paths.EVALS, "memory_gold.jsonl"), a.model, a.fresh)
     else:
@@ -649,8 +654,19 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-calls", type=int, help="cap on model calls per night")
     command("serve", cmd_serve, "run the MCP server over stdio")
 
-    sp = command("eval", cmd_eval, "measure search, answer or memory quality")
-    kinds = ["search", "memory", "agent", "longmemeval", "locomo", "swe-contextbench", "memorycode", "amb", "explore"]
+    sp = command("eval", cmd_eval, "measure search, answer, memory or session-start quality")
+    kinds = [
+        "search",
+        "memory",
+        "session",
+        "agent",
+        "longmemeval",
+        "locomo",
+        "swe-contextbench",
+        "memorycode",
+        "amb",
+        "explore",
+    ]
     sp.add_argument("kind", nargs="?", choices=kinds, default="search")
     sp.add_argument("--cases", help="JSONL of hand-written cases; for longmemeval, the dataset's JSON file")
     sp.add_argument("--limit", type=int, help="longmemeval: the first N questions; v2: a fixed sample of N cases")

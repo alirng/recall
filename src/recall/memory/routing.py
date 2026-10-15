@@ -63,5 +63,25 @@ def reroute_mentions(con) -> int:
     return moved
 
 
+def refile(con, store, notes) -> int:
+    """File a note learned in chats with no known folder under its project, once the chat
+    index can tell which one, e.g. after a parser learns where an agent records the folder."""
+    moved = 0
+    for n in notes.values():
+        if n.status != "active" or n.scope == "global" or n.project:
+            continue
+        found = {
+            (r["project_key"], r["project_name"])
+            for chat in n.sources
+            for r in con.execute("select project_key, project_name from sessions where id = ?", (chat,))
+            if r["project_key"]
+        }
+        if len(found) == 1:
+            (n.project, n.project_name), n.scope = found.pop(), "project"
+            store.write(n)
+            moved += 1
+    return moved
+
+
 def _names(name: str, text: str) -> bool:
     return re.search(rf"\b{re.escape(name)}\b", text) is not None
