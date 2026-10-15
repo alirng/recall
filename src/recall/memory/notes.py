@@ -29,7 +29,7 @@ from datetime import datetime
 
 import yaml
 
-from .. import paths
+from .. import contexts, paths
 
 TYPES = ("preference", "fact", "decision", "lesson", "open")
 SECTIONS = {
@@ -68,6 +68,7 @@ class Note:
     supersedes: list[str] = field(default_factory=list)
     superseded_by: str | None = None
     related: list[str] = field(default_factory=list)  # note ids, kept by links.relink
+    reach: str | None = None  # global notes: "everywhere" or "context" (see reach.py)
     footer: str = field(default="", repr=False)  # the related-notes footer as last written
     path: str = ""
 
@@ -195,9 +196,18 @@ class NoteStore:
         now = time.time()
         active = [n for n in notes.values() if n.status == "active"]
         by_project: dict[str, list[Note]] = {}
+        prefs = []
         for n in active:
             if n.scope == "project" and n.project:
                 by_project.setdefault(n.project, []).append(n)
+            elif n.scope == "global":
+                # A preference tied to a context but only ever seen in one project is that
+                # project's preference, so it is listed there rather than across the context.
+                seen = contexts.projects_of_chats(n.sources) if n.reach == "context" else set()
+                if len(seen) == 1:
+                    by_project.setdefault(seen.pop(), []).append(n)
+                else:
+                    prefs.append(n)
         header = (
             f"_Maintained by recall from your coding-agent chats; last updated {today()}. "
             "Each line links to a note. Edit or delete notes freely._\n"
@@ -206,16 +216,18 @@ class NoteStore:
             self._compile_project(key, items, header, now)
             for key, items in sorted(by_project.items(), key=lambda kv: -len(kv[1]))
         ]
-        prefs = sorted((n for n in active if n.scope == "global"), key=lambda n: -n.score(now))
-        out = ["# Memory\n", header, "\n## How you work\n"]
-        out += [_index_line(n, f"global/{n.id}.md") for n in prefs[:GLOBAL_INDEX_LINES]] or ["- (nothing yet)"]
-        if len(prefs) > GLOBAL_INDEX_LINES:
-            out.append(f"- …and {len(prefs) - GLOBAL_INDEX_LINES} more in global/")
+        prefs.sort(key=lambda n: -n.score(now))
+        out = ["# Memory\n", header]
+        for heading, items in _by_context(prefs):
+            out.append(f"\n## {heading}\n")
+            out += [_index_line(n, f"global/{n.id}.md") for n in items[:GLOBAL_INDEX_LINES]] or ["- (nothing yet)"]
+            if len(items) > GLOBAL_INDEX_LINES:
+                out.append(f"- …and {len(items) - GLOBAL_INDEX_LINES} more in global/")
         out += ["\n## Projects\n", *(project_lines or ["- (nothing yet)"])]
         _write_text(os.path.join(self.root, "MEMORY.md"), "\n".join(out) + "\n")
 
     def _compile_project(self, key: str, items: list[Note], header: str, now: float) -> str:
-        name = items[0].project_name or key
+        name = next((n.project_name for n in items if n.project_name), None) or key.rsplit("/", 1)[-1]
         folder = self.project_folder(key, name)
         repo = key.split(":", 1)[1]
         out = [f"# {name}: project memory\n", f"Repo: `{repo}`  \n{header}"]
@@ -225,7 +237,10 @@ class NoteStore:
                 continue
             limit = PROJECT_INDEX_LINES[t]
             out.append(f"\n## {SECTIONS[t]}\n")
-            out += [_index_line(n, f"{n.id}.md") for n in ranked[:limit]]
+            out += [
+                _index_line(n, f"{n.id}.md" if n.scope == "project" else f"../../global/{n.id}.md")
+                for n in ranked[:limit]
+            ]
             if len(ranked) > limit:
                 out.append(f"- …and {len(ranked) - limit} more in this folder")
         _write_text(os.path.join(self.root, "projects", folder, "MEMORY.md"), "\n".join(out) + "\n")
@@ -298,6 +313,26 @@ _NOT_FRONTMATTER = ("body", "path", "related", "footer")  # the body and its lin
 
 def _link_text(title: str) -> str:
     return re.sub(r"[\[\]|#]", "", title).strip()
+
+
+def _by_context(prefs: list[Note]) -> list[tuple[str, list[Note]]]:
+    """Group working preferences by where they apply. One that holds everywhere (its reach, or
+    failing that, chats in two or more contexts) loads in every folder; one tied to a context
+    loads only in the contexts its chats ran in; one whose chats ran outside every context's
+    folders cannot be placed, so it loads nowhere by itself and stays searchable."""
+    table = contexts.roots()
+    if not table:
+        return [("How you work", prefs)]
+    groups: dict[str, list[Note]] = {"How you work": []}
+    for n in prefs:
+        seen = contexts.of_chats(n.sources, table)
+        if n.reach == "everywhere" or (n.reach is None and len(seen) > 1):
+            headings = ["How you work"]
+        else:
+            headings = [f"How you work: {c}" for c in sorted(seen)] or ["How you work: unplaced"]
+        for heading in headings:
+            groups.setdefault(heading, []).append(n)
+    return list(groups.items())
 
 
 def _index_line(note: Note, href: str) -> str:

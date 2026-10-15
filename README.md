@@ -348,7 +348,8 @@ other chats until recall reads their history or hooks into them.
 
 - **Automatic:** the session-start hook loads your working preferences, a line for each
   always-on rule the repo gives another agent but not this one (a Cursor rule, say, in a
-  Claude Code session), and the current project's notes, capped at 6,000 characters.
+  Claude Code session), and the current project's notes, capped at 4,500 characters, with
+  the project's notes always given room.
 - **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
   `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and
   `message_chat`, which leaves a message for another chat in recall's own mailbox.
@@ -356,6 +357,20 @@ other chats until recall reads their history or hooks into them.
 
 Agents treat notes and transcripts as background, not instructions: the current request and
 the code win when they disagree.
+
+To keep work and personal memory apart, name each context's folders in `config.toml`:
+
+```toml
+[contexts]
+work = ["~/Projects/Acme"]
+personal = ["~/Projects/Personal"]
+```
+
+A preference that holds everywhere (communication style, commit policy) then loads in every
+folder; one tied to a context loads only in the folders of the contexts it was learned in, and
+one only ever seen in one project is listed with that project. The nightly run makes that
+judgement once per note and keeps it as `reach:` in the note's frontmatter, so you can correct
+it by hand.
 
 ## Projects
 

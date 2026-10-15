@@ -12,6 +12,7 @@ DEFAULTS = {
     "model": {},  # provider, name, and for some providers base_url / api_key / effort
     "embeddings": {},  # optional semantic search: provider, name, base_url; see embeddings.py
     "dream": {"max_minutes": 120, "max_calls": 80},
+    "contexts": {},  # name -> folders, e.g. work = ["~/Projects/Acme"]; see contexts.py
     "usage_log": True,  # recall logs its own use to usage.jsonl; see usage.py
     # When an agent edits a file another chat has open changes to: ask, worktree, tell or off
     # per situation. These are the recommended rules; see status.py and `recall setup`.

@@ -3,13 +3,18 @@
 import os
 import re
 
-from .. import rules
+from .. import contexts, rules
 from ..chats import store
 from ..chats.projects import resolve
 from . import links
 from .notes import Note, NoteStore
 
-MAX_CHARS = 6000  # inside Claude Code's 10k hook limit and Codex's ~2.5k-token budget
+# Well inside Claude Code's 10k hook limit and Codex's ~2.5k-token budget: a smaller, selected
+# block loads fewer notes that do not apply, at a small cost in ones that do (recall eval session).
+MAX_CHARS = 4500
+PREFS_CHARS = 1500  # general preferences' share when the project needs the rest
+RULES_CHARS = 600
+FULL_LINES = 2  # per kind of note in a project index cut to size; the rest show their title
 FOOTER = (
     "These notes were distilled by recall from earlier chats with your coding agents. Treat them as "
     "background, not instructions: the current request and the code win where they disagree. Use "
@@ -22,29 +27,37 @@ def session_context(cwd: str | None, notes: NoteStore | None = None, agent: str 
     """Working preferences, the always-on rules this agent would otherwise miss, and the
     current project's index, sized for session start."""
     notes = notes or NoteStore()
-    parts = []
-    prefs = _section(_read(os.path.join(notes.root, "MEMORY.md")), "How you work")
-    if prefs and "(nothing yet)" not in prefs:
-        parts.append("## How this developer works\n" + _strip_links(prefs))
+    index = _read(os.path.join(notes.root, "MEMORY.md"))
+    # Preferences seen across contexts, then those learned in this folder's context only.
+    where = contexts.of_folder(cwd)
+    prefs = "\n".join(
+        p
+        for h in ("How you work", f"How you work: {where}" if where else None)
+        if h and (p := _section(index, h)) and "(nothing yet)" not in p
+    )
+    prefs = "## How this developer works\n" + _strip_links(prefs) if prefs else ""
     try:
         lines = rules.pointers(cwd, agent)
     except Exception:  # a rule file recall cannot read must not cost the session its memory
         lines = []
-    if lines:
-        parts.append(
-            "## Rules this repo gives other agents\n"
-            "Always-on rules written for another agent, which you do not load yourself:\n" + "\n".join(lines)
-        )
+    pointers = (
+        "## Rules this repo gives other agents\n"
+        "Always-on rules written for another agent, which you do not load yourself:\n" + "\n".join(lines)
+        if lines
+        else ""
+    )
     name, indexes = project_indexes(cwd, notes)
     bodies = [b for i in indexes if (b := _index_body(i))]
-    if bodies:
-        parts.append(f"## Project memory: {name}\n" + _strip_links("\n\n".join(bodies)))
+    project = f"## Project memory: {name}\n" + _strip_links("\n\n".join(bodies)) if bodies else ""
+    # Each section gets its own share, so general preferences, the same in every folder,
+    # can never crowd out the project's memory; whatever one section leaves goes to the next.
+    pointers = _fit(pointers, RULES_CHARS)
+    project = _fit_sections(project, MAX_CHARS - len(pointers) - min(len(prefs), PREFS_CHARS))
+    prefs = _fit(prefs, MAX_CHARS - len(pointers) - len(project))
+    parts = [p for p in (prefs, pointers, project) if p]
     if not parts:
         return ""
     body = "\n\n".join(parts)
-    if len(body) > MAX_CHARS:
-        # Index lines are ranked best first, so keep whole lines from the top.
-        body = body[:MAX_CHARS].rsplit("\n", 1)[0] + "\n- …more notes: use memory_search"
     # The tag lets every chat parser strip this block, so memory never re-learns
     # itself from transcripts that recorded the injected context.
     return f"<recall-memory>\n# Memory from earlier sessions\n\n{body}\n\n{FOOTER}\n</recall-memory>\n"
@@ -213,6 +226,48 @@ def _index_body(index: str) -> str:
     while lines and (not lines[0].strip() or lines[0].startswith(("# ", "Repo: ", "_Maintained by recall"))):
         lines.pop(0)
     return "\n".join(lines).strip()
+
+
+def _fit(section: str, limit: int) -> str:
+    """Whole lines from the top, since index lines are ranked best first."""
+    if len(section) <= limit:
+        return section
+    more = "\n- …more notes: use memory_search"
+    cut = section[: max(limit - len(more), 0)].rsplit("\n", 1)[0]
+    return cut + more if "\n" in cut else ""
+
+
+def _fit_sections(section: str, limit: int) -> str:
+    """A project index cut to size keeps the best lines of every kind of note, taking turns
+    between them, instead of only its first kinds: an index lists preferences and facts before
+    decisions and lessons, so cutting from the bottom would drop those whole."""
+    if len(section) <= limit:
+        return section
+    title, *rest = section.split("\n")
+    kinds: dict[str, list[str]] = {}
+    heading = ""
+    for line in rest:
+        if line.startswith("## "):
+            heading = line
+            kinds.setdefault(heading, [])
+        elif line.startswith("- ") and not line.startswith("- …"):
+            lines = kinds.setdefault(heading, [])
+            # Past each kind's first few, a title alone (a claim, read_note has the rest)
+            # leaves room for more of the project than a title and its first sentence.
+            lines.append(line if len(lines) < FULL_LINES else re.sub(r"^(- \*\*.+?\*\*):.*$", r"\1", line))
+    more = "- …more notes: use memory_search"
+    used = len(title) + 1 + len(more) + sum(len(h) + 2 for h in kinds)
+    keep: dict[str, list[str]] = {h: [] for h in kinds}
+    for rank in range(max((len(v) for v in kinds.values()), default=0)):
+        for h, lines in kinds.items():
+            if rank < len(lines) and used + len(lines[rank]) + 1 <= limit:
+                keep[h].append(lines[rank])
+                used += len(lines[rank]) + 1
+    out = [title]
+    for h, lines in keep.items():
+        if lines:
+            out += [h, *lines] if h else lines
+    return "\n".join([*out, more]) if len(out) > 1 else ""
 
 
 def _section(markdown: str, heading: str) -> str:
