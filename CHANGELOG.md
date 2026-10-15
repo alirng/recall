@@ -29,30 +29,6 @@ All notable changes to recall are listed here. The format follows
   `~/.claude/remote-settings.json`. Claude Code's documentation confirms the path, not what
   is in the file; recall reads it as a settings object with `cleanupPeriodDays` at the top
   level, as it reads a `managed-settings.json` file or an MDM profile.
-
-### Fixed
-
-- Text that reaches the user's turn without the person writing it is no longer indexed as
-  theirs: Claude Code peer messages and task notifications delivered mid-turn, compaction
-  summaries and `!` command output; Cursor's session-hook context and tool catalogues; Codex
-  goal continuations, skill bodies, browser state and subagent reports. Memory extraction
-  reads user turns as the developer speaking. The index rebuilds once (chat schema 3).
-  A chat whose file is gone comes back from the archive with the same cleaning applied to
-  its user turns, and Claude Code's compaction summary is dropped from it. What the archive
-  cannot undo is a peer message or task notification an older release stored as the
-  person's words: Claude Code marks those only in the chat file, so once the file is gone
-  they cannot be told from the person's text and stay.
-- A chat file deleted while recall was listing files no longer stops the index run.
-
-### Changed
-
-- **One hook command.** Every hook recall installs, for every agent, now runs
-  `recall hook --agent <agent>`, which hands the event to the features that want it and
-  answers in that agent's format. `recall install` replaces the older `context --hook` and
-  `status --hook` entries, which keep working until then. CONTRIBUTING.md has how to add one.
-
-### Added
-
 - **Chats that talk to each other.** When an edit hook finds another chat with open changes
   to the same file, recall messages that chat too: who is about to change which lines, and
   what they were asked. Agents answer through the new `message_chat` MCP tool to agree who
@@ -98,6 +74,27 @@ All notable changes to recall are listed here. The format follows
   Code, Codex and Cursor underneath, so it is covered too. Every hook also logs the edit, so `recall status` sees chats from agents
   whose history recall cannot read yet. Agents without hooks can call the new MCP tool
   `open_elsewhere` before editing.
+
+### Changed
+
+- **One hook command.** Every hook recall installs, for every agent, now runs
+  `recall hook --agent <agent>`, which hands the event to the features that want it and
+  answers in that agent's format. `recall install` replaces the older `context --hook` and
+  `status --hook` entries, which keep working until then. CONTRIBUTING.md has how to add one.
+
+### Fixed
+
+- Text that reaches the user's turn without the person writing it is no longer indexed as
+  theirs: Claude Code peer messages and task notifications delivered mid-turn, compaction
+  summaries and `!` command output; Cursor's session-hook context and tool catalogues; Codex
+  goal continuations, skill bodies, browser state and subagent reports. Memory extraction
+  reads user turns as the developer speaking. The index rebuilds once (chat schema 3).
+  A chat whose file is gone comes back from the archive with the same cleaning applied to
+  its user turns, and Claude Code's compaction summary is dropped from it. What the archive
+  cannot undo is a peer message or task notification an older release stored as the
+  person's words: Claude Code marks those only in the chat file, so once the file is gone
+  they cannot be told from the person's text and stay.
+- A chat file deleted while recall was listing files no longer stops the index run.
 
 ## [0.3.0] - 2026-10-13
 
