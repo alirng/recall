@@ -148,8 +148,9 @@ def merge(old: list[Message], new: list[Message], only_kept: bool = False, mark:
     """The new parse, plus every message of the old copy it no longer has.
 
     An old message is still there when the new parse has a message from the same speaker,
-    at the same place, whose text equals or contains it: a turn that grew, or two turns
-    that merged once the message between them went. The lists are aligned on (speaker,
+    at the same place, whose text equals it, starts with it or holds it as a whole
+    "\\n\\n"-separated part: a turn that grew, or two turns that merged once the message
+    between them went. The lists are aligned on (speaker,
     text) with difflib; old-only messages stay where they were, new ones go where the parse
     puts them, and a message in both appears once.
 
@@ -191,7 +192,15 @@ def kept(messages: list[Message]) -> int:
 
 
 def _covers(candidates: list[Message], m: Message) -> bool:
-    return any(c.role == m.role and len(c.text) >= len(m.text) and m.text in c.text for c in candidates)
+    return any(c.role == m.role and _within(m.text, c.text) for c in candidates)
+
+
+def _within(old: str, new: str) -> bool:
+    """Whether a turn is still in a (possibly longer) one: it equals it, it is the start of
+    it (the turn grew), or it is one of its "\\n\\n"-separated parts (turns merged once the
+    message between them went). A bare substring would find a short turn such as "yes" or
+    "ok" in almost any longer one, and the guard would drop it."""
+    return old == new or new.startswith(old) or f"\n\n{old}\n\n" in f"\n\n{new}\n\n"
 
 
 def log(line: str) -> None:
