@@ -178,7 +178,7 @@ Every provider sits behind one interface, so recall does not depend on any one v
 4. If people will choose the provider, add it to the table in the README. That table says
    where chat excerpts go, so keep it accurate.
 5. Run `recall eval memory --model <provider>:<name> --fresh` a few times and compare the
-   results with the baseline table in the README.
+   results with the figures in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Prompts
 
@@ -212,7 +212,14 @@ paste them.
 - [ ] A prompt change bumps its version line when it should re-run past work.
 - [ ] A parser change bumps `CHAT_SCHEMA_VERSION` when the index needs a rebuild.
 - [ ] Nothing private is in the diff, and any examples are made up.
-- [ ] README or CHANGELOG.md is updated when a command, option, provider or behavior changes.
+- [ ] README, `docs/` or CHANGELOG.md is updated when a command, option, provider or behavior
+      changes. Detail goes in `docs/`; the README gets a few lines and a link.
+
+## Roadmap
+
+More agents and chat-export imports, a "remember this" write path from any agent, end-to-end
+task runs of SWE-ContextBench and agent-memory-bench (they need a Docker runner), and a Claude
+Code plugin package.
 
 ## Releasing (maintainers)
 

@@ -2,7 +2,7 @@
 
     uv run --with fonttools --with brotli python docs/benchmarks/make_charts.py
 
-Every chart is written twice, NAME-light.svg and NAME-dark.svg, and the README shows the one
+Every chart is written twice, NAME-light.svg and NAME-dark.svg, and the README and docs/benchmarks.md show the one
 that matches the reader's GitHub theme with <picture>. The look is rererecall.com's: one warm ink
 on paper, every lesser line an alpha of that ink, one-pixel lines, square corners. recall alone is
 amber (an outlined bar with a translucent fill, or a filled square); other systems are outlined ink

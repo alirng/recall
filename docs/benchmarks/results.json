@@ -1,5 +1,5 @@
 {
-  "_about": "Numbers behind docs/benchmarks/*.svg and the README's Benchmarks section. recall's own rows come from `recall eval`; token counts come from the runs' transcripts via docs/benchmarks/agent_tokens.py. Every other row is the system's published figure (see source). Regenerate the charts with: uv run --with fonttools --with brotli python docs/benchmarks/make_charts.py",
+  "_about": "Numbers behind docs/benchmarks/*.svg and docs/benchmarks.md. recall's own rows come from `recall eval`; token counts come from the runs' transcripts via docs/benchmarks/agent_tokens.py. Every other row is the system's published figure (see source). Regenerate the charts with: uv run --with fonttools --with brotli python docs/benchmarks/make_charts.py",
   "swecb_vs_products": {
     "title": "SWE-ContextBench Lite: the past fix among the first results",
     "subtitle": "99 issues, all 300 Claude Code sessions searched. Products: the paper's runs at their own cutoff. recall: hybrid.",
@@ -396,8 +396,33 @@
   },
   "memorycode_agent": {
     "title": "MemoryCode, an agent writing code that follows the latest conventions (recall eval memorycode --agent)",
-    "about": "Claude Haiku 5.5 in Claude Code, 3 requests per history, graded by the benchmark's own checks. long = 20 to 100 sessions, short = 1 to 15. Both recall arms are 0.3.0, on the 40 held-out histories; 0.2.1 with its notes at session start was not measured. 'notes at session start' (--arm hook): 0.3.0's notes in the session-start block, plus recall's tools. The no-memory and whole-history rows are training histories, for reference.",
+    "about": "Claude Haiku 5.5 in Claude Code, 3 requests per history, graded by the benchmark's own checks. long = 20 to 100 sessions, short = 1 to 15. The recall arms run on the 40 held-out histories; 0.2.1 with its notes at session start was not measured. 'notes at session start' (--arm hook): 0.3.0's notes in the session-start block, plus recall's tools. The no-memory and whole-history rows without a harness are training histories, for reference. harness 'tool search': Claude Code loads recall's tools as it does by default (the figures docs/benchmarks.md and the README quote, 2026-10-13); rows without a harness are the 0.3.0 release run, which loaded the tools up front.",
     "rows": [
+      {
+        "arm": "no memory",
+        "split": "test",
+        "runs": 3,
+        "harness": "tool search",
+        "overall": 0.024
+      },
+      {
+        "arm": "tools only",
+        "split": "test",
+        "runs": 3,
+        "harness": "tool search",
+        "overall": 0.732,
+        "long": 0.395,
+        "short": 0.935
+      },
+      {
+        "arm": "0.3.0 notes at session start + tools",
+        "split": "test",
+        "runs": 3,
+        "harness": "tool search",
+        "overall": 0.775,
+        "long": 0.619,
+        "short": 0.868
+      },
       {
         "arm": "no memory",
         "split": "train",
