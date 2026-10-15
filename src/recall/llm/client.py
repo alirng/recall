@@ -10,7 +10,7 @@ import time
 import jsonschema
 
 from .. import paths
-from ..chats.redact import redact_json
+from ..chats.redact import redact, redact_json
 from .base import FatalError, LLMError, Provider, Result
 
 
@@ -90,7 +90,7 @@ class Client:
                     result.input_tokens,
                     result.output_tokens,
                     result.seconds,
-                    error,
+                    redact(error) if error else error,
                 ),
             )
 

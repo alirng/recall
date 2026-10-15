@@ -12,24 +12,36 @@ rebuild reproduces, so a secret that an older rule let through stays in them:
 ensure() runs at the start of an index run and rewrites those tables once per
 redact.VERSION; run() is the same rewrite without the version check, for a one-off clean.
 The messages and sessions tables are rewritten too, so a rule change takes effect without
-waiting for a rebuild.
+waiting for a rebuild. store.connect() marks the scrub due again after it has copied chats
+into the archive, which are copied as the old tables hold them.
+
+The notes (the markdown files in ~/.agents/memory) and their ledger are yours: ensure() only
+looks at them and names the ones the rules match, and the notes that were learned from a
+candidate it had to change. It rewrites none of them.
 """
 
 import itertools
 import json
+import os
+import re
 import sqlite3
+import sys
+import time
 import zlib
 from collections import Counter
 from collections.abc import Callable
 
-from .redact import VERSION, redact, redact_json, redact_many
+from .. import paths
+from .redact import VERSION, count, redact, redact_json, redact_many
 
 # table -> the columns that hold chat text. Missing tables and columns are skipped.
 TEXT_COLUMNS = {
     "messages": ("text",),
     "sessions": ("title", "first_prompt"),
-    "candidates": ("title", "body", "why", "evidence"),
+    "candidates": ("title", "body", "why", "evidence", "reason"),
     "extractions": ("error",),
+    "llm_calls": ("error",),
+    "dream_runs": ("error",),
     "tool_errors": ("command_head", "signature", "next_reply"),
     "explorations": ("prompt", "report"),
     "exploration_starts": ("prompt",),
@@ -51,21 +63,111 @@ def stale(con: sqlite3.Connection) -> bool:
 def ensure(con: sqlite3.Connection, log: Callable[[str], None] | None = None) -> None:
     """Scrub once per redact.VERSION. The file is always rewritten too: a rebuild has just dropped
     tables whose free pages still hold the old words, whether or not any row needed a change. The
-    version is stamped last, so a busy database means the next run tries again."""
-    try:
-        if stale(con):
-            from .. import forget
+    version is stamped last, so a busy database means the next run tries again (and says so)."""
+    from .. import forget
 
-            run(con, stamp=False, log=log)
-            forget.scrub_db(con)  # the old words are also in free pages and the log until the file is rewritten
-            con.execute("insert or replace into meta values (?, ?)", (META_KEY, VERSION))
-            con.commit()
-    except sqlite3.OperationalError:
+    touched: dict[str, bool] = {}
+    try:
+        if not stale(con):
+            return
+        run(con, stamp=False, log=log, touched=touched)
+        forget.scrub_db(con)  # the old words are also in free pages and the log until the file is rewritten
+        con.execute("insert or replace into meta values (?, ?)", (META_KEY, VERSION))
+        con.commit()
+    except sqlite3.OperationalError as e:
+        con.rollback()
+        _say(f"the redaction scrub did not finish ({e}); it runs again on the next index run", log)
+        return
+    for line in notes_report(paths.MEMORY, touched):
+        _say(line, log)
+
+
+def _say(line: str, log: Callable[[str], None] | None) -> None:
+    """To the caller's log (stderr by default, never stdout: the MCP server speaks on it) and to
+    logs/redact.log. Counts, chat and note ids, never text."""
+    (log or (lambda m: print(f"recall: {m}", file=sys.stderr)))(line)
+    try:
+        os.makedirs(paths.LOGS, exist_ok=True)
+        with open(os.path.join(paths.LOGS, "redact.log"), "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except OSError:
         pass
 
 
-def run(con: sqlite3.Connection, stamp: bool = True, log: Callable[[str], None] | None = None) -> Counter:
-    """Redact the text in every table that holds it. Returns the number of values changed per table.column."""
+# --- the notes ----------------------------------------------------------------------------------
+
+
+def notes_report(root: str, touched: dict[str, bool]) -> list[str]:
+    """What to tell the person about their notes: the notes and ledger entries that the rules match
+    today, and the notes learned from a candidate the scrub changed (touched: note id -> whether
+    the candidate's title changed). Nothing is rewritten: a note may be edited by hand, and its
+    old versions are in the notes folder's git history, which only the owner can rewrite."""
+    files, ledger = _scan_notes(root)
+    named = {i for i, _ in files}
+    groups = (
+        (f"notes in {root} match the redaction rules", files),
+        ("entries of .recall/notes.json match them", ledger),
+        (
+            "more notes were learned from a candidate the scrub changed",
+            [(i, t) for i, t in touched.items() if i not in named],
+        ),
+    )
+    lines = []
+    for what, items in groups:
+        if items:
+            ids = sorted(_show(i, title) for i, title in items)
+            more = f" and {len(ids) - 20} more" if len(ids) > 20 else ""
+            lines.append(f"{len(ids)} {what}: {', '.join(ids[:20])}{more}")
+    if lines:
+        lines.append("recall leaves your notes as they are: edit them, and see the README on the notes' git history")
+    return lines
+
+
+def _show(note_id: str, title_hit: bool) -> str:
+    """A note id is a slug of its title: if the title holds what a rule matches, name only the end of the id."""
+    return f"...{note_id[-5:]}" if title_hit else note_id
+
+
+def _scan_notes(root: str) -> tuple[list[tuple[str, bool]], list[tuple[str, bool]]]:
+    """(note ids, whether the title is what matched) for the note files, then for the ledger entries."""
+    files: list[tuple[str, bool]] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in (".git", ".recall")]
+        for name in filenames:
+            if not name.endswith(".md"):
+                continue
+            try:
+                with open(os.path.join(dirpath, name), encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            if count(text):
+                title = re.search(r"^title:[ \t]*(.*)$", text, re.M)
+                if name in ("MEMORY.md", "README.md"):
+                    files.append((os.path.relpath(os.path.join(dirpath, name), root), False))
+                else:
+                    files.append((name[:-3], bool(title and count(title.group(1)))))
+    ledger: list[tuple[str, bool]] = []
+    try:
+        with open(os.path.join(root, ".recall", "notes.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    for section in ("known", "rejected"):
+        for note_id, entry in (data.get(section) or {}).items() if isinstance(data, dict) else ():
+            if isinstance(entry, dict) and any(count(v) for v in entry.values() if isinstance(v, str)):
+                ledger.append((note_id, bool(count(str(entry.get("title") or "")))))
+    return sorted(files), sorted(ledger)
+
+
+def run(
+    con: sqlite3.Connection,
+    stamp: bool = True,
+    log: Callable[[str], None] | None = None,
+    touched: dict[str, bool] | None = None,
+) -> Counter:
+    """Redact the text in every table that holds it. Returns the number of values changed per table.column.
+    touched, if given, collects the notes learned from candidates that were changed (note id -> title changed)."""
     con.execute("pragma secure_delete = on")  # a rewritten value is zeroed, not left in a free page
     changed: Counter = Counter()
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
@@ -73,7 +175,10 @@ def run(con: sqlite3.Connection, stamp: bool = True, log: Callable[[str], None] 
         if table not in have:
             continue
         columns = [r[1] for r in con.execute(f"pragma table_info({table})") if r[1] in wanted]
-        n = _rewrite_chats(con, changed) if table == "messages" else _rewrite(con, table, columns, changed)
+        if table == "messages":
+            n = _rewrite_chats(con, changed)
+        else:
+            n = _rewrite(con, table, columns, changed, touched if table == "candidates" else None)
         if n and table == "explorations":
             # the matching words kept beside a report are made again from the redacted text (explore._upgrade)
             con.execute("update explorations set prompt_terms = null, report_terms = null")
@@ -97,11 +202,12 @@ def run(con: sqlite3.Connection, stamp: bool = True, log: Callable[[str], None] 
     return changed
 
 
-def _rewrite(con, table: str, columns: list[str], changed: Counter) -> int:
+def _rewrite(con, table: str, columns: list[str], changed: Counter, notes: dict[str, bool] | None = None) -> int:
     if not columns:
         return 0
     select = ", ".join(columns)
     n = 0
+    rows: dict[int, bool] = {}  # candidates changed: rowid -> its title changed
     for row in con.execute(f"select rowid, {select} from {table}").fetchall():
         new = [redact(v) if isinstance(v, str) else v for v in row[1:]]
         diff = [c for c, a, b in zip(columns, row[1:], new, strict=True) if a != b]
@@ -110,7 +216,17 @@ def _rewrite(con, table: str, columns: list[str], changed: Counter) -> int:
             con.execute(f"update {table} set {sets} where rowid = ?", [new[columns.index(c)] for c in diff] + [row[0]])
             for c in diff:
                 changed[f"{table}.{c}"] += 1
+            rows[row[0]] = "title" in diff
             n += 1
+    if notes is not None and rows:  # a note made from a changed candidate may hold what the candidate held
+        ids = list(rows)
+        for i in range(0, len(ids), 500):
+            part = ids[i : i + 500]
+            for rowid, note_id in con.execute(
+                f"select rowid, note_id from {table} where rowid in ({','.join('?' * len(part))})", part
+            ):
+                if note_id:
+                    notes[note_id] = notes.get(note_id, False) or rows[rowid]
     return n
 
 
