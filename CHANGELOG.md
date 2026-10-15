@@ -185,6 +185,17 @@ All notable changes to recall are listed here. The format follows
   extraction no longer reads them as the developer speaking. Side chats stay the person's.
   Notes already learned from helper chats stay until edited. The index rebuilds once (chat
   schema 5).
+- **Secrets the redactor missed.** A key written as `"apiKey": "..."`, `**Client Secret**: ...`,
+  `API Key: ...` or `use this api key ...`, in a URL query (`?apiKey=...`, `%3D`, `&amp;`), as
+  `SOME_NAME_KEY=...`, or in a shape of its own (Azure AD client secrets, `sk_` keys, `fc-` keys,
+  `Bearer` tokens, `user:password@` URLs) went into the index as written. Each is now redacted,
+  and so are session titles and a key that straddled the cut at 20,000 characters. A key pasted
+  again further down the same chat, with no word beside it, goes too. A hash, UUID or commit id
+  is still left alone unless a word like "api key" sits next to it. Text recall cannot rebuild
+  from your agents' files (extracted candidates, cached model answers, exploration reports,
+  archived chats) is rewritten with the current rules once per rule version, at the start of an
+  index run (`chats/scrub.py`), and a restored archive copy is redacted again as it is read.
+  The chat index rebuilds itself once (chat schema 7).
 
 ## [0.3.0] - 2026-10-13
 

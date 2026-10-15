@@ -9,7 +9,7 @@ import threading
 import time
 
 from .. import paths
-from . import store
+from . import scrub, store
 from .sources import agents, all_sources
 
 # File-based sources are cheap to re-scan; Cursor's legacy store means reading a
@@ -35,6 +35,7 @@ def index(con, only=None, force=False, max_age=None, log=None) -> dict:
             fcntl.flock(lock, fcntl.LOCK_EX | (fcntl.LOCK_NB if max_age is not None else 0))
         except BlockingIOError:
             return {}
+        scrub.ensure(con, log=log)  # candidates, caches and the archive are not rebuilt: see scrub.py
         result = _index(con, only, force, max_age, log)
         if max_age is None or any(r["indexed"] or r.get("restored") for r in result.values()):
             from .. import embeddings

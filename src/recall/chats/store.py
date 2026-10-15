@@ -11,14 +11,17 @@ from .. import paths
 from . import archive
 from .errors import ToolError, anchor, identity
 from .projects import resolve
-from .redact import redact
+from .redact import redact, redact_many
 from .transcript import Message, Session, conversation_fingerprint
 
 MAX_MESSAGE_CHARS = 20_000
+FIRST_PROMPT_CHARS = 500
+# Text read past a cut so that a secret straddling it is redacted whole before the cut is made.
+REDACT_MARGIN = 512
 # Bumping this rebuilds the chat tables on next run: chats are re-read from their sources,
 # and the ones whose source is gone come back from the archive (archive.py), which a
 # rebuild never drops.
-CHAT_SCHEMA_VERSION = "6"
+CHAT_SCHEMA_VERSION = "7"
 CHAT_TABLES = (
     "sessions",
     "messages",
@@ -176,8 +179,12 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     if archive.enabled(con) and con.execute("select 1 from forgotten_chats where id = ?", (s.id,)).fetchone():
         return
     keep = [i for i, m in enumerate(s.messages) if m.text.strip()]
+    # The chat's texts go through redaction together, so a key pasted again further down, bare, goes too.
     stored = [
-        Message(s.messages[i].role, redact(s.messages[i].text[:MAX_MESSAGE_CHARS]), s.messages[i].ts) for i in keep
+        Message(s.messages[i].role, t[:MAX_MESSAGE_CHARS], s.messages[i].ts)
+        for i, t in zip(
+            keep, redact_many([s.messages[i].text[: MAX_MESSAGE_CHARS + REDACT_MARGIN] for i in keep]), strict=True
+        )
     ]
     errs = archive.merge_errors(anchor(s.tool_errors, s.messages, keep, stored))  # a resumed chat repeats a call
     if not archive.enabled(con):
@@ -209,6 +216,7 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     if shown is stored:
         _write(con, s, s.messages, stored, shown_errs)
     else:
+        shown = _redacted(shown)
         _write(con, s, shown, shown, shown_errs)
 
 
@@ -234,6 +242,7 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
         mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
         shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
+        shown = _redacted(shown)
         errs = archive.merge_errors(*[archive.unpack(r["data"]).tool_errors for r in same_kind], s.tool_errors)
         _write(con, s, shown, shown, errs)
         con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
@@ -241,6 +250,11 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         con.commit()
         archive.log(f"restored {len(ids)} chat(s) from the archive: no source has them any more")
     return len(ids)
+
+
+def _redacted(msgs: list[Message]) -> list[Message]:
+    """Messages put back from the archive, redacted as one chat."""
+    return [type(m)(m.role, t, m.ts) for m, t in zip(msgs, redact_many([m.text for m in msgs]), strict=True)]
 
 
 def _write(
@@ -269,8 +283,10 @@ def _write(
         ],
     )
     msgs = [m for m in parsed if m.text.strip()]
-    first_prompt = next((m.text for m in msgs if m.role == "user"), "")[:500]
-    title = s.title or first_prompt[:80].replace("\n", " ")
+    # Redact before cutting: a key that straddles the cut would otherwise leave its first half behind.
+    first = next((m.text for m in msgs if m.role == "user"), "")
+    first_prompt = redact(first[: FIRST_PROMPT_CHARS + REDACT_MARGIN])[:FIRST_PROMPT_CHARS]
+    title = redact(s.title) if s.title else first_prompt[:80].replace("\n", " ")
     project = resolve(s.project)
     row = {  # named, so a column a later release adds does not break this build's insert
         "id": s.id,
@@ -283,7 +299,7 @@ def _write(
         "updated_at": s.updated_at,
         "source": s.source,
         "n_messages": len(stored),
-        "first_prompt": redact(first_prompt),
+        "first_prompt": first_prompt,
         "origin": s.origin,
         "fingerprint": conversation_fingerprint(msgs),
         "project_key": project.key if project else None,
@@ -300,7 +316,7 @@ def _write(
     )
     con.execute(
         "insert into sessions_fts (id, title, project, first_prompt) values (?,?,?,?)",
-        (s.id, title, s.project or "", redact(first_prompt)),
+        (s.id, title, s.project or "", first_prompt),
     )
 
 
