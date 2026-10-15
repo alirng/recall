@@ -41,7 +41,7 @@ from .. import paths
 from .errors import ToolError, identity
 from .redact import redact, redact_many
 from .sources import compressed
-from .transcript import Message, Session, clean_user_text, drop_compaction_summary
+from .transcript import Message, Session, clean_user_text, drop_compaction_summary, fallback_title
 
 SCHEMA = """
 create table if not exists chat_archive (
@@ -318,7 +318,7 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
         if not msgs:
             continue
         # sessions.title falls back to the opening message; keep only a title the agent gave.
-        derived = (r["first_prompt"] or "")[:80].replace("\n", " ")
+        derived = fallback_title(r["first_prompt"] or "")
         s = Session(
             r["agent"],
             r["native_id"],

@@ -9,13 +9,12 @@ from datetime import datetime
 
 from .. import paths
 from . import archive, scrub
-from .errors import ToolError, anchor, identity
+from .errors import ToolError, anchor, identity, reclean_errors
 from .projects import resolve
-from .redact import Chat, redact, redact_many
-from .transcript import Message, Session, conversation_fingerprint
+from .redact import Chat, redact
+from .transcript import Message, Session, conversation_fingerprint, fallback_title, opening_prompt
 
 MAX_MESSAGE_CHARS = 20_000
-FIRST_PROMPT_CHARS = 500
 # Text read past a cut so that a secret straddling it is redacted whole before the cut is made.
 REDACT_MARGIN = 512
 # Bumping this rebuilds the chat tables on next run: chats are re-read from their sources,
@@ -190,7 +189,7 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     ]
     errs = archive.merge_errors(anchor(s.tool_errors, s.messages, keep, stored, chat))  # a resumed chat repeats a call
     if not archive.enabled(con):
-        _write(con, s, s.messages, stored, errs)
+        _write(con, s, s.messages, stored, errs, chat)
         return
     others, other_errs = [], []
     msgs = stored
@@ -211,15 +210,22 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
         if (n := archive.kept(msgs)) > (row["kept"] or 0):
             archive.log(f"kept {n} messages of {s.id} that a re-read of {s.source} no longer has")
         if same:  # another parser may word a signature differently: keep only this one's
-            errs = archive.merge_errors(copy.tool_errors, errs)
+            # read again, as the messages of the copy are: the copy may predate a rule, or this chat's values
+            errs = archive.merge_errors(reclean_errors(copy.tool_errors, chat), errs)
     archive.save(con, s, msgs, CHAT_SCHEMA_VERSION, size, errs)
     shown = archive.union(msgs, others)
-    shown_errs = archive.merge_errors(*other_errs, errs) if other_errs else errs
     if shown is stored:
-        _write(con, s, s.messages, stored, shown_errs)
+        shown_chat = chat
+        parsed = s.messages
     else:
-        shown = _redacted(shown)
-        _write(con, s, shown, shown, shown_errs)
+        shown, shown_chat = _redacted(shown)
+        parsed = shown
+    # The other files' errors are read again with the chat as shown, and before they are merged: a call
+    # that has no id is told from another by its words, so a stale copy of a call must not outlive its fresh one.
+    shown_errs = (
+        archive.merge_errors(*[reclean_errors(e, shown_chat) for e in other_errs], errs) if other_errs else errs
+    )
+    _write(con, s, parsed, shown, shown_errs, shown_chat)
 
 
 def restore(con: sqlite3.Connection, agents: list[str]) -> int:
@@ -244,9 +250,12 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
         mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
         shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
-        shown = _redacted(shown)
-        errs = archive.merge_errors(*[archive.unpack(r["data"]).tool_errors for r in same_kind], s.tool_errors)
-        _write(con, s, shown, shown, errs)
+        shown, chat = _redacted(shown)
+        errs = archive.merge_errors(
+            *[reclean_errors(archive.unpack(r["data"]).tool_errors, chat) for r in same_kind],
+            reclean_errors(s.tool_errors, chat),
+        )  # a copy's failed calls are read again with its messages
+        _write(con, s, shown, shown, errs, chat)
         con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
     if ids:
         con.commit()
@@ -254,17 +263,25 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
     return len(ids)
 
 
-def _redacted(msgs: list[Message]) -> list[Message]:
-    """Messages put back from the archive, redacted as one chat."""
-    return [type(m)(m.role, t, m.ts) for m, t in zip(msgs, redact_many([m.text for m in msgs]), strict=True)]
+def _redacted(msgs: list[Message]) -> tuple[list[Message], Chat]:
+    """Messages put back from the archive, redacted as one chat, and the chat (its values redact the words of a
+    failed call that comes with them)."""
+    chat = Chat([m.text for m in msgs])
+    return [type(m)(m.role, t, m.ts) for m, t in zip(msgs, chat.texts, strict=True)], chat
 
 
 def _write(
-    con: sqlite3.Connection, s: Session, parsed: list[Message], stored: list[Message], errors: list[ToolError]
+    con: sqlite3.Connection,
+    s: Session,
+    parsed: list[Message],
+    stored: list[Message],
+    errors: list[ToolError],
+    chat: Chat,
 ) -> None:
-    """The index rows for one chat. parsed: what the title and opening prompt come from;
-    stored: the message rows, already truncated and redacted; errors: its failed tool
-    calls, redacted."""
+    """The index rows for one chat. parsed: what the fingerprint comes from; stored: the message rows, already
+    truncated and redacted, which the opening prompt and a fallback title are cut from (never from the raw parse,
+    where a repeat of a key is still bare); errors: its failed tool calls, redacted; chat: what redacted the
+    messages, for a title the agent gave."""
     con.execute("delete from messages where session_id=?", (s.id,))
     con.execute("delete from sessions_fts where id=?", (s.id,))
     con.execute("delete from tool_errors where session_id=?", (s.id,))
@@ -285,10 +302,8 @@ def _write(
         ],
     )
     msgs = [m for m in parsed if m.text.strip()]
-    # Redact before cutting: a key that straddles the cut would otherwise leave its first half behind.
-    first = next((m.text for m in msgs if m.role == "user"), "")
-    first_prompt = redact(first[: FIRST_PROMPT_CHARS + REDACT_MARGIN])[:FIRST_PROMPT_CHARS]
-    title = redact(s.title) if s.title else first_prompt[:80].replace("\n", " ")
+    first_prompt = opening_prompt((m.role, m.text) for m in stored)
+    title = chat.repeats(redact(s.title)) if s.title else fallback_title(first_prompt)
     project = resolve(s.project)
     row = {  # named, so a column a later release adds does not break this build's insert
         "id": s.id,
