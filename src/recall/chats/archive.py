@@ -289,9 +289,10 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
     it, or when the index saw it more recently than any copy (a release without the archive
     indexed it since), keeping what that copy had marked Kept. Forgotten chats are never
     copied: an older release, which does not know the forgotten list, may have read one back.
-    The rows are copied as they stand, not redacted here: the rules that caught a value in one
+    The messages are copied as they stand, not redacted here: the rules that caught a value in one
     message may not catch its bare repeat in the next, which redact_many sees a chat at a time.
-    scrub.ensure does that to every archived copy at the next index run."""
+    scrub.ensure does that to every archived copy at the next index run. The words of a chat's
+    tool errors are redacted by pack, and again by the scrub with the chat's values."""
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
     if not {"sessions", "messages"} <= have:
         return 0
