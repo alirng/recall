@@ -54,7 +54,7 @@ class ToolError:
         """What is stored. The words are redacted again here, so no copy of a failure holds what the rules catch."""
         d = {name: getattr(self, name) for name in _STORED}
         for k in TEXT_FIELDS:
-            d[k] = redact_tool(d[k])
+            d[k] = reclean(k, d[k])
         return d
 
     @classmethod
@@ -67,6 +67,18 @@ class ToolError:
 
 _STORED = tuple(f.name for f in fields(ToolError))[:8]
 TEXT_FIELDS = ("command", "signature", "next_reply")  # the words of a failure; the rest are ids and anchors
+
+
+def reclean(field: str, text, chat: Chat | None = None):
+    """A stored field, redacted again (a rule was added, or the chat's values are known now). The command and the
+    signature are single lines, as they were when the rules read them. A reply was several lines then and has
+    been joined since, which TOOL_RULES that stop at a line end (`Authorization:`, `mysql ... -p`) would read too
+    far, so it gets the rules of redact() and the chat's values only: a tool rule added later does not reach it."""
+    if not isinstance(text, str) or not text:
+        return text
+    if field == "next_reply":
+        return chat.repeats(redact(text)) if chat else redact(text)
+    return chat.tool(text) if chat else redact_tool(text)
 
 
 @dataclass

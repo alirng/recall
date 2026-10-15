@@ -11,7 +11,8 @@ rebuild reproduces, so a secret that an older rule let through stays in them:
   edit (commits.py).
 
 A failed tool call's words are redacted as redact.redact_tool() does, with the values that the
-messages of the same chat held (redact.Chat), as they are when they are written (store.upsert).
+messages of the same chat held (redact.Chat), as they are when they are written (store.upsert);
+errors.reclean says which rules a stored field can be read by again.
 
 ensure() runs at the start of an index run and rewrites those tables once per
 redact.VERSION; run() is the same rewrite without the version check, for a one-off clean.
@@ -36,7 +37,7 @@ from collections import Counter
 from collections.abc import Callable
 
 from .. import paths
-from .errors import TEXT_FIELDS, identity
+from .errors import TEXT_FIELDS, identity, reclean
 from .redact import VERSION, Chat, count, redact, redact_json
 
 # table -> the columns that hold chat text. Missing tables and columns are skipped.
@@ -184,7 +185,9 @@ def run(
         if table in ("messages", "tool_errors"):
             if chats is None:  # the messages, and the tool errors of the same chats
                 chats = _rewrite_chats(con, changed, have)
-            n = chats[table]
+                if "tool_errors_fts" in have:  # before the commit below: a stop in between must not strand old terms
+                    con.execute("insert into tool_errors_fts(tool_errors_fts) values ('rebuild')")
+            n = chats[table] if table == "messages" else 0  # the index of tool_errors was rebuilt above
         else:
             n = _rewrite(con, table, columns, changed, touched if table == "candidates" else None)
         if n and table == "explorations":
@@ -267,7 +270,7 @@ def _rewrite_chats(con, changed: Counter, have: set[str]) -> Counter:
 
 def _rewrite_errors(con, columns: list[str], rows: list, chat: Chat, changed: Counter, n: Counter) -> None:
     for row in rows:
-        new = [chat.tool(v) if isinstance(v, str) else v for v in row[2:]]
+        new = [reclean("command" if c == "command_head" else c, v, chat) for c, v in zip(columns, row[2:], strict=True)]
         diff = [c for c, a, b in zip(columns, row[2:], new, strict=True) if a != b]
         if diff:
             sets = ", ".join(f"{c} = ?" for c in diff)
@@ -350,8 +353,8 @@ def _archive_error(e, chat: Chat, moved: dict[str, str]):
         return e
     e = dict(e)
     for k in TEXT_FIELDS:
-        if isinstance(e.get(k), str):
-            e[k] = chat.tool(e[k])
+        if k in e:
+            e[k] = reclean(k, e[k], chat)
     for k in ("anchor", "resolved_anchor"):
         if e.get(k) in moved:
             e[k] = moved[e[k]]
