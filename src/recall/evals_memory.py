@@ -74,6 +74,7 @@ def run(
         fresh = True
     source = _source(from_candidates) if from_candidates else None
     if source:
+        h.check_candidates_repeat(candidates_repeat, source)
         fresh = True  # a cached answer would replay the earlier run's folding, not sample a new one
         run.meta["from_candidates"] = source["dir"]
     client = Client(provider, cache=not fresh)

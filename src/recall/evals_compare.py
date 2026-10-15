@@ -19,9 +19,14 @@ Per metric it reports:
                     metric with no better direction, above or below)
   detectable        the smallest difference these runs would detect 80% of the time: 2.8 x the
                     bootstrap standard error, or the replicate spread's floor where that is
-                    larger (noise one run shares across cases, which the bootstrap misses)
+                    larger (noise one run shares across cases, which the bootstrap misses).
+                    The same rule gives the one-arm "vs an identical one" floors. The spread's
+                    floor uses a Student t quantile in place of 1.96, as the spread comes from
+                    few replicates
   verdict           better or worse when the CI excludes 0 and Δ is beyond the run-to-run
-                    spread of the replicates; else within noise
+                    spread of the replicates; else within noise. None under 10 paired cases
+                    ("too few cases"), and "run noise unmeasured" in place of better or worse
+                    when an arm has fewer than 3 full replicates
   run-to-run        each replicate's score on the paired cases, the spread per arm, and the
                     differences between replicates of the same arm (what no change looks like)
   repeats needed    how many replicates per arm would make the observed Δ (or --target)
@@ -45,7 +50,23 @@ import sys
 SEED = 7
 RESAMPLES = 2000
 Z80 = 2.8  # 1.96 (two-sided 5%) + 0.84 (80% power)
+Z_POWER = 0.84  # the 80% power part of Z80
 EPS = 1e-9
+MIN_CASES = 10  # fewer paired cases than this give no better/worse verdict
+MIN_REPLICATES = 3  # full replicates an arm needs for its run noise to count as measured
+# Two-sided 95% Student t quantile by degrees of freedom: what 1.96 becomes when a spread is
+# estimated from few replicates.
+# fmt: off
+T95 = dict(
+    enumerate(
+        (
+            12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
+            2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042,
+        ),
+        1,
+    )
+)
+# fmt: on
 
 # Per eval: how a row maps to its case (the unit the bootstrap resamples), and each metric as
 # (numerator key, denominator key or None, how cases combine, direction, only rows where key).
@@ -343,6 +364,19 @@ def _sd(xs: list[float]) -> float | None:
     return statistics.stdev(xs) if len(xs) > 1 else None
 
 
+def t95(dof: int) -> float:
+    return T95.get(dof) or 1.96 + 2.4 / dof  # past 30 degrees of freedom this is within 0.002
+
+
+def conservative(*floors: float | None) -> float | None:
+    """The one rule for a smallest detectable difference: the largest of the floors that exist.
+    The case bootstrap (or its one-arm form) assumes run noise is independent across cases;
+    where one run's noise is shared (memory_v2 reads several cases' chats in one extraction
+    call) the replicates' spread is larger, so the larger of the two sets the floor."""
+    have = [f for f in floors if f is not None]
+    return max(have) if have else None
+
+
 def decompose(a: dict, b: dict | None, units: list[str]) -> dict:
     """Split the variance of the paired difference into case sampling and run noise, through
     each case's linearised contribution to the pooled score. Returns per-case variances."""
@@ -396,7 +430,13 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
     datas = [collect(runs, unit_key, metric, split, tag) for runs in arms]
     common = set.intersection(*(set(d) for d in datas))
     units = sorted((u for u in common if all(pooled(d[u])[1] for d in datas)), key=_natural)
-    res: dict = {"metric": name, "direction": metric[3], "cases": len(units), "per_arm": [len(d) for d in datas]}
+    res: dict = {
+        "metric": name,
+        "direction": metric[3],
+        "cases": len(units),
+        "per_arm": [len(d) for d in datas],
+        "in_every_arm": len(common),  # before the cases with nothing to rate here are dropped
+    }
     if not units:
         return res
     a = datas[0]
@@ -411,12 +451,23 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
         full = [r["score"] for r in res["base_replicates"] if r["full"]]
         sd = _sd(full)
         res["run_sd"] = sd
+        mult = t95(len(full) - 1) + Z_POWER if sd is not None else None  # the spread has len(full) - 1 df
+
+        def spread_floor(k: int):  # this arm against an identical one, k replicates a side
+            return mult * sd * math.sqrt(2 / k) if sd is not None else None
+
         if sd is not None:  # a same-size rerun of this arm against itself
-            res["run_floor"] = Z80 * sd * math.sqrt(2 / len(full))
+            res["run_floor"] = spread_floor(len(full))
         res["same_arm"] = [y - x for x, y in itertools.combinations(full, 2)]
         res["decompose"] = dec
-        if dec:  # this arm against an identical one, k replicates a side: only run noise differs
-            res["null_detectable"] = {k: Z80 * math.sqrt(2 * dec["run_per_rep"] / (k * dec["n"])) for k in (1, 3, 5)}
+        # Only run noise differs between this arm and an identical one. The case-level rule of the
+        # paired path and the replicate spread, whichever is larger (see conservative()).
+        res["null_detectable"] = {
+            k: conservative(Z80 * math.sqrt(2 * dec["run_per_rep"] / (k * dec["n"])) if dec else None, spread_floor(k))
+            for k in (1, 3, 5)
+        }
+        if not any(res["null_detectable"].values()):
+            del res["null_detectable"]
         return res
     b = datas[1]
     pb = [pooled(b[u]) for u in units]
@@ -438,28 +489,37 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
     for side in ("base", "cand"):
         full = [r["score"] for r in res[f"{side}_replicates"] if r["full"]]
         res[f"{side}_sd"] = _sd(full)
+        res[f"{side}_full"] = len(full)
         res[f"{side}_same_arm"] = [y - x for x, y in itertools.combinations(full, 2)]
         sds.append((res[f"{side}_sd"], len(full)))
     dof = sum(k - 1 for s, k in sds if s is not None)
+    run_se = None
     if dof:  # the arms' replicate spreads pooled (two replicates alone give a shaky spread)
         sd = math.sqrt(sum((k - 1) * s**2 for s, k in sds if s is not None) / dof)
+        run_se = sd * math.sqrt(sum(1 / max(k, 1) for _, k in sds))
         res["run_sd_pooled"] = sd
-        res["run_floor"] = Z80 * sd * math.sqrt(sum(1 / max(k, 1) for _, k in sds))
+        res["run_floor"] = (t95(dof) + Z_POWER) * run_se
     dec = decompose(a, b, units)
     res["decompose"] = dec
     res["repeats"] = repeats_needed(dec, target if target is not None else res["delta"])
-    # The case bootstrap assumes run noise is independent across cases. Where one run's noise is
-    # shared (memory_v2 reads several cases' chats in one extraction call), the replicates'
-    # spread is the larger, so it sets the floor too.
-    if res.get("run_floor") is not None and res.get("detectable") is not None and res["run_floor"] > res["detectable"]:
-        res["detectable"], res["detectable_from"] = res["run_floor"], "replicate spread"
+    det = conservative(res.get("detectable"), res.get("run_floor"))
+    if det is not None:
+        if det != res.get("detectable"):
+            res["detectable_from"] = "replicate spread"
+        res["detectable"] = det
     lo, hi = res.get("ci") or (0, 0)
-    run_ok = res.get("run_floor") is None or abs(res["delta"]) > 1.96 * res["run_floor"] / Z80
-    if (lo > 0 or hi < 0) and run_ok:
+    res["run_noise_measured"] = min(res["base_full"], res["cand_full"]) >= MIN_REPLICATES
+    if len(units) < MIN_CASES:
+        res["verdict"] = f"too few cases (<{MIN_CASES})"
+    elif not (lo > 0 or hi < 0):
+        res["verdict"] = "within noise"
+    elif not res["run_noise_measured"]:
+        res["verdict"] = "run noise unmeasured"
+    elif run_se is not None and abs(res["delta"]) <= t95(dof) * run_se:
+        res["verdict"] = "within run noise"
+    else:
         good = (lo > 0) == (metric[3] >= 0)
         res["verdict"] = ("better" if good else "worse") if metric[3] else "different"
-    else:
-        res["verdict"] = "within noise" if not (lo > 0 or hi < 0) else "within run noise"
     return res
 
 
@@ -530,6 +590,13 @@ def run(argv: list[str] | None = None) -> dict:
         seen = {json.dumps(r["meta"].get(key)) for arm in arms for r in arm if key in r["meta"]}
         if len(seen) > 1:
             warnings.append(f"the runs differ in {key}: {', '.join(sorted(seen))}")
+    if any("agent_harness" in r["meta"] for arm in arms for r in arm):  # an agent eval's tool setup
+        seen = {json.dumps(r["meta"].get("agent_harness", "unrecorded")) for arm in arms for r in arm}
+        if len(seen) > 1:
+            warnings.append(
+                f"the runs differ in agent_harness: {', '.join(sorted(seen))} (runs made before the marker are "
+                "unrecorded): their tool use and token counts may not compare"
+            )
     rows = [row for arm in arms for r in arm for row in r["rows"]]
     if a.metric:
         chosen = {m: metrics.get(m) or custom_metric(m, rows) for m in a.metric}
@@ -540,6 +607,15 @@ def run(argv: list[str] | None = None) -> dict:
         if not chosen:
             sys.exit(f"no known metric for eval {evals[0]!r}: pass --metric KEY or --metric NUM/DEN")
     results = [compare_metric(m, spec, arms, unit_key, a.split, a.tag, a.target) for m, spec in chosen.items()]
+    if len(arms) > 1:  # cases only one arm scored are left out of every number below
+        unpaired: dict[tuple, list[str]] = {}
+        for m in results:
+            if any(n > m["in_every_arm"] for n in m["per_arm"]):
+                unpaired.setdefault((m["in_every_arm"], *m["per_arm"]), []).append(m["metric"])
+        for (both, *each), ms in unpaired.items():
+            sizes = ", ".join(f"{n} has {k}" for n, k in zip(names, each, strict=False))
+            of = f" ({', '.join(ms)})" if len(unpaired) > 1 else ""
+            warnings.append(f"only {both} cases are in both arms, but {sizes}: the others are left out{of}")
     report = {
         "eval": evals[0] if len(evals) == 1 else evals,
         "unit": unit_key,
@@ -631,6 +707,11 @@ def show(report: dict, names: list[str], list_flips: bool, unit_key: str) -> Non
         if m.get("run_floor") is not None:
             bits.append(
                 f"run noise alone ±{_f(m['run_floor'])}" + ("" if paired else " (a rerun of this arm vs itself)")
+            )
+        if paired and m.get("run_noise_measured") is False:
+            bits.append(
+                f"run noise unmeasured: {b} has {m['base_full']} and {c} {m['cand_full']} full replicates, "
+                f"{MIN_REPLICATES} each needed"
             )
         rep = m.get("repeats") or {}
         if rep:
