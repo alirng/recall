@@ -16,6 +16,17 @@ All notable changes to recall are listed here. The format follows
   the missing ones are kept. A chat whose copies live in several files (Cursor writes one per
   project folder, Codex one in `sessions/` and one in `archived_sessions/`) now shows every
   message from all of them, where before only the file read last counted.
+- **Past tool failures are searchable.** When a tool call fails (Claude Code's `is_error`
+  results, Codex commands that exit non-zero, Cursor tool calls marked failed or terminal
+  commands that exit non-zero), recall keeps one redacted line saying what went wrong, with
+  the tool and the head of its command, in a `tool_errors` table with its own full-text
+  index. Each line also records the message it came after, whether a later identical call in
+  that chat succeeded (a retry, not proof of a fix) and the start of what the agent said next.
+  Text is redacted whole before it is cut, with extra rules for commands (`-u user:pass`,
+  `--password x`, `DB_PASS=x`, webhook URLs). A call the person declined is not a failure.
+  It never enters the chat messages, so search ranking and memory extraction are unchanged.
+  `store.tool_errors(con, text)` finds the chats where an error came up before. The index
+  rebuilds once (chat schema 6).
 - **`recall forget <chat id>` and `--project NAME`** remove chats from the index, the archive,
   embeddings, extraction records and exploration reports, and keep them from being indexed
   again; the database file is rewritten afterwards so the words are not left in free pages.
