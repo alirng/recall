@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from . import config, keys, paths, status
+from . import config, keys, paths, roots, status
 from .chats import indexer, store
 from .chats.sources import agents
 from .integrations import agents as integrations
@@ -44,7 +44,9 @@ class Prompter:
             print(f"  enter a number from 1 to {len(options)}")
 
 
-def run(assume_yes: bool = False, model: str | None = None, embeddings: str | None = None) -> None:
+def run(
+    assume_yes: bool = False, model: str | None = None, embeddings: str | None = None, autopilot: bool | None = None
+) -> None:
     """The guided first run. model (e.g. "claude:haiku", "local:qwen3:4b") and embeddings (an
     Ollama embedding model, e.g. "nomic-embed-text") answer those questions up front, so an
     agent can install recall in one command after asking the person."""
@@ -81,6 +83,7 @@ def run(assume_yes: bool = False, model: str | None = None, embeddings: str | No
     if ask.yes("5. Connect recall to your agents (MCP tools, /recall skill, session-start and edit hooks)?"):
         for line in integrations.install() + offer_retention(ask):
             print("   " + line)
+        _autopilot(ask, cfg, autopilot)
 
     dream = cfg["dream"]
     if ask.yes("\n6. Update memory every night at 03:30?"):
@@ -98,6 +101,26 @@ def offer_retention(ask: Prompter) -> list[str]:
     """Offer to raise Claude Code's cleanupPeriodDays. Unlike the other setup questions, the
     default is no, so `--yes` and a run with no terminal leave the person's setting alone."""
     return integrations.retention(lambda question: ask.yes(question, default=False))
+
+
+def _autopilot(ask: Prompter, cfg: dict, answer: bool | None) -> None:
+    """Ask once whether recall may keep every agent folder connected on its own. A yes has to come
+    from a person (or --autopilot): --yes and a missing terminal leave it unset."""
+    current = cfg["autopilot"].get("connect")
+    if answer is None and current is not None:
+        print(f"   Autopilot is {'on' if current else 'off'}; `recall autopilot on|off` changes it.")
+        return
+    if answer is None and ask.auto:
+        print("   Autopilot (new agent folders connected automatically) is off: `recall autopilot on` turns it on.")
+        return
+    if answer is None:
+        answer = ask.yes(
+            "   Keep recall connected automatically? A new Claude Code, Codex or Cursor folder, a second "
+            "account, or an update that wipes recall's hooks gets fixed in the background. Every file is "
+            "backed up first and chat history is never touched"
+        )
+    cfg["autopilot"] = {**cfg["autopilot"], "connect": answer}
+    config.save(cfg)
 
 
 def choose_model(ask: Prompter, current: dict | None = None) -> dict:
@@ -229,6 +252,11 @@ def _detect_agents() -> dict[str, int]:
             found[key] = n
     if not found:
         sys.exit("\nNo supported agents found.")
+    for r in roots.discover():
+        if not r.default:
+            print(
+                f"    + {r.name}: {r.data or r.path}" + ("" if r.exists else " (named in your shell, not created yet)")
+            )
     if "codex" in found:
         from .chats.sources import codex
 
