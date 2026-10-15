@@ -3,7 +3,8 @@ hooks that load memory in Claude Code and Codex, and the edit hooks that apply y
 coordination rules when another chat has open changes to a file an agent is about to edit.
 
 Every config file is backed up beside itself (<file>.recall-backup) before it
-changes, and `recall uninstall` reverses each step.
+changes, and `recall uninstall` reverses each step. A run that changes a file twice
+keeps the backup of its first state.
 """
 
 import json
@@ -348,9 +349,17 @@ def _read(path: str) -> str:
         return ""
 
 
+_backed_up: set[str] = set()
+
+
 def _write(path: str, text: str) -> None:
-    if os.path.exists(path):
-        shutil.copy2(path, path + ".recall-backup")
+    """Write a config file, keeping its first state beside it. One install can change a file
+    more than once (hooks, then retention), so each path is backed up once per process: the
+    backup is the file as it was before recall touched it."""
+    if path not in _backed_up:
+        _backed_up.add(path)
+        if os.path.exists(path):
+            shutil.copy2(path, path + ".recall-backup")
     with open(path, "w") as f:
         f.write(text)
 
