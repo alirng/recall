@@ -29,15 +29,18 @@ All notable changes to recall are listed here. The format follows
   agree who goes first, queued for each chat's next edit, turn end or prompt, never
   interrupting it (`recall resolve --repo … --file …` from the command line). The row shows
   when it was sent and clears once the overlap does; pressing it again sends nothing more.
-- **Exploration subagents start from the last answer.** When Claude Code's Explore (or Cursor's
-  explore) starts in a repo recall has seen explored before, it gets the earlier report that
-  best matches its question, as notes with the commit, age and files changed since, or nothing
-  when no report clears the gate. Reports are recorded by the subagent-stop hooks of Claude
-  Code, Codex and Cursor with the commit they saw; `recall explore backfill` adds the ones in
-  your history. Cursor's preToolUse on the Task tool and Codex's capture follow their app code
-  and docs and are not yet tested live; Codex cannot be served automatically, because its
-  SubagentStart comes before the subagent's task exists. Any agent can ask through
-  `project_memory(path, task)`. `recall eval explore` replays your past explorations.
+- **Exploration reports.** Claude Code's Explore, Cursor's explore and Codex's explorer
+  subagents leave a report, and recall now keeps each one with the commit it saw (the
+  subagent-stop hooks; `recall explore backfill` adds the ones in your history). When
+  `[explore] serve = true` is set in `config.toml`, a new exploration in that repo is handed the
+  earlier report that best matches its question, as notes with the commit, age and files
+  changed since, or nothing when none clears the gate. Serving is off by default: replaying 10
+  past explorations found no gain in judged quality and about 6% fewer tokens, within the
+  noise. Any agent can ask for the report through `project_memory(path, task)` whatever the
+  setting. Cursor's preToolUse on the Task tool and Codex's capture follow their app code and
+  docs and are not yet tested live; Codex cannot be served automatically, because its
+  SubagentStart comes before the subagent's task exists. `recall eval explore` replays your
+  past explorations.
 - **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor
   chats active in the last 12 hours, the branch each is on and the files it edited, and flags a
   file that two chats in one repo both have open changes to: whether the two would conflict if

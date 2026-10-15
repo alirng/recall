@@ -16,6 +16,11 @@ to verify claims about changed files and to extend rather than redo. A generic r
 does not help agents (arXiv 2602.11988), so only a report that matches this prompt is served.
 Agents in any harness can ask for the same through MCP: project_memory(path, task).
 
+Serving at the start is OFF by default (`[explore] serve = true` in config.toml turns it on;
+see serving()): the agent replay found no gain in judged quality (README, PR #6), so a new
+exploration starts blind unless it asks. Capture, the MCP lookup and `recall explore lookup`
+do not depend on it.
+
 The hook dispatcher (integrations/hooks.py) calls on_start / on_stop; the table above them
 says where each agent puts the prompt and the report. `recall eval explore` replays the
 owner's past explorations (evals_explore.py).
@@ -570,6 +575,14 @@ def block(row, here: Checkout, now: float | None = None, to: str | None = None) 
     return f"<recall-memory>\n{text}\n</recall-memory>"
 
 
+def serving() -> bool:
+    """Whether an exploration subagent is handed the earlier report when it starts:
+    `[explore] serve = true` in config.toml. Read at each call, so it needs no reinstall."""
+    from . import config
+
+    return config.load()["explore"].get("serve") is True
+
+
 def brief(folder: str | None, prompt: str, con=None, threshold: float = THRESHOLD) -> tuple[str | None, dict]:
     """The block for an exploration starting in folder with this prompt, or None when recall
     has nothing close enough. Also returns what it decided, for the usage log."""
@@ -613,10 +626,11 @@ def brief(folder: str | None, prompt: str, con=None, threshold: float = THRESHOL
 
 
 def on_start(e):
-    """subagent_start: the earlier report that answers this exploration, if any."""
+    """subagent_start: the earlier report that answers this exploration, if any, when serving
+    is on. Either way the start's prompt is kept for a stop that has no transcript."""
     if e.observe or not is_explorer(e.subagent) or not e.prompt:
         return None
-    block, info = brief(e.cwd, e.prompt)
+    block, info = brief(e.cwd, e.prompt) if serving() else (None, {"reason": "serving off"})
     _log("explore_start", e, info)
     if e.session:  # after serving: a busy database must not hold up the spawn
         _remember_start(f"{e.agent}:{e.session}", e.prompt)
