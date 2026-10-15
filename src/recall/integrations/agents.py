@@ -295,7 +295,8 @@ def retention(ask=None, dry_run: bool = False) -> list[str]:
     report = []
     if os.path.isdir(os.path.dirname(CLAUDE_SETTINGS)):
         managed, days = policy.claude_managed(), policy.claude_user_days()
-        current = days or policy.CLAUDE_DEFAULT_DAYS
+        current = policy.CLAUDE_DEFAULT_DAYS if days is None else days
+        was = f"{current} (default)" if days is None else str(days)  # the person's own value, even an invalid 0
         if managed:
             report.append(
                 f"Claude Code  your organisation keeps chats {managed[0]} days ({managed[1]}); "
@@ -304,14 +305,14 @@ def retention(ask=None, dry_run: bool = False) -> list[str]:
         elif current >= 365:
             report.append(f"Claude Code  keeps chats {current} days")
         elif ask and ask(
-            f"Claude Code deletes chats after {current} days. Keep them {CLAUDE_KEEP_DAYS // 365} years "
-            f"instead (cleanupPeriodDays = {CLAUDE_KEEP_DAYS})?"
+            f"Claude Code deletes old chats (cleanupPeriodDays is {was}). "
+            f"Keep them {CLAUDE_KEEP_DAYS // 365} years instead (cleanupPeriodDays = {CLAUDE_KEEP_DAYS})?"
         ):
-            report.append(f"Claude Code  keeps chats {CLAUDE_KEEP_DAYS} days, was {current}: {_keep_claude(dry_run)}")
+            report.append(f"Claude Code  keeps chats {CLAUDE_KEEP_DAYS} days, was {was}: {_keep_claude(dry_run)}")
         else:
             report.append(
-                f"Claude Code  deletes chats after {current} days (recall keeps its own copy of each chat "
-                f"it indexed); `recall install --only retention` raises it to {CLAUDE_KEEP_DAYS}"
+                f"Claude Code  deletes old chats (cleanupPeriodDays is {was}; recall keeps its own copy of each "
+                f"chat it indexed); `recall install --only retention` raises it to {CLAUDE_KEEP_DAYS}"
             )
     if os.path.isdir(os.path.dirname(CODEX_CONFIG)):
         report.append("Codex        no setting deletes old sessions")
@@ -322,7 +323,7 @@ def retention(ask=None, dry_run: bool = False) -> list[str]:
 
 def ask_terminal(question: str) -> bool:
     """A yes/no question when a person is at the terminal; no one there means no."""
-    return sys.stdin.isatty() and input(f"{question} (y/n) [y]: ").strip().lower() in ("", "y", "yes")
+    return sys.stdin.isatty() and input(f"{question} (y/n) [n]: ").strip().lower() in ("y", "yes")
 
 
 def _keep_claude(dry_run: bool) -> str:

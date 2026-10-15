@@ -79,7 +79,7 @@ def run(assume_yes: bool = False, model: str | None = None, embeddings: str | No
 
     print()
     if ask.yes("5. Connect recall to your agents (MCP tools, /recall skill, session-start and edit hooks)?"):
-        for line in integrations.install() + integrations.retention(ask.yes):
+        for line in integrations.install() + offer_retention(ask):
             print("   " + line)
 
     dream = cfg["dream"]
@@ -92,6 +92,12 @@ def run(assume_yes: bool = False, model: str | None = None, embeddings: str | No
         print("\n8. Embedding your chats for semantic search, in the background…")
         _start_background("embed")
     print(f"\nDone. Your memory lives in {paths.MEMORY}; start at MEMORY.md.")
+
+
+def offer_retention(ask: Prompter) -> list[str]:
+    """Offer to raise Claude Code's cleanupPeriodDays. Unlike the other setup questions, the
+    default is no, so `--yes` and a run with no terminal leave the person's setting alone."""
+    return integrations.retention(lambda question: ask.yes(question, default=False))
 
 
 def choose_model(ask: Prompter, current: dict | None = None) -> dict:
