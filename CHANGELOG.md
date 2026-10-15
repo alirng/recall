@@ -30,6 +30,11 @@ All notable changes to recall are listed here. The format follows
   summaries and `!` command output; Cursor's session-hook context and tool catalogues; Codex
   goal continuations, skill bodies, browser state and subagent reports. Memory extraction
   reads user turns as the developer speaking. The index rebuilds once (chat schema 3).
+  A chat whose file is gone comes back from the archive with the same cleaning applied to
+  its user turns, and Claude Code's compaction summary is dropped from it. What the archive
+  cannot undo is a peer message or task notification an older release stored as the
+  person's words: Claude Code marks those only in the chat file, so once the file is gone
+  they cannot be told from the person's text and stay.
 - A chat file deleted while recall was listing files no longer stops the index run.
 
 ### Changed
