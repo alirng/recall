@@ -1,5 +1,6 @@
 """The chat index: sessions and messages in SQLite with full-text search, and the queries over it."""
 
+import contextlib
 import os
 import re
 import sqlite3
@@ -74,12 +75,66 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
             con.execute("insert or replace into meta values ('chat_schema', ?)", (CHAT_SCHEMA_VERSION,))
         con.commit()
     con.executescript(SCHEMA)
+    add_root_column(con)
     return con
 
 
 def _schema(con) -> str | None:
     row = con.execute("select v from meta where k='chat_schema'").fetchone()
     return row[0] if row else None
+
+
+def add_root_column(con: sqlite3.Connection) -> None:
+    """An index built before roots existed has no sessions.root. Add it in place (nothing is dropped,
+    so chats whose files are gone survive); the indexer fills it from each chat's source path.
+    root is the last column, which is where SCHEMA puts it, so inserts by position still line up."""
+    if "root" not in {r[1] for r in con.execute("pragma table_info(sessions)")}:
+        with contextlib.suppress(sqlite3.OperationalError):  # another process added it just now
+            con.execute("alter table sessions add column root text")
+
+
+def backfill_roots(con: sqlite3.Connection, found: list) -> int:
+    """Name the root of every chat that has none yet (indexed before sessions.root existed, or restored
+    from the archive) by the folder its source file sits in. Prefixes end in a separator, so ~/.claude
+    never claims ~/.claude-work. Cursor transcripts of every build share ~/.cursor/projects, so they
+    are attributed to the first Cursor root here and corrected when the chat is next parsed."""
+    if not con.execute("select 1 from sessions where root is null limit 1").fetchone():
+        return 0
+    prefixes: list[tuple[str, str]] = []
+    for r in found:
+        base = r.path.rstrip(os.sep) + os.sep
+        if r.agent == "claude":
+            prefixes.append((base + "projects" + os.sep, r.name))
+        elif r.agent == "codex":
+            prefixes += [(base + "sessions" + os.sep, r.name), (base + "archived_sessions" + os.sep, r.name)]
+        elif r.agent == "cursor":
+            prefixes.append((base + "projects" + os.sep, r.name))
+            if r.data:
+                prefixes.append((os.path.join(r.data, "globalStorage", "state.vscdb") + "#", r.name))
+    n = 0
+    seen = set()
+    for prefix, name in prefixes:
+        if prefix in seen:  # the first root to claim a folder keeps it
+            continue
+        seen.add(prefix)
+        n += con.execute(
+            "update sessions set root = ? where root is null and substr(source, 1, ?) = ?",
+            (name, len(prefix), prefix),
+        ).rowcount
+    con.commit()
+    return n
+
+
+def reparse_shared_cursor(con: sqlite3.Connection, found: list) -> None:
+    """With more than one Cursor build, which one owns a transcript is read from the build's own
+    database when the chat is parsed. Chats indexed before roots existed are unattributed, and a file
+    that has not changed is never parsed again, so forget that it was seen and let this run read it."""
+    if sum(1 for r in found if r.agent == "cursor" and r.data) < 2:
+        return
+    con.execute(
+        "delete from seen where session_id in (select id from sessions where root is null"
+        " and source like '%/agent-transcripts/%')"
+    )
 
 
 def upsert(con: sqlite3.Connection, s: Session) -> None:
