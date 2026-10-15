@@ -147,7 +147,10 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub:
             con.execute("insert or replace into forgotten_chats values (?, ?)", (sid, time.time()))
     con.commit()
     if scrub and deleted:
-        scrub_db(con)
+        try:
+            scrub_db(con)
+        except sqlite3.OperationalError as e:  # a background index run must not fail over this
+            archive.log(f"deleted chats, but could not rewrite the index file ({e}); the words stay in free pages")
     return counts
 
 
