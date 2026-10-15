@@ -511,7 +511,7 @@ def cmd_status(a) -> None:
     s = status.status(store.parse_since(a.since))
     if n := codex.unreadable():
         s["unreadable"] = {"agent": "codex", "chats": n, "fix": compressed.fix_hint()}
-    rows = autopilot.report(accounts=False)
+    rows = autopilot.report(deep=False)
     if a.json:
         print(json.dumps({**s, "roots": rows}, indent=2))
         return
@@ -569,29 +569,60 @@ def cmd_model(a) -> None:
 
 
 def cmd_install(a) -> None:
+    from . import autopilot, roots
     from .integrations import agents
 
     parts = tuple(a.only.split(",")) if a.only else agents.COMPONENTS
     dry_run = getattr(a, "dry_run", False)
-    lines = agents.install(parts, dry_run) if a.cmd == "install" else agents.uninstall(parts)
-    if a.cmd == "install" and (not a.only or "retention" in parts):  # --only mcp,skill,hook never asks
-        # --only retention is a yes; otherwise ask whoever is at the terminal
-        ask = (lambda _: True) if "retention" in parts else None if dry_run else agents.ask_terminal
-        lines += agents.retention(ask, dry_run)
+    found = roots.discover()
+    if a.cmd == "uninstall":
+        found = found + autopilot.recorded_roots(found)  # a root that is no longer found may still hold recall
+    chosen = None
+    if a.root:
+        names = {n.strip() for x in a.root for n in x.split(",") if n.strip()}
+        chosen = [r for r in found if r.name in names]
+        unknown = names - {r.name for r in chosen}
+        if unknown:
+            sys.exit(f"no such root: {', '.join(sorted(unknown))} (see `recall doctor` for their names)")
+    if a.cmd == "install":
+        for r in chosen or ():  # asking for a root by name is saying yes to it again
+            if not roots.option(r, "connect") and not dry_run:
+                roots.set_option(r, "connect", True)
+        lines = agents.install(parts, dry_run, chosen or found)
+        if not dry_run and "hook" in parts and autopilot.consented() is not None:
+            autopilot.grant_consent(extend=True)  # the person installed these hooks themselves
+        if not a.only or "retention" in parts:  # --only mcp,skill,hook never asks
+            # --only retention is a yes; otherwise ask whoever is at the terminal
+            ask = (lambda _: True) if "retention" in parts else None if dry_run else agents.ask_terminal
+            lines += agents.retention(ask, dry_run)
+    else:
+        try:
+            # off first, and the lock held: a run in progress ends, and nothing connects again meanwhile
+            with autopilot.stopped(turn_off=chosen is None):
+                for r in chosen or ():  # recall stays out of a root the person disconnected
+                    roots.set_option(r, "connect", False)
+                lines = agents.uninstall(parts, chosen or found, whole=chosen is None)
+                if chosen is None and set(parts) == set(agents.COMPONENTS):
+                    autopilot.forget()
+                elif chosen:
+                    autopilot.forget([r.name for r in chosen])
+        except TimeoutError as e:
+            sys.exit(str(e))
     print("\n".join(("[dry run] " if dry_run else "") + line for line in lines))
     if a.cmd == "install" and not dry_run:
         print("Restart open Codex and Cursor windows to pick up the changes.")
-    if a.cmd == "uninstall":
-        from . import autopilot
-
-        if autopilot.enabled():  # or the next session start would connect everything again
-            autopilot.set_enabled(False)
-            print("Autopilot is off.")
+    if a.cmd == "uninstall" and chosen is None:
+        print("Autopilot is off.")
+    elif a.cmd == "uninstall":
+        print(f"recall will not connect {', '.join(r.name for r in chosen)} again (`recall install --root` does).")
 
 
 def cmd_autopilot(a) -> None:
     from . import autopilot
 
+    if a.action in ("on", "off") and a.dry_run:
+        print(f"[dry run] autopilot {a.action}: nothing changed")
+        return
     if a.action in ("on", "off"):
         autopilot.set_enabled(a.action == "on")
         print(
@@ -619,26 +650,46 @@ def cmd_doctor(a) -> None:
     home = os.path.expanduser("~")
     for r in rows:
         where = r["path"].replace(home, "~") + (f"  [{r['data'].replace(home, '~')}]" if r["data"] else "")
-        if not r["exists"]:
-            state = "waiting for first launch (not created yet)"
+        state = autopilot.state_of(r)
+        if state == "waiting":
+            text = "waiting for first launch (the agent has not used this folder yet; recall writes nothing there)"
+        elif state == "skipped":
+            text = f"skipped by you ([roots.{r['root']}] connect = false)"
+        elif r["agent"] == "cursor" and not r["has_cursor_config"]:
+            text = "no ~/.cursor folder yet (Cursor makes it when it first uses MCP or hooks)"
         else:
             have = [
                 ("MCP", r["parts"].get("mcp")),
                 ("hooks", r["parts"].get("hook")),
                 ("skill", r["parts"].get("skill")),
             ]
-            state = (
+            text = (
                 "connected" if r["connected"] else "NOT connected: missing " + ", ".join(n for n, ok in have if not ok)
             )
-            if r["needs_trust"]:
-                state += " (trust the hooks once with /hooks in Codex)"
+            if state == "trust":
+                text = "hooks written, trust pending: trust them once with /hooks in Codex"
+            elif state == "approval":
+                text += ", approval pending: Cursor asks once per project before it loads a new MCP server"
+            elif r["approval"]:
+                text += f", approved in {r['approval']['approved']} of {r['approval']['projects']} Cursor projects"
         seen = f"{r['chats']:,} chats, last indexed {_ago(r['indexed_at'])}" if "chats" in r else "not indexed yet"
-        print(f"{r['root']:15} {where}\n{'':15} {state}; {seen}" + (f"; {r['account']}" if r["account"] else ""))
+        if not r["index"]:
+            seen = f"not indexed ([roots.{r['root']}] index = false)"
+        elif not r["mine"] and r["exists"]:
+            seen += f"; not mined (mine = true in [roots.{r['root']}] turns its chats into memory)"
+        print(f"{r['root']:15} {where}\n{'':15} {text}; {seen}" + (f"; {r['account']}" if r["account"] else ""))
     on = autopilot.enabled()
     print(
         f"\nautopilot: {'on' if on else 'off'}"
         + ("" if on else " (`recall autopilot on` connects new folders by itself)")
     )
+    if on and autopilot.consented() is None:
+        print(
+            "  no yes is recorded for hooks, so autopilot repairs the MCP server and skill only: `recall autopilot on`"
+        )
+    new = sorted({k for r in rows for k in r["new_hooks"]})
+    if new:
+        print(f"  new hooks available ({', '.join(new)}): run `recall install` to add them")
     for line in autopilot.recent():
         print(f"  {line}")
 
@@ -943,6 +994,11 @@ def _parser() -> argparse.ArgumentParser:
     for name, help_text in (("install", "connect recall to your agents"), ("uninstall", "disconnect them")):
         sp = command(name, cmd_install, help_text)
         sp.add_argument("--only", help="comma-separated subset of: mcp,skill,hook (install: also retention)")
+        sp.add_argument(
+            "--root",
+            action="append",
+            help="only this root (see `recall doctor`); uninstall keeps autopilot out of it, install lets it back in",
+        )
         if name == "install":
             sp.add_argument("--dry-run", action="store_true")
     sp = command("autopilot", cmd_autopilot, "connect new agent folders by itself (on, off, or run the check now)")
