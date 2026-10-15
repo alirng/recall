@@ -315,29 +315,19 @@ def open_elsewhere(path: str, ctx: Context = None) -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
-def message_chat(to: str, text: str, me: str, ctx: Context = None) -> str:
+def message_chat(to: str, text: str, token: str, ctx: Context = None) -> str:
     """Send a short message to another coding-agent chat (Claude Code, Codex, Cursor, …) that
     recall told you about, to agree who changes a shared file first or that you are working on
-    different parts. `to` and `me` are the chat ids from recall's note. The other chat reads it
-    on its next edit, at the end of its turn, or when its user next writes."""
+    different parts. `to` is that chat's id and `token` the token from recall's note; you can
+    only message chats recall introduced you to. The other chat reads it on its next edit, at
+    the end of its turn, or when its user next writes. Under 600 characters."""
     from . import mail, status
     from .chats.store import parse_since
 
     def run():
-        since = parse_since("12h")
-        sender, recipient = status.chat(me, since), status.chat(to, since)
-        if not sender:
-            return f"recall knows no recent chat {me!r}: use the chat id recall gave you as `me`."
-        mail.post(
-            to,
-            me,
-            sender.title if sender else me,
-            text,
-            to_source=recipient.source if recipient else None,
-            sender_source=sender.source if sender else None,
-        )
-        who = f'"{recipient.title}"' if recipient else to
-        return f"Sent to {who}. Its answer, if any, reaches you the same way."
+        who = mail.holder(token)
+        me = status.chat(who, parse_since("12h")) if who else None
+        return mail.send(token, to, text, me.title if me else None)[1]
 
     return _logged(ctx, "message_chat", {"to": to}, run)
 

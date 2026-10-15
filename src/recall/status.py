@@ -857,6 +857,11 @@ def check_edit(
     default = (_git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ["main"])[0]
     my_title = mine.title if mine else f"{AGENTS.get(agent, agent)} chat"
     mine_where = checkouts[top].branch or "detached"
+    token = mail.grant(
+        me,
+        source,
+        {s.id: {"source": s.source, "title": s.title, "file": rel, "repo": _repo_name(repo)} for _, s, *_ in fresh},
+    )
     out = []
     for sit, s, c, shared, same, spans in fresh:
         line = "recall: " + _about(s, c, sit, shared, same)
@@ -865,8 +870,13 @@ def check_edit(
         if lines:
             line += f" Yours: {_span(lines)}."
         out.append(
-            line + " recall has told that chat too; to message it, use the recall MCP server's message_chat tool"
-            f' with me="{me}" and to="{s.id}".'
+            line
+            + " recall has told that chat too"
+            + (
+                f'; to message it, use the recall MCP server\'s message_chat tool with token="{token}" and to="{s.id}".'
+                if token
+                else "."
+            )
         )
         # The other side hears it from recall, so the two can agree who goes first.
         about = f"{_span(lines)} of " if lines else ""
@@ -913,6 +923,8 @@ def on_edit(event):
         return None
     action = min((d.action for d in found), key=ACTIONS.index)
     message = "\n".join(dict.fromkeys(d.message for d in found))
-    usage.record("hook", "check_edit", {"files": event.files, "action": action}, message, client=event.agent)
+    # The usage log keeps the message, not the reply token in it.
+    logged = re.sub(r'token="\w+"', 'token="…"', message)
+    usage.record("hook", "check_edit", {"files": event.files, "action": action}, logged, client=event.agent)
     refuse = action in ("worktree", "ask")
     return Reply(context=None if refuse else message, deny=message if refuse else None, notice=found[0].notice)
