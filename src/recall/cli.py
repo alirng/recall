@@ -453,7 +453,8 @@ def cmd_install(a) -> None:
     parts = tuple(a.only.split(",")) if a.only else agents.COMPONENTS
     dry_run = getattr(a, "dry_run", False)
     lines = agents.install(parts, dry_run) if a.cmd == "install" else agents.uninstall(parts)
-    if a.cmd == "install":  # --only retention is a yes; otherwise ask whoever is at the terminal
+    if a.cmd == "install" and (not a.only or "retention" in parts):  # --only mcp,skill,hook never asks
+        # --only retention is a yes; otherwise ask whoever is at the terminal
         ask = (lambda _: True) if "retention" in parts else None if dry_run else agents.ask_terminal
         lines += agents.retention(ask, dry_run)
     print("\n".join(("[dry run] " if dry_run else "") + line for line in lines))
