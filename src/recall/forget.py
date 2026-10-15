@@ -55,42 +55,108 @@ def describe(con: sqlite3.Connection, ids: list[str]) -> list[dict]:
     return out
 
 
-def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True) -> dict:
+def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub: bool = True) -> dict:
     """Delete these chats everywhere recall holds them. remember: also put them on the
-    forgotten list, so they are never indexed again. Returns counts per place."""
-    have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
+    forgotten list, so they are never indexed again. scrub: then rewrite the database file
+    so the deleted words are not left in its free pages (see scrub_db). Returns counts per place."""
+    have = _tables(con)
     counts = dict.fromkeys(("chats", "messages", "vectors", "archive_copies", "candidates", "cached_answers"), 0)
     texts = {sid: _text(con, sid, have) for sid in ids}
     counts["cached_answers"] = _purge_cache(con, ids, texts, have)
+    deleted = counts["cached_answers"]
 
     def delete(table: str, column: str, sid: str) -> int:
         if table not in have:
             return 0
         return con.execute(f"delete from {table} where {column} = ?", (sid,)).rowcount
 
-    # Every table that keys rows by chat: vectors, extractions, candidates, and tables other
-    # features add later (such as explorations), without forget having to name them.
-    keyed = [
-        name
-        for name in sorted(have)
-        if not name.startswith(("sqlite_", "messages_fts", "sessions_fts"))
-        and any(c[1] == "session_id" for c in con.execute(f"pragma table_info('{name}')"))
-    ]
     named = {"messages": "messages", "vectors": "vectors", "candidates": "candidates"}
     for sid in ids:
-        counts["chats"] += delete("sessions", "id", sid)
-        delete("sessions_fts", "id", sid)
-        counts["archive_copies"] += delete("chat_archive", "id", sid)
-        for table in keyed:
+        counts["chats"] += (n := delete("sessions", "id", sid))
+        deleted += n + delete("sessions_fts", "id", sid)
+        counts["archive_copies"] += (n := delete("chat_archive", "id", sid))
+        deleted += n
+        for table in _keyed(con, have):
             if table == "seen" and not remember:
                 continue  # an unchanged file stays read, so retention does not re-read it each run
             n = delete(table, "session_id", sid)  # messages: a trigger updates messages_fts
+            deleted += n
             if table in named:
                 counts[named[table]] += n
         if remember:
             con.execute("insert or replace into forgotten_chats values (?, ?)", (sid, time.time()))
     con.commit()
+    if scrub and deleted:
+        scrub_db(con)
     return counts
+
+
+def scrub_db(con: sqlite3.Connection) -> bool:
+    """Make deleted words unrecoverable from the database file. SQLite deletes by marking
+    space free: the words stay in free pages, in the full-text index (which records a
+    deletion beside the text) and in the write-ahead log, until the file is rewritten.
+    Returns False when another process has the index open, so the log could not be emptied
+    and the old pages stay in it until that process closes."""
+    con.commit()
+    have = _tables(con)
+    for fts in ("messages_fts", "sessions_fts"):
+        if fts in have:
+            con.execute(f"insert into {fts}({fts}) values ('optimize')")  # merge away the deletion records
+    con.commit()
+    con.execute("vacuum")
+    wait = con.execute("pragma busy_timeout").fetchone()[0]
+    con.execute("pragma busy_timeout = 5000")  # do not stall on a reader that holds a long transaction
+    try:
+        return not con.execute("pragma wal_checkpoint(TRUNCATE)").fetchone()[0]
+    finally:
+        con.execute(f"pragma busy_timeout = {wait}")
+
+
+def leftovers(con: sqlite3.Connection) -> list[str]:
+    """Forgotten chats that something still holds. An older release does not know the
+    forgotten list: it reads their files back into the chat tables, embeds them and lets
+    memory extraction cite them. (`seen` is skipped: it always names the file just read.)"""
+    if not forgotten(con):
+        return []
+    have = _tables(con)
+    found = set()
+    for table, column in [(t, "session_id") for t in _keyed(con, have) if t != "seen"] + [
+        ("sessions", "id"),
+        ("chat_archive", "id"),
+    ]:
+        if table in have:
+            found |= {
+                r[0]
+                for r in con.execute(
+                    f"select distinct {column} from {table} where {column} in (select id from forgotten_chats)"
+                )
+            }
+    return sorted(found)
+
+
+def sweep(con: sqlite3.Connection) -> int:
+    """Delete what leftovers finds again, keeping the chats on the forgotten list. Returns
+    how many chats."""
+    ids = leftovers(con)
+    if ids:
+        purge(con, ids, remember=False)
+        archive.log(f"removed {len(ids)} forgotten chat(s) that an older release had read back")
+    return len(ids)
+
+
+def _tables(con: sqlite3.Connection) -> set[str]:
+    return {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
+
+
+def _keyed(con: sqlite3.Connection, have: set[str]) -> list[str]:
+    """Every table that keys rows by chat: vectors, extractions, candidates, and tables other
+    features add later (such as explorations), without forget having to name them."""
+    return [
+        name
+        for name in sorted(have)
+        if not name.startswith(("sqlite_", "messages_fts", "sessions_fts"))
+        and any(c[1] == "session_id" for c in con.execute(f"pragma table_info('{name}')"))
+    ]
 
 
 def forgotten(con: sqlite3.Connection) -> set[str]:

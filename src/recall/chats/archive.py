@@ -209,7 +209,8 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
     """Copy chats from the index tables into the archive, before a rebuild drops them.
     parser: the version that built them. A chat is copied when the archive has no copy of
     it, or when the index saw it more recently than any copy (a release without the archive
-    indexed it since), keeping what that copy had marked Kept."""
+    indexed it since), keeping what that copy had marked Kept. Forgotten chats are never
+    copied: an older release, which does not know the forgotten list, may have read one back."""
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
     if not {"sessions", "messages"} <= have:
         return 0
@@ -221,7 +222,8 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
     rows = con.execute(
         """select s.* from sessions s
            left join (select id, max(coalesce(updated_at, 0)) last from chat_archive group by id) a on a.id = s.id
-           where a.id is null or a.last < coalesce(s.updated_at, 0)"""
+           where (a.id is null or a.last < coalesce(s.updated_at, 0))
+             and s.id not in (select id from forgotten_chats)"""
     ).fetchall()
     for r in rows:
         msgs = [
