@@ -77,6 +77,7 @@ def pack(s: Session, messages: list[Message]) -> bytes:
         "started_at": s.started_at,
         "updated_at": s.updated_at,
         "origin": s.origin,
+        "root": s.root,
         "messages": [[m.role, m.ts, m.text, 1] if isinstance(m, Kept) else [m.role, m.ts, m.text] for m in messages],
     }
     return zlib.compress(json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode())
@@ -267,6 +268,8 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
             started_at=r["started_at"],
             updated_at=r["updated_at"],
             origin=r["origin"],
+            # an index from before roots has no such column (`in` on a Row looks at values, not names)
+            root=r["root"] if "root" in r.keys() else None,  # noqa: SIM118
         )
         mine = con.execute("select data from chat_archive where id = ? and source = ?", (s.id, s.source)).fetchone()
         if mine:
