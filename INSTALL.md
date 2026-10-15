@@ -45,6 +45,14 @@ Claude Code and Codex; each config file is backed up beside itself first), sched
 nightly memory run for 03:30, and starts the first memory run and the embedding in the
 background. Indexing a large history can take a few minutes.
 
+`recall setup --yes` leaves one thing off: **autopilot**, which keeps recall connected on its own
+(a second account's folder, an update that wipes the hooks). It writes recall's MCP server, hooks
+and skill into each agent's config folder whenever one is missing, and the hooks can add context
+to the person's prompts and continue an agent's turn. Do not pass `--autopilot` or run
+`recall autopilot on` unless the person has said yes to exactly that; ask them first, and say
+that `recall autopilot off` and `recall uninstall` stop it. Without it, `recall install` connects
+every agent folder it finds, once.
+
 ## 4. Check it worked
 
 ```bash
