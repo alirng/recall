@@ -82,9 +82,10 @@ changes from run to run, so you can repeat only those. Two habits keep the compa
     any harm from misleading ones. It is not a pure priming control. MemoryCode has only 77
     distinct convention tokens in 360 histories, so without the filter donors often held this
     history's conventions or contradicted them.
-  - The skips fall on the long histories, which have the most conventions, so a filtered run
-    leans short: hook minus placebo from it says nothing about long histories, where the
-    notes' gain is. On the 40 test histories, 21 keep a donor: 19 of 25 short, 2 of 15 long.
+  - The skips fall mostly on the long histories (13 of 19), which have the most conventions,
+    so a filtered run leans short: hook minus placebo from it says nothing about long
+    histories, where the notes' gain is. On the 40 test histories, 21 keep a donor: 19 of 25
+    short, 2 of 15 long.
   - Donors repeat (those 21 rows come from 12 donors), so the rows are correlated and the
     bootstrap interval over them is optimistic.
 
