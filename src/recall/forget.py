@@ -16,6 +16,9 @@ What it does not remove:
   the ones whose evidence is found in the chat's text and the ones that repeat one of its
   candidate memories word for word.
 * The usage log, which holds the words asked and chat ids, never chat text.
+* The mailbox between chats (mail.py), a short-lived record of notes about files two chats
+  share. A note can quote up to 140 characters of what a chat was asked, and names its title.
+  It is pruned by age as the file grows, not by forget.
 * Anything a model provider already received when the chat was read for memory.
 """
 

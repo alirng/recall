@@ -21,7 +21,8 @@ All notable changes to recall are listed here. The format follows
   again; the database file is rewritten afterwards so the words are not left in free pages.
   Cached model answers go only when they quote the chat (a paraphrase is not recognised).
   Notes that cite the chats are listed, not edited, with the git command that removes them
-  from history. The usage log (queries and chat ids) is left alone.
+  from history. The usage log (queries and chat ids) and the short-lived notes between chats
+  about a shared file, which can quote 140 characters of what a chat was asked, are left alone.
 - **Retention.** `recall install` and `recall setup` offer to raise Claude Code's
   `cleanupPeriodDays` when it is under a year (backed up first; uninstall never lowers it).
   When an organisation sets that period through managed settings, recall forgets Claude Code
