@@ -17,24 +17,75 @@ import sqlite3
 import time
 
 from . import paths
-from .chats import archive, store
+from .chats import archive
+
+
+class Ambiguous(LookupError):
+    """A name that fits several chats: forget deletes, so it does not pick one."""
 
 
 def resolve(con: sqlite3.Connection, chat_id: str | None = None, project: str | None = None) -> list[str]:
-    """Chat ids for one chat (any id form search shows) or for every chat in a project."""
+    """Chat ids for one chat (a full id, or the part after "agent:", or the start of one) or
+    for every chat in a project. Chats that only the archive still has count too. Raises
+    Ambiguous when a name fits more than one chat."""
     ids = []
-    if chat_id:
-        sid = store.resolve_id(con, chat_id)
-        if not sid and archive.enabled(con):  # archived but not in the index
-            row = con.execute(
-                "select id from chat_archive where id = ? or id like ?", (chat_id, f"%:{chat_id}")
-            ).fetchone()
-            sid = row[0] if row else None
-        ids += [sid] if sid else []
+    if chat_id and chat_id.strip():
+        ids += _named(con, chat_id.strip())
     if project:
-        fsql, fargs = store._filters(con, None, project, None)
-        ids += [r[0] for r in con.execute(f"select s.id from sessions s where 1 = 1 {fsql}", fargs)]
+        ids += _in_project(con, project)
     return list(dict.fromkeys(ids))
+
+
+def _known(con: sqlite3.Connection) -> list[str]:
+    ids = {r[0] for r in con.execute("select id from sessions")}
+    if archive.enabled(con):
+        ids |= {r[0] for r in con.execute("select distinct id from chat_archive")}
+    return sorted(ids)
+
+
+def _named(con: sqlite3.Connection, name: str) -> list[str]:
+    """Compared as plain text, not as a LIKE pattern, so "%" or "_" in a name match nothing
+    they should not."""
+    known = _known(con)
+    found = [i for i in known if i == name or i.endswith(":" + name)]
+    if not found:  # the start of an id, or of the part after "agent:"
+        found = [i for i in known if (i.startswith(name) if ":" in name else i.split(":", 1)[-1].startswith(name))]
+    if len(found) > 1:
+        shown = ", ".join(found[:5]) + (" …" if len(found) > 5 else "")
+        raise Ambiguous(f"{name!r} fits {len(found)} chats ({shown}): give more of the id")
+    return found
+
+
+def _in_project(con: sqlite3.Connection, project: str) -> list[str]:
+    """Chats of a project, matched as search matches them: by projects.yaml when the name is
+    one of its projects, else by the folder or title containing the name. Chats that are only
+    in the archive are matched from their stored copy."""
+    from . import projects
+    from .chats.projects import resolve as folder_project
+
+    rows = [dict(r) for r in con.execute("select id, project_key, project, title, first_prompt from sessions")]
+    indexed = {r["id"] for r in rows}
+    if archive.enabled(con):
+        for sid in (r[0] for r in con.execute("select distinct id from chat_archive")):
+            if sid in indexed:
+                continue
+            s = archive.unpack(archive.copies(con, sid)[-1]["data"])
+            home = folder_project(s.project)
+            first = next((m.text for m in s.messages if m.role == "user"), "")[:500]
+            rows.append(
+                {
+                    "id": sid,
+                    "project_key": home.key if home else None,
+                    "project": s.project,
+                    "title": s.title or first[:80].replace("\n", " "),
+                    "first_prompt": first,
+                }
+            )
+    found = projects.find(project)
+    if found:
+        return [sid for sid, (pid, _) in projects.assign(rows, projects.load()).items() if pid == found.id]
+    needle = project.lower()
+    return [r["id"] for r in rows if needle in (r["project"] or "").lower() or needle in (r["title"] or "").lower()]
 
 
 def describe(con: sqlite3.Connection, ids: list[str]) -> list[dict]:
@@ -43,11 +94,12 @@ def describe(con: sqlite3.Connection, ids: list[str]) -> list[dict]:
     for sid in ids:
         s = con.execute("select title, agent, source, n_messages from sessions where id = ?", (sid,)).fetchone()
         copies = archive.copies(con, sid) if archive.enabled(con) else []
+        held = archive.unpack(copies[-1]["data"]) if copies and not s else None  # only the archive has it
         out.append(
             {
                 "chat_id": sid,
-                "title": s["title"] if s else None,
-                "messages": s["n_messages"] if s else 0,
+                "title": s["title"] if s else held and (held.title or next((m.text[:80] for m in held.messages), None)),
+                "messages": s["n_messages"] if s else len(held.messages) if held else 0,
                 "archive_copies": len(copies),
                 "files": sorted({c["source"] for c in copies} | ({s["source"]} if s else set())),
             }

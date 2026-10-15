@@ -416,9 +416,10 @@ def recent(con, agent=None, project=None, since=None, limit=15, until=None) -> l
 
 
 def resolve_id(con, chat_id: str) -> str | None:
+    prefix = chat_id.split(":", 1)[-1].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     rows = con.execute(
-        "select id from sessions where id = ? or native_id = ? or native_id like ? limit 2",
-        (chat_id, chat_id, chat_id.split(":", 1)[-1] + "%"),
+        "select id from sessions where id = ? or native_id = ? or native_id like ? escape '\\' limit 2",
+        (chat_id, chat_id, prefix),
     ).fetchall()
     exact = [r["id"] for r in rows if r["id"] == chat_id or r["id"].endswith(":" + chat_id)]
     if exact:

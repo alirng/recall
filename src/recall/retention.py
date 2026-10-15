@@ -21,6 +21,7 @@ Codex and Cursor have no setting that deletes chats on a schedule, managed or no
 history.max_bytes trims only history.jsonl, the prompt history recall does not read).
 """
 
+import contextlib
 import getpass
 import glob
 import json
@@ -31,11 +32,6 @@ import time
 CLAUDE_USER_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 CLAUDE_REMOTE_CACHE = os.path.expanduser("~/.claude/remote-settings.json")
 CLAUDE_SYSTEM_DIRS = ("/Library/Application Support/ClaudeCode", "/etc/claude-code")
-# A machine-wide profile, and one scoped to this user (macOS puts it in a folder per user).
-CLAUDE_MDM_PLISTS = (
-    "/Library/Managed Preferences/com.anthropic.claudecode.plist",
-    f"/Library/Managed Preferences/{getpass.getuser()}/com.anthropic.claudecode.plist",
-)
 CLAUDE_DEFAULT_DAYS = 30
 
 
@@ -88,9 +84,17 @@ def apply(con) -> int:
     return total
 
 
+def claude_mdm_plists() -> list[str]:
+    """A machine-wide profile, and one scoped to this user (macOS puts it in a folder per user)."""
+    plists = ["/Library/Managed Preferences/com.anthropic.claudecode.plist"]
+    with contextlib.suppress(KeyError, OSError):  # no user name for this uid (a container, a stripped account)
+        plists.append(f"/Library/Managed Preferences/{getpass.getuser()}/com.anthropic.claudecode.plist")
+    return plists
+
+
 def _managed_sources():
     yield CLAUDE_REMOTE_CACHE, _read_json(CLAUDE_REMOTE_CACHE)
-    for path in CLAUDE_MDM_PLISTS:
+    for path in claude_mdm_plists():
         try:
             with open(path, "rb") as f:
                 yield path, plistlib.load(f)

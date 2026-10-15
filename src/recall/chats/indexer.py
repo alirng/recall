@@ -1,5 +1,6 @@
 """Keep the chat index in step with each agent's history, re-reading only what changed."""
 
+import contextlib
 import fcntl
 import os
 import subprocess
@@ -40,6 +41,22 @@ def index(con, only=None, force=False, max_age=None, log=None) -> dict:
 
             embeddings.refresh(con, background=max_age is not None, log=log)
         return result  # the lock is released when the file closes
+
+
+@contextlib.contextmanager
+def exclusive(waiting: str | None = None):
+    """Hold the index lock, waiting for an index run in progress to finish. For commands that
+    change what the index holds (recall forget), so they do not interleave with a run that
+    is reading the same chats. waiting: what to say if there is a wait."""
+    os.makedirs(paths.HOME, exist_ok=True)
+    with open(os.path.join(paths.HOME, "index.lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if waiting:
+                print(waiting, file=sys.stderr)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def index_paths(con, files: list[str], wait: float = 5.0) -> int:
