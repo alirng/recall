@@ -104,8 +104,14 @@ def cmd_forget(a) -> None:
             sys.exit("pass --yes to forget without asking")
         if not input(f"Forget {len(ids)} chat(s) everywhere recall holds them? (y/n) ").strip().lower().startswith("y"):
             return
-    counts = forget.purge(con, ids)
+    counts = forget.purge(con, ids, scrub=False)
     print("forgot: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in counts.items()))
+    if not forget.scrub_db(con):
+        print(
+            "another recall process has the index open (an agent's MCP server, likely), so the index's\n"
+            "-wal file still holds the old pages. SQLite clears it when that process closes the index:\n"
+            "quit the agent."
+        )
     files = sorted({f for c in chats for f in c["files"]})
     if files:
         print(f"recall will not read them again; the agents' own files are untouched ({len(files)}):")
