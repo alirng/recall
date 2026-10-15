@@ -418,7 +418,7 @@ cursor-nightly  ~/.cursor  [~/Library/Application Support/Cursor Nightly/User]
 Say yes once to *keep recall connected automatically* (`recall setup` asks; or
 `recall autopilot on`) and recall installs its MCP server, hooks and skill in any folder that
 is new or has lost them, using the code `recall install` runs, with each file backed up first
-(`<file>.recall-backup`). It checks every night and, when a session starts in Claude Code or
+(`<file>.recall-backup`). After an upgrade it also adds any hook the new release installs. It checks every night and, when a session starts in Claude Code or
 Codex, looks for gaps and fixes them in the background. A folder your shell names but that
 does not exist yet is left alone until the first launch creates it. With autopilot off
 nothing changes, and `recall uninstall` turns it off. Chat history is only ever read. Cursor's
