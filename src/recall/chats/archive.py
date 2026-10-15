@@ -33,7 +33,7 @@ import zlib
 from dataclasses import dataclass
 
 from .. import paths
-from .transcript import Message, Session, clean_user_text
+from .transcript import Message, Session, clean_user_text, drop_compaction_summary
 
 SCHEMA = """
 create table if not exists chat_archive (
@@ -89,13 +89,16 @@ def unpack(blob: bytes) -> Session:
 
 def messages(row: sqlite3.Row, parser: str) -> list[Message]:
     """A copy's messages. A copy made by another parser version has its user turns put
-    through today's cleaning, so a cleaning change reaches chats whose files are gone too."""
+    through today's cleaning, so a cleaning change reaches chats whose files are gone too.
+    That includes compaction summaries, which older parsers indexed as the person's words.
+    Another session's message or a task notification cannot be told from the person's text
+    once the file is gone, and stays."""
     msgs = unpack(row["data"]).messages
     if row["parser"] == parser:
         return msgs
     out = []
     for m in msgs:
-        text = clean_user_text(m.text) if m.role == "user" else m.text
+        text = drop_compaction_summary(clean_user_text(m.text)) if m.role == "user" else m.text
         if text.strip():
             out.append(type(m)(m.role, text, m.ts))
     return out

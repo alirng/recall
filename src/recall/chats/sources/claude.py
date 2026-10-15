@@ -66,9 +66,14 @@ def load(path: str) -> Session | None:
     return s
 
 
+# What Claude Code says a user-turn entry is when the person did not write it: another
+# session's message, a background task's result. Other kinds are taken as the person's, so
+# a kind this list does not know yet loses nothing.
+NOT_THE_PERSON = ("peer", "task-notification")
+
+
 def _by_person(entry: dict) -> bool:
-    """Claude Code tags what it delivers in the user's turn with an origin: "peer" for
-    another session's message, "task-notification" for a background task. Only "human",
-    or no origin at all, is the person."""
+    """False for what Claude Code delivers in the user's turn on someone else's behalf,
+    tagged with an origin."""
     origin = entry.get("origin")
-    return not isinstance(origin, dict) or origin.get("kind") in (None, "human")
+    return not (isinstance(origin, dict) and origin.get("kind") in NOT_THE_PERSON)

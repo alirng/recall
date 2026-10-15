@@ -80,6 +80,23 @@ def clean_user_text(text: str) -> str:
     return text
 
 
+# The summary Claude Code puts in a user turn when a session is continued after compaction.
+# Parsers before chat schema 3 indexed it as the person's words; the current Claude parser
+# skips the entry by its isCompactSummary flag, which a copy in the archive no longer has.
+_COMPACTION_SUMMARY = re.compile(
+    r"(?:\A|\n\n)(?:<artifact-content-authored-by-others/>\n[^\n]*\n)?"
+    r"This session is being continued from a previous conversation that ran out of context\."
+)
+
+
+def drop_compaction_summary(text: str) -> str:
+    """A user turn without the compaction summary in it. Older parsers merged consecutive
+    user turns, so the summary can open the turn or follow the person's words; whatever
+    follows it in the same turn is dropped with it, as there is no telling where it ends."""
+    found = _COMPACTION_SUMMARY.search(text)
+    return text[: found.start()].strip() if found else text
+
+
 def clean_assistant_text(text: str) -> str:
     return _EXTERNAL_TOOL.sub("", text).strip()
 
