@@ -119,7 +119,6 @@ All notable changes to recall are listed here. The format follows
   person's words: Claude Code marks those only in the chat file, so once the file is gone
   they cannot be told from the person's text and stay.
 - A chat file deleted while recall was listing files no longer stops the index run.
-<<<<<<< HEAD
 - **Codex chats Codex had compressed.** Codex turns rollouts a week old into `.jsonl.zst`, and
   recall only looked for `.jsonl`, so most of a long Codex history was neither indexed nor
   readable again. recall now reads both forms: through Python 3.14's built-in zstd, the
