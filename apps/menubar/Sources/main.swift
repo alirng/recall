@@ -28,6 +28,13 @@ struct Side: Decodable {
     let base: String?
 }
 
+struct Letter: Decodable {
+    let at: Double
+    let from: String
+    let to: String
+    let text: String
+}
+
 struct Overlap: Decodable {
     let repo: String
     let file: String
@@ -35,15 +42,29 @@ struct Overlap: Decodable {
     let same_checkout: Bool
     let branches: [String]
     let conflict: Bool?
+    let situation: String?
     let level: String
     let sides: [Side]
     let notes: [String: String]
+    let messages: [Letter]?
+    let key: String?
+    let sent_at: Double?  // when the person pressed Resolve; gone once the overlap clears
+
+    var id: String { key ?? repo + "/" + file }
 }
 
 let agentNames = ["claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"]
 
 func ago(_ s: Int) -> String {
     s < 60 ? "just now" : s < 3600 ? "\(s / 60)m ago" : s < 86400 ? "\(s / 3600)h ago" : "\(s / 86400)d ago"
+}
+
+// A branch keeps its start and end ("claude/affec…6418d5"); those are what tell it apart.
+func short(_ branch: String?, _ n: Int = 18) -> String {
+    guard let b = branch else { return "" }
+    if b.count <= n { return b }
+    let head = (n - 1) / 2
+    return String(b.prefix(head)) + "…" + String(b.suffix(n - 1 - head))
 }
 
 func clip(_ s: String, _ n: Int) -> String {
@@ -150,15 +171,30 @@ func markImage(size: CGFloat, level: Level = .none) -> NSImage {
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
+    let store = Store()
+    lazy var panel = PanelController(store: store, actions: Actions(
+        refresh: { [weak self] in self?.refresh() },
+        resolve: { [weak self] o in self?.resolve(o) },
+        showChanges: { [weak self] o, titles in self?.showChanges(o, titles: titles) },
+        quit: { NSApp.terminate(nil) }
+    ))
     var status: Status?
     var error: String?
     var updated: Date?
     var running = false
+    // The panel by default; `defaults write com.rererecall.menubar ui menu` for the plain menu.
+    let usesMenu = UserDefaults.standard.string(forKey: "ui") == "menu"
 
     func applicationDidFinishLaunching(_ note: Notification) {
-        menu.delegate = self
-        menu.autoenablesItems = false
-        item.menu = menu
+        PaperMono.register()
+        if usesMenu {
+            menu.delegate = self
+            menu.autoenablesItems = false
+            item.menu = menu
+        } else {
+            item.button?.target = self
+            item.button?.action = #selector(togglePanel)
+        }
         rebuild()
         refresh()
         // Opening the menu always refreshes; the timer only keeps the icon honest, so it can be slow.
@@ -166,6 +202,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) { refresh() }
+
+    @objc func togglePanel() {
+        guard let button = item.button else { return }
+        if !panel.isOpen { refresh() }
+        panel.toggle(below: button)
+    }
 
     @objc func refresh() {
         guard !running else { return }
@@ -234,6 +276,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let overlaps = status?.overlaps ?? []
         item.button?.image = markImage(size: 18, level: Level(rawValue: status?.level ?? "") ?? .none)
         item.button?.toolTip = overlaps.isEmpty ? "recall" : "recall: \(overlaps.count) files open in more than one chat"
+        store.status = status
+        store.error = error
+        store.updated = updated
+        if panel.isOpen { panel.place() }
+        guard usesMenu else { return }
         menu.removeAllItems()
         if let error { menu.addItem(note(error)) }
         guard let status else {
@@ -273,12 +320,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var branches: [String] = []
             for s in chats where !branches.contains(s.branch ?? "?") { branches.append(s.branch ?? "?") }
             let row = NSMenuItem(title: repo, action: nil, keyEquivalent: "")
-            row.attributedTitle = line(repo, "\(chats.count) live · \(branches.joined(separator: ", "))")
+            row.attributedTitle = line(repo, "\(chats.count) live · \(branches.map { short($0) }.joined(separator: ", "))")
             let sub = NSMenu()
             sub.autoenablesItems = false
             for s in chats {
                 let r = NSMenuItem(title: s.title, action: nil, keyEquivalent: "")
-                r.attributedTitle = line(clip(s.title, 48), [agentNames[s.agent] ?? s.agent, s.branch ?? "", ago(s.age_seconds)].filter { !$0.isEmpty }.joined(separator: " · "))
+                r.attributedTitle = line(clip(s.title, 48), [agentNames[s.agent] ?? s.agent, short(s.branch), ago(s.age_seconds)].filter { !$0.isEmpty }.joined(separator: " · "))
                 sub.addItem(r)
             }
             row.submenu = sub
@@ -290,9 +337,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func overlapRow(_ o: Overlap, _ byId: [String: Session]) -> NSMenuItem {
         let name = (o.file as NSString).lastPathComponent
         let chats = o.sessions.count == 2 ? "two" : "\(o.sessions.count)"
-        let verdict = o.conflict.map { $0 ? "will conflict" : "merges clean" } ?? "is open in \(chats) chats"
+        let open = o.situation == "apart" ? "is open in \(chats) chats, on different lines" : "is open in \(chats) chats"
+        let verdict = o.conflict.map { $0 ? "will conflict" : "merges clean" } ?? open
         let row = NSMenuItem(title: name, action: nil, keyEquivalent: "")
-        let where_ = o.same_checkout ? "same working copy" : o.branches.joined(separator: " ↔ ")
+        let where_ = o.same_checkout ? "same working copy" : o.branches.map { short($0, 14) }.joined(separator: " ↔ ")
         row.attributedTitle = line("\(name) \(verdict)", "\(o.repo) · \(where_)")
         row.submenu = overlapMenu(o, byId)
         return row
@@ -304,20 +352,34 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sub.addItem(note(o.file))
         for id in o.sessions {
             guard let s = byId[id] else { continue }
-            let who = [agentNames[s.agent] ?? s.agent, s.branch ?? "", ago(s.age_seconds)].filter { !$0.isEmpty }
+            let who = [agentNames[s.agent] ?? s.agent, short(s.branch), ago(s.age_seconds)].filter { !$0.isEmpty }
             let r = NSMenuItem(title: s.title, action: nil, keyEquivalent: "")
             r.attributedTitle = line(clip(s.title, 48), who.joined(separator: " · "))
             r.isEnabled = false
             sub.addItem(r)
         }
+        // What the agents have said to each other about it.
+        if let letters = o.messages, !letters.isEmpty {
+            sub.addItem(.separator())
+            sub.addItem(.sectionHeader(title: "Between the chats"))
+            let now = Date().timeIntervalSince1970
+            for m in letters.suffix(6) {
+                let who = "\(clip(byId[m.from]?.title ?? m.from, 22)) → \(clip(byId[m.to]?.title ?? m.to, 22))"
+                let r = NSMenuItem(title: m.text, action: nil, keyEquivalent: "")
+                r.attributedTitle = line(clip(m.text, 64), "\(who) · \(ago(Int(now - m.at)))")
+                r.toolTip = m.text
+                sub.addItem(r)
+            }
+        }
         sub.addItem(.separator())
-        for id in o.sessions {
-            guard let s = byId[id], let text = o.notes[id], !text.isEmpty else { continue }
-            let copy = NSMenuItem(title: "Copy Note for “\(clip(s.title, 32))”", action: #selector(copyText(_:)), keyEquivalent: "")
-            copy.target = self
-            copy.representedObject = text
-            copy.toolTip = "Paste into that chat so its agent knows about the other one"
-            sub.addItem(copy)
+        if let at = o.sent_at {
+            sub.addItem(note("Sent \(ago(Int(Date().timeIntervalSince1970 - at)))"))
+        } else {
+            let resolve = NSMenuItem(title: "Resolve", action: #selector(resolveItem(_:)), keyEquivalent: "")
+            resolve.target = self
+            resolve.representedObject = ResolveRequest(overlap: o)
+            resolve.toolTip = "Message every chat here to agree who goes first, at their next turn"
+            sub.addItem(resolve)
         }
         let show = NSMenuItem(title: o.same_checkout ? "Show Changes" : "Show Both Changes", action: #selector(showChanges(_:)), keyEquivalent: "")
         show.target = self
@@ -341,10 +403,29 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Actions
 
-    @objc func copyText(_ sender: NSMenuItem) {
-        guard let text = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+    final class ResolveRequest: NSObject {
+        let overlap: Overlap
+        init(overlap: Overlap) { self.overlap = overlap }
+    }
+
+    @objc func resolveItem(_ sender: NSMenuItem) {
+        if let req = sender.representedObject as? ResolveRequest { resolve(req.overlap) }
+    }
+
+    /// Resolve: `recall resolve` messages every chat in the overlap; each reads it at its next
+    /// edit, turn end or prompt. The row shows Sending… until the refresh brings back sent_at.
+    func resolve(_ o: Overlap) {
+        var command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
+        if let at = command.lastIndex(of: "status") { command.removeSubrange(at...) }
+        command += ["resolve", "--repo", o.repo, "--file", o.file, "--json"]
+        store.sending.insert(o.id)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = Self.run(command)
+            DispatchQueue.main.async {
+                self.store.sending.remove(o.id)
+                self.refresh()
+            }
+        }
     }
 
     final class ChangesRequest: NSObject {
@@ -357,13 +438,16 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // edits included, in one file opened in Cursor (or whatever opens .diff files).
     @objc func showChanges(_ sender: NSMenuItem) {
         guard let req = sender.representedObject as? ChangesRequest else { return }
-        let o = req.overlap
+        showChanges(req.overlap, titles: req.titles)
+    }
+
+    func showChanges(_ o: Overlap, titles: [String: String]) {
         DispatchQueue.global(qos: .userInitiated).async {
             var text = ""
             var done = Set<String>()
             for side in o.sides where !done.contains(side.checkout) {
                 done.insert(side.checkout)
-                let who = o.sides.filter { $0.checkout == side.checkout }.map { "“\(req.titles[$0.session] ?? $0.session)”" }
+                let who = o.sides.filter { $0.checkout == side.checkout }.map { "“\(titles[$0.session] ?? $0.session)”" }
                 text += "# \(o.file) on \(side.branch ?? "detached") (\(side.checkout))\n# changed by \(who.joined(separator: " and "))\n\n"
                 let diff = Self.run(["/usr/bin/git", "-C", side.checkout, "diff", side.base ?? "HEAD", "--", o.file])
                 if case .success(let data) = diff, let s = String(data: data, encoding: .utf8), !s.isEmpty {
@@ -394,11 +478,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
+    // The menu is as wide as its widest row, so every row has a length cap.
     func line(_ main: String, _ meta: String) -> NSAttributedString {
         let font = NSFont.menuFont(ofSize: 0)
-        let out = NSMutableAttributedString(string: main, attributes: [.font: font])
+        let out = NSMutableAttributedString(string: clip(main, 48), attributes: [.font: font])
         if !meta.isEmpty {
-            out.append(NSAttributedString(string: "   " + meta, attributes: [
+            out.append(NSAttributedString(string: "   " + clip(meta, 42), attributes: [
                 .font: NSFont.systemFont(ofSize: font.pointSize - 2),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
@@ -434,6 +519,19 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-mark"
     }
     let rep = NSBitmapImageRep(data: sheet.tiffRepresentation!)!
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
+    exit(0)
+}
+
+// `Recall --render-panel out.png [demo]` draws the panel in dark and light, with live data or
+// the demo, to judge it without opening the menu bar.
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--render-panel" {
+    var status: Status?
+    if CommandLine.arguments.count > 3, CommandLine.arguments[3] == "demo" {
+        status = try? JSONDecoder().decode(Status.self, from: Data(demoStatus.utf8))
+    } else if case .success(let s) = App.fetch() {
+        status = s
+    }
+    MainActor.assumeIsolated { renderPanel(to: CommandLine.arguments[2], status: status) }
     exit(0)
 }
 

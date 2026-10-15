@@ -48,7 +48,7 @@ import shlex
 import sys
 from dataclasses import dataclass, field
 
-from ..status import patch_files
+from ..status import content_lines, edit_lines, patch_files, patch_hunks
 
 EDIT_TOOLS = {
     "claude": "Edit|Write|MultiEdit|NotebookEdit",
@@ -61,14 +61,26 @@ EDIT_TOOLS = {
 HANDLERS: dict[str, list[str]] = {
     "session_start": ["recall.memory.context:on_session_start"],
     "compact": ["recall.memory.context:on_session_start"],
-    "edit": ["recall.status:on_edit"],
+    "edit": ["recall.status:on_edit", "recall.mail:on_edit"],
+    "prompt": ["recall.mail:on_turn"],
+    "stop": ["recall.mail:on_turn"],
 }
 
-# The entries `recall install` writes: (event, matcher) per agent, all answered by one command.
-INSTALL: dict[str, list[tuple[str, str | None]]] = {
-    "claude": [("SessionStart", None), ("PreToolUse", EDIT_TOOLS["claude"])],
-    "codex": [("SessionStart", None), ("PreToolUse", EDIT_TOOLS["codex"])],
-    "cursor": [("preToolUse", EDIT_TOOLS["cursor"]), ("postToolUse", EDIT_TOOLS["cursor"])],
+# The entries `recall install` writes: (event, matcher) per agent, all answered by one command,
+# with an optional third element of settings for that entry.
+INSTALL: dict[str, list[tuple]] = {
+    "claude": [
+        ("SessionStart", None),
+        ("PreToolUse", EDIT_TOOLS["claude"]),
+        ("UserPromptSubmit", None),
+        ("Stop", None),
+    ],
+    "codex": [("SessionStart", None), ("PreToolUse", EDIT_TOOLS["codex"]), ("UserPromptSubmit", None), ("Stop", None)],
+    "cursor": [
+        ("preToolUse", EDIT_TOOLS["cursor"]),
+        ("postToolUse", EDIT_TOOLS["cursor"]),
+        ("stop", None, {"loop_limit": 3}),  # a follow-up at most three times in a row
+    ],
     "gemini": [("BeforeTool", EDIT_TOOLS["gemini"]), ("AfterTool", EDIT_TOOLS["gemini"])],
 }
 
@@ -93,7 +105,26 @@ class Event:
     subagent: str | None = None  # subagent_start/_stop: the subagent's type
     report: str | None = None  # subagent_stop: what the subagent handed back
     source: str | None = None  # session_start: startup, resume, clear or compact
+    olds: list[str] = field(default_factory=list)  # edit: the text it replaces, when it says
+    news: list[str] = field(default_factory=list)
+    content: str | None = None  # edit: the whole new file, for a write
     raw: dict = field(default_factory=dict)
+
+    def lines(self, path: str) -> list[list[int]] | None:
+        """The lines an edit changes in `path`, when it is the only file and they can be told:
+        from the replaced text, the patch's hunks, or the whole new file against the old."""
+        if self.kind != "edit" or len(self.files) != 1:
+            return None
+        full = path if os.path.isabs(path) or not self.cwd else os.path.join(self.cwd, path)
+        if self.content is not None:
+            return content_lines(full, self.content)
+        return edit_lines(full, self.olds, self.news) if self.olds else None
+
+
+def _replaced(args: dict, old: str, new: str) -> tuple[list[str], list[str]]:
+    edits = args.get("edits") if isinstance(args.get("edits"), list) else [args]
+    pairs = [(e.get(old), e.get(new) or "") for e in edits if isinstance(e, dict) and isinstance(e.get(old), str)]
+    return [o for o, _ in pairs], [n for _, n in pairs]
 
 
 @dataclass
@@ -218,17 +249,28 @@ def parse(agent: str, raw: dict) -> Event | None:
     elif agent == "claude":
         target = args.get("file_path") or args.get("notebook_path")
         e.kind, e.files = "edit", [target] if target else []
+        e.olds, e.news = _replaced(args, "old_string", "new_string")
+        e.content = args.get("content") if isinstance(args.get("content"), str) else None
     elif agent == "codex":
-        e.kind, e.files = "edit", patch_files(str(args.get("command") or args.get("input") or ""), cwd)
+        patch = str(args.get("command") or args.get("input") or "")
+        e.kind, e.files = "edit", patch_files(patch, cwd)
+        e.olds, e.news = patch_hunks(patch)
     else:
         # These can refuse only before an edit and add a note only after it.
         if agent == "opencode":
             args = raw.get("args") or {}
             files = patch_files(str(args.get("patchText") or ""), cwd)
             files += [args["filePath"]] if args.get("filePath") else []
+            e.olds, e.news = (
+                patch_hunks(str(args.get("patchText") or ""))
+                if args.get("patchText")
+                else _replaced(args, "oldString", "newString")
+            )
         else:
             target = args.get("file_path") or args.get("path") or args.get("target_file")
             files = [target] if target else []
+            e.olds, e.news = _replaced(args, "old_string", "new_string")
+        e.content = next((args[k] for k in ("content", "contents") if isinstance(args.get(k), str)), None)
         after = name.lower().startswith(("post", "after"))
         e.kind, e.files, e.acts = "edit", files, ("tell",) if after else ("worktree", "ask")
     if e.kind == "edit":

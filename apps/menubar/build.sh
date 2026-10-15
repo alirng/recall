@@ -8,8 +8,12 @@ uv="$(command -v uv)"
 app=build/Recall.app
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
-swiftc -O -o "$app/Contents/MacOS/Recall" Sources/main.swift -framework AppKit
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+swiftc -O -o "$app/Contents/MacOS/Recall" Sources/*.swift -framework AppKit -framework SwiftUI
+# Paper Mono, the site's typeface (SIL OFL): the woff2 the site serves, as a TTF the app loads.
+uvx --quiet --with brotli --from fonttools fonttools ttLib.woff2 decompress \
+  -o "$app/Contents/Resources/PaperMono.ttf" Resources/PaperMono-wght.woff2
+cp Resources/OFL.txt "$app/Contents/Resources/PaperMono-OFL.txt"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

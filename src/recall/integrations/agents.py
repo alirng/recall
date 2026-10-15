@@ -164,9 +164,9 @@ def _entries(agent: str, cmd: str) -> list[tuple[str, dict]]:
     """recall's entries for one agent, from hooks.INSTALL: every one runs `recall hook`."""
     command = f"{cmd} hook --agent {agent}"
     out = []
-    for event, matcher in edit_hooks.INSTALL[agent]:
+    for event, matcher, *extras in edit_hooks.INSTALL[agent]:
         if agent == "cursor":  # Cursor lists commands directly under each event
-            entry = {"command": command, "timeout": 10}
+            entry = {"command": command, "timeout": 10, **(extras[0] if extras else {})}
         elif agent == "gemini":  # Gemini CLI wants a name, and its timeouts are in milliseconds
             entry = {"hooks": [{"type": "command", "name": "recall", "command": command, "timeout": 10000}]}
         else:

@@ -331,6 +331,18 @@ def cmd_status(a) -> None:
         print(f"  {repo:14} {', '.join(dict.fromkeys(x['branch'] or '?' for x in xs))}")
 
 
+def cmd_resolve(a) -> None:
+    from . import mail
+
+    out = mail.resolve(a.repo, a.file, store.parse_since(a.since))
+    if a.json:
+        print(json.dumps(out))
+    elif out["sent"]:
+        print(f"Sent a note to {out['sent']} chats; each reads it at its next edit, turn end or prompt.")
+    else:
+        print(f"Nothing sent: {out['reason']}.")
+
+
 # --- setup and integrations ---------------------------------------------------
 
 
@@ -562,6 +574,11 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--hook", action="store_true", help="old hook entry; same as `recall hook`")
     sp.add_argument("--agent", default="claude", help="--hook: which agent (claude, codex, cursor, …)")
+    sp = command("resolve", cmd_resolve, "message every chat in an overlap to agree who goes first")
+    sp.add_argument("--repo", required=True)
+    sp.add_argument("--file", required=True, help="the file, relative to the repo, as recall status shows it")
+    sp.add_argument("--since", default="12h")
+    sp.add_argument("--json", action="store_true")
     sp = command("usage", cmd_usage, "how recall itself gets used, from its local log")
     sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
     sp.add_argument("--json", action="store_true")
