@@ -16,7 +16,6 @@ commit; the transcripts hold chat text and stay in the run folder.
   recall eval links [--split train|test] [--limit 60] [--judge MODEL] [--workers 2]
 """
 
-import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import commits, paths
 from . import evals_harness as h
 from .chats import store
+from .chats.sources import compressed
 
 AGENTS = ("claude", "codex", "cursor")
 DIFF_CHARS, CHAT_CHARS = 7000, 7000
@@ -144,7 +144,7 @@ def _chat_text(con, sid: str, files: list[str], at: float) -> str:
         f"{store.fmt_time(r['updated_at'])}. The commit was made {store.fmt_time(at)}.\n"
     )
     reader = commits.READERS.get(r["agent"])
-    if not reader or not r["source"] or not os.path.exists(r["source"]):
+    if not reader or not r["source"] or not compressed.resolve(r["source"]):
         return head + "(transcript no longer on disk)"
     work = reader(r["source"])
     out, last_ask = [head], None
