@@ -92,20 +92,31 @@ def _workspace_folders() -> dict[str, str]:
     return out
 
 
-@cache
-def composer_folder(cid: str, depth: int = 0) -> str | None:
+def composer_folder(cid: str) -> str | None:
     """The folder a Cursor chat ran in. The workspace's own list misses most chats, so then: the
     folder its transcript sits under (a subagent's under its parent's), the folder the chat
     records itself, and for a subagent or side chat that has neither, its parent's, up a chain
     of nested subagents. A transcript folder that no longer exists is the last resort."""
+    return _real_folder(cid) or _transcript_slugs().get(cid)
+
+
+@cache
+def _real_folder(cid: str, depth: int = 0) -> str | None:
     if cid in _workspace_folders():
         return _workspace_folders()[cid]
     slug = _transcript_slugs().get(cid)
     recorded, parent = _brief(cid)
     found = (slug and slug_to_path(slug)) or recorded
     if not found and parent and depth < 8:
-        found = composer_folder(parent, depth + 1)
-    return found or slug
+        found = _real_folder(parent, depth + 1)  # a parent's dead slug must not stop the climb
+    return found
+
+
+def _fresh() -> None:
+    """Forget what earlier runs learned about folders: the MCP server indexes in-process, so
+    workspaces, transcripts and chats added since must be seen."""
+    for cached in (_workspace_folders, _transcript_slugs, _real_folder):
+        cached.cache_clear()
 
 
 def _brief(cid: str) -> tuple[str | None, str | None]:
@@ -138,7 +149,7 @@ def _spawned(header: dict) -> bool:
     """A helper chat an agent spawned (explore and the like), not a person typing. A side
     chat is also recorded as a subagent, but the person types in it."""
     info = header.get("subagentInfo") or {}
-    return bool(info) and info.get("subagentTypeName") != "side-chat" and not header.get("sideChatSeedTurnCount")
+    return bool(info) and info.get("subagentTypeName") != "side-chat" and not info.get("sideChatSeedTurnCount")
 
 
 def detect() -> int | None:
@@ -159,6 +170,7 @@ def _transcript_paths():
 
 
 def transcript_items():
+    _fresh()
     for path in _transcript_paths():
         try:
             st = os.stat(path)
@@ -171,7 +183,7 @@ def load_transcript(path: str) -> Session | None:
     cid = os.path.basename(path)[:-6]
     slug = path[len(PROJECTS) + 1 :].split(os.sep)[0]
     s = Session("cursor", cid, path)
-    s.project = composer_folder(cid) or slug
+    s.project = composer_folder(cid) or slug_to_path(slug) or slug
     header = _kv(f"composerData:{cid}") or {}
     s.title = header.get("name")
     if _spawned(header):
@@ -191,6 +203,7 @@ def load_transcript(path: str) -> Session | None:
 
 
 def legacy_items():
+    _fresh()
     con = _db()
     if con is None:
         return
