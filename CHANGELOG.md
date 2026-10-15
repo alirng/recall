@@ -193,16 +193,18 @@ All notable changes to recall are listed here. The format follows
   Docker Hub and Google OAuth client secrets, private keys cut off before their END line) went
   into the index as written. Each is now redacted, and so are session titles and a key that
   straddled the cut at 20,000 characters. A key pasted again further down the same chat, with
-  no word beside it, goes too, in the lines kept for failed tool calls as well (they use these
-  rules, plus the command rules that were written for them, now in the same file and covered
-  by the same version hash). A hash, UUID or commit id is still left alone unless a word like
-  "api key" sits next to it, and so is a path (`SSH_KEY=~/.ssh/id_ed25519`). Text recall
+  no word beside it, goes too, in the chat's opening prompt and in the lines kept for failed
+  tool calls as well (they use these rules, plus the command rules that were written for them,
+  now in the same file and covered by the same version hash). A hash, UUID or commit id is
+  still left alone unless a word like "api key" sits next to it, and so is a path
+  (`SSH_KEY=~/.ssh/id_ed25519`). Text recall
   cannot rebuild from your agents' files (extracted candidates, cached model answers, error
   messages, failed tool calls, exploration reports, archived chats) is rewritten with the
   current rules at the start of an index run (`chats/scrub.py`), once per version of the rules
-  (a hash of them) and again after every rebuild; a restored archive copy is redacted again as it is read. Your
-  notes are not rewritten: the same run names the notes, and the entries of
-  `.recall/notes.json`, that the rules match, on stderr and in `logs/redact.log`. The chat
+  (a hash of them) and again after every rebuild; a restored archive copy, and the failed tool
+  calls it carries, are redacted again as they are read. Your notes are not rewritten: the same
+  run names the notes, and the entries of `.recall/notes.json`, that the rules match, on stderr
+  and in `logs/redact.log`. The chat
   index rebuilds itself once (chat schema 7).
 
 ## [0.3.0] - 2026-10-13
