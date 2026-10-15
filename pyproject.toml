@@ -2,7 +2,7 @@
 name = "recall-agents"
 version = "0.3.0"
 description = "One searchable memory of your Claude Code, Codex and Cursor chats, exposed to every agent over MCP."
-readme = "README.md"
+dynamic = ["readme"]
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -35,8 +35,28 @@ zstd = ["zstandard>=0.23; python_version < '3.14'"]
 recall = "recall.cli:main"
 
 [build-system]
-requires = ["hatchling>=1.27"]  # PEP 639 license metadata
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24"]  # PEP 639 license metadata; PyPI readme links
 build-backend = "hatchling.build"
+
+# PyPI cannot resolve the README's relative links and images, so the published description
+# points them at GitHub instead.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\((?!https?://|#|mailto:)([^)\s]+)\)'
+replacement = '](https://github.com/alirng/recall/blob/main/\1)'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(src|srcset)="(?!https?://)([^"]+)"'
+replacement = '\1="https://raw.githubusercontent.com/alirng/recall/main/\2"'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = 'href="(?!https?://|#|mailto:)([^"]+)"'
+replacement = 'href="https://github.com/alirng/recall/blob/main/\1"'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/recall"]
