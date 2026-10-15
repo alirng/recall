@@ -15,7 +15,7 @@ DEFAULTS = {
     "usage_log": True,  # recall logs its own use to usage.jsonl; see usage.py
     # When an agent edits a file another chat has open changes to: ask, worktree, tell or off
     # per situation. These are the recommended rules; see status.py and `recall setup`.
-    "coordination": {"same_copy": "ask", "conflict": "tell", "overlap": "off"},
+    "coordination": {"same_copy": "ask", "conflict": "tell", "apart": "tell", "overlap": "off"},
 }
 
 

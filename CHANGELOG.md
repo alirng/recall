@@ -14,6 +14,22 @@ All notable changes to recall are listed here. The format follows
 
 ### Added
 
+- **Chats that talk to each other.** When an edit hook finds another chat with open changes
+  to the same file, recall messages that chat too: who is about to change which lines, and
+  what they were asked. Agents answer through the new `message_chat` MCP tool to agree who
+  goes first. Claude Code, Codex and Cursor read their messages on their next edit and at the
+  end of a turn, where they keep going to answer (Cursor as a follow-up message; at most three
+  times an hour per sender); Claude Code and Codex also on the next prompt. `recall install`
+  adds the hooks. The menu bar shows the conversation under the file.
+- **Different lines are safe.** The hooks record which lines each edit changes (Claude
+  Code's replaced text, a Codex patch's hunks, the difference Cursor's whole-file write makes),
+  and two live chats changing different lines of one working copy get the new `apart`
+  situation (default `tell`) instead of `same_copy` (default `ask`).
+- **Resolve.** In the menu bar, Resolve on a shared file messages every chat involved to
+  agree who goes first, queued for each chat's next edit, turn end or prompt, never
+  interrupting it (`recall resolve --repo … --file …` from the command line). The row shows
+  when it was sent and clears once the overlap does; pressing it again sends nothing more.
+
 - **What your agents are doing now.** `recall status` lists the Claude Code, Codex and Cursor
   chats active in the last 12 hours, the branch each is on and the files it edited, and flags a
   file that two chats in one repo both have open changes to: whether the two would conflict if
