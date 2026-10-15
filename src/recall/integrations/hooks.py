@@ -119,6 +119,15 @@ INSTALL: dict[str, list[tuple]] = {
     "gemini": [("BeforeTool", EDIT_TOOLS["gemini"]), ("AfterTool", EDIT_TOOLS["gemini"])],
 }
 
+
+def consent_key(agent: str, event: str, matcher: str | None = None) -> str:
+    """The unit a person consents to when autopilot may install hooks: an agent's hook event
+    ("claude:Stop"), with the exploration subagent hooks (EXPLORE), which rewrite a subagent's prompt,
+    as their own ("claude:PreToolUse:explore") beside the edit hook on the same event. It does not
+    depend on matcher text, so widening a matcher later does not turn a consented hook into a new one."""
+    return f"{agent}:{event}" + (":explore" if (event, matcher) in EXPLORE.get(agent, []) else "")
+
+
 DELIVERS = ("worktree", "ask", "tell")
 
 

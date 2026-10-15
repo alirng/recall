@@ -104,23 +104,31 @@ def offer_retention(ask: Prompter) -> list[str]:
 
 
 def _autopilot(ask: Prompter, cfg: dict, answer: bool | None) -> None:
-    """Ask once whether recall may keep every agent folder connected on its own. A yes has to come
-    from a person (or --autopilot): --yes and a missing terminal leave it unset."""
+    """Ask once whether recall may keep every agent folder connected on its own. It writes into other
+    tools' config folders, so the default is no, and a yes has to come from a person (or --autopilot):
+    --yes and a missing terminal leave it unset."""
+    from . import autopilot
+
     current = cfg["autopilot"].get("connect")
     if answer is None and current is not None:
         print(f"   Autopilot is {'on' if current else 'off'}; `recall autopilot on|off` changes it.")
         return
     if answer is None and ask.auto:
-        print("   Autopilot (new agent folders connected automatically) is off: `recall autopilot on` turns it on.")
+        print("   Autopilot (recall keeps itself connected to every agent folder) is off: `recall autopilot on`.")
         return
     if answer is None:
         answer = ask.yes(
-            "   Keep recall connected automatically? A new Claude Code, Codex or Cursor folder, a second "
-            "account, or an update that wipes recall's hooks gets fixed in the background. Every file is "
-            "backed up first and chat history is never touched"
+            "   Let recall connect itself automatically? It would write its MCP server, hooks and skill files "
+            "into each agent's config folder (Claude Code, Codex, Cursor, and any second account or install "
+            "it finds), and put them back when an update removes them. The hooks can add context to your "
+            "prompts and continue a turn. Every file is backed up first and chat history is never touched; "
+            "`recall autopilot off` stops it",
+            default=False,
         )
     cfg["autopilot"] = {**cfg["autopilot"], "connect": answer}
     config.save(cfg)
+    if answer:
+        autopilot.grant_consent()  # the yes covers the hook kinds this release installs, and no others
 
 
 def choose_model(ask: Prompter, current: dict | None = None) -> dict:
