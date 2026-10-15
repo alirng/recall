@@ -30,6 +30,7 @@ import threading
 from datetime import datetime
 
 from . import paths
+from .llm.agent_cli import CLAUDE_MODELS
 
 RUNS = os.path.expanduser(os.environ.get("RECALL_EVAL_RUNS", "~/.agents/recall-eval/runs"))
 CASES = os.path.expanduser(os.environ.get("RECALL_EVAL_CASES", "~/.agents/recall/evals/v2"))
@@ -245,7 +246,7 @@ def same_model(a: str, b: str) -> bool:
 
     def norm(s: str) -> str:
         s = s.split(":", 1)[-1].lower()
-        return {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5", "haiku": "claude-haiku-5-5"}.get(s, s)
+        return CLAUDE_MODELS.get(s, s)
 
     return norm(a) == norm(b)
 
