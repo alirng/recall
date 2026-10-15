@@ -79,7 +79,6 @@ class Checkout:
     base: str | None  # where it forked from the default branch
     open: set[str]  # uncommitted, or changed on this branch and not yet in the default branch
     dirty: int
-    snapshot: str | None = None  # a commit of the checkout as it stands, uncommitted edits included
 
 
 # --- reading the agents' history ------------------------------------------------
@@ -260,11 +259,18 @@ def _logged(since: float) -> dict[str, dict]:
 # Paths with non-ASCII letters come back as written, not octal-escaped, so every git listing
 # names a file the same way the agents do.
 _GIT = ("-c", "core.quotePath=false")
+# recall only reads repos, while agents may be committing in them: no index refresh or lock
+# (GIT_OPTIONAL_LOCKS), no network, no prompts, nothing inherited from a git hook's GIT_* env.
+_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | {
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+}
 
 
 def _git(folder: str, *args: str) -> list[str] | None:
     try:
-        r = subprocess.run(["git", *_GIT, "-C", folder, *args], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", *_GIT, "-C", folder, *args], capture_output=True, text=True, timeout=5, env=_ENV)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout.splitlines() if r.returncode == 0 else None
@@ -343,33 +349,27 @@ def _committed_since(c: Checkout, rel: str, when: float | None) -> bool:
     return bool(out and out[0].isdigit() and int(out[0]) >= when)
 
 
-def _conflicts(a: Checkout, b: Checkout) -> set[str]:
-    """Files that would conflict if two checkouts were merged as they stand now. `git stash
-    create` only writes a commit object: the working tree, index and stash list are untouched."""
-    for c in (a, b):
-        if c.snapshot is None:
-            c.snapshot = ((_git(c.top, "stash", "create") or []) + (_git(c.top, "rev-parse", "HEAD") or [""]))[0]
-    try:
-        r = subprocess.run(
-            [
-                "git",
-                *_GIT,
-                "-C",
-                a.top,
-                "merge-tree",
-                "--write-tree",
-                "--name-only",
-                "--no-messages",
-                a.snapshot,
-                b.snapshot,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return set()
-    return set(r.stdout.splitlines()[1:]) if r.returncode == 1 else set()
+def _hunks(top: str, base: str, rel: str) -> list[tuple[float, float]]:
+    """The lines of `rel` in `base` that a checkout's working copy has changed, from
+    `git diff -U0`; an insertion sits between two lines."""
+    out = []
+    for line in _git(top, "diff", "--no-textconv", "--no-ext-diff", "-U0", base, "--", rel) or []:
+        if m := re.match(r"@@ -(\d+)(?:,(\d+))? ", line):
+            start, count = int(m[1]), int(m[2] or 1)
+            out.append((start + 0.5, start + 0.5) if count == 0 else (start, start + count - 1))
+    return out
+
+
+def _conflict(a: Checkout, b: Checkout, rel: str) -> bool:
+    """Whether merging two checkouts as they stand would conflict on `rel`: both changed the
+    same or adjacent lines of it since their common base, the test git's own merge applies.
+    Read-only, unlike git merge-tree and stash create, which write objects into the repo."""
+    heads = [(_git(c.top, "rev-parse", "HEAD") or [None])[0] for c in (a, b)]
+    base = (_git(a.top, "merge-base", *heads) or [None])[0] if None not in heads else None
+    if not base:
+        return False
+    mine, theirs = _hunks(a.top, base, rel), _hunks(b.top, base, rel)
+    return any(x0 <= y1 + 1 and y0 <= x1 + 1 for x0, x1 in mine for y0, y1 in theirs)
 
 
 def _resolve(s: Live, tops: dict[str, str | None]) -> list[tuple[str, str, float | None]]:
@@ -495,7 +495,6 @@ def status(since: float) -> dict:
             c = checkouts[top]
             if f in c.open and not _committed_since(c, f, when):
                 touched.setdefault((c.repo, f), {})[s.id] = top
-    pairs: dict[tuple[str, str], set[str]] = {}
     overlaps = []
     for (repo, f), side in sorted(touched.items(), key=lambda kv: kv[0][1]):
         if len(side) < 2:
@@ -505,10 +504,7 @@ def status(since: float) -> dict:
         live = sum(now - s.updated_at <= LIVE_SECONDS for s in group.values()) >= 2
         conflict = None
         if len(tops) > 1:
-            for a, b in combinations(tops, 2):
-                if (a, b) not in pairs:
-                    pairs[a, b] = _conflicts(checkouts[a], checkouts[b])
-            conflict = any(f in pairs[a, b] for a, b in combinations(tops, 2))
+            conflict = any(_conflict(checkouts[a], checkouts[b], f) for a, b in combinations(tops, 2))
         level = "act" if conflict or (conflict is None and live) else "watch"
         situation = "conflict" if conflict else "same_copy" if conflict is None and live else "overlap"
         overlaps.append(
@@ -593,9 +589,7 @@ def elsewhere(path: str, since: float) -> str:
         ]
         if not mine:
             continue
-        clash: set[str] = set()
-        for t in {t for t, _ in mine} - {top}:
-            clash |= _conflicts(here, checkouts[t])
+        clash = {f for t, f in mine if t != top and _conflict(here, checkouts[t], f)}
         where = "this working copy" if s.checkout == top else f"branch {s.branch or 'detached'}"
         files = ", ".join(sorted({f + (" (would conflict)" if f in clash else "") for _, f in mine}))
         active = _ago(time.time() - s.updated_at)
@@ -671,7 +665,7 @@ def check_edit(
             continue
         if t == top and time.time() - s.updated_at <= LIVE_SECONDS:
             situation = "same_copy"
-        elif t != top and rel in _conflicts(checkouts[top], c):
+        elif t != top and _conflict(checkouts[top], c, rel):
             situation = "conflict"
         else:
             situation = "overlap"
