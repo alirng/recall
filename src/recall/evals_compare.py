@@ -20,13 +20,12 @@ Per metric it reports:
   detectable        the smallest difference these runs would detect 80% of the time: 2.8 x the
                     bootstrap standard error, or the replicate spread's floor where that is
                     larger (noise one run shares across cases, which the bootstrap misses).
-                    The same rule gives the one-arm "vs an identical one" floors. The spread's
-                    floor uses a Student t quantile in place of 1.96, as the spread comes from
-                    few replicates
+                    The same rule gives the one-arm "vs an identical one" floors
   verdict           better or worse when the CI excludes 0 and Δ is beyond the run-to-run
-                    spread of the replicates; else within noise. None under 10 paired cases
-                    ("too few cases"), and "run noise unmeasured" in place of better or worse
-                    when an arm has fewer than 3 full replicates
+                    spread of the replicates (a Student t quantile at the pooled spread's
+                    degrees of freedom, in place of 1.96); else within noise. None under 10
+                    paired cases ("too few cases"), and "run noise unmeasured" in place of
+                    better or worse when an arm has fewer than 3 full replicates
   run-to-run        each replicate's score on the paired cases, the spread per arm, and the
                     differences between replicates of the same arm (what no change looks like)
   repeats needed    how many replicates per arm would make the observed Δ (or --target)
@@ -50,12 +49,11 @@ import sys
 SEED = 7
 RESAMPLES = 2000
 Z80 = 2.8  # 1.96 (two-sided 5%) + 0.84 (80% power)
-Z_POWER = 0.84  # the 80% power part of Z80
 EPS = 1e-9
 MIN_CASES = 10  # fewer paired cases than this give no better/worse verdict
 MIN_REPLICATES = 3  # full replicates an arm needs for its run noise to count as measured
-# Two-sided 95% Student t quantile by degrees of freedom: what 1.96 becomes when a spread is
-# estimated from few replicates.
+# Two-sided 95% Student t quantile by degrees of freedom: what 1.96 becomes when the run-to-run
+# spread is estimated from few replicates.
 # fmt: off
 T95 = dict(
     enumerate(
@@ -451,10 +449,9 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
         full = [r["score"] for r in res["base_replicates"] if r["full"]]
         sd = _sd(full)
         res["run_sd"] = sd
-        mult = t95(len(full) - 1) + Z_POWER if sd is not None else None  # the spread has len(full) - 1 df
 
         def spread_floor(k: int):  # this arm against an identical one, k replicates a side
-            return mult * sd * math.sqrt(2 / k) if sd is not None else None
+            return Z80 * sd * math.sqrt(2 / k) if sd is not None else None
 
         if sd is not None:  # a same-size rerun of this arm against itself
             res["run_floor"] = spread_floor(len(full))
@@ -498,7 +495,7 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
         sd = math.sqrt(sum((k - 1) * s**2 for s, k in sds if s is not None) / dof)
         run_se = sd * math.sqrt(sum(1 / max(k, 1) for _, k in sds))
         res["run_sd_pooled"] = sd
-        res["run_floor"] = (t95(dof) + Z_POWER) * run_se
+        res["run_floor"] = Z80 * run_se
     dec = decompose(a, b, units)
     res["decompose"] = dec
     res["repeats"] = repeats_needed(dec, target if target is not None else res["delta"])
