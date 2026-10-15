@@ -153,7 +153,7 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub:
             if table in named:
                 counts[named[table]] += n
         if remember:
-            con.execute("insert or replace into forgotten_chats values (?, ?)", (sid, time.time()))
+            con.execute("insert or replace into forgotten_chats(id, at) values (?, ?)", (sid, time.time()))
     con.commit()
     if scrub and deleted:
         try:

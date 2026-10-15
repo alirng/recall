@@ -128,10 +128,13 @@ All notable changes to recall are listed here. The format follows
 
 - **A shorter README.** It now covers what recall does, how to install it and the headline
   results; the detail moved into pages under `docs/` (benchmarks, how it works, projects and
-  rules, coordination, commit links, exploration reports, accounts, reference). Figures were rechecked
-  against their runs: the MemoryCode agent result now comes from the runs that load recall's
-  tools as Claude Code does by default, and search times from the dedicated timing run.
+  rules, coordination, commit links, exploration reports, accounts, reference). Figures were
+  rechecked against their runs: the MemoryCode agent result now comes from the runs that load
+  recall's tools as Claude Code does by default, and search times from the dedicated timing run.
 
+- **Archive copies load whatever a later version added to them.** Reading a copy ignores
+  keys and message fields it does not know, so a change that adds a field to the archive can
+  be reverted without breaking every index run.
 - **One hook command.** Every hook recall installs, for every agent, now runs
   `recall hook --agent <agent>`, which hands the event to the features that want it and
   answers in that agent's format. `recall install` replaces the older `context --hook` and
