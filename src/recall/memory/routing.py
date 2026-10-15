@@ -79,8 +79,8 @@ def refile(con, store, notes) -> int:
         if len(found) != 1 or not all(r and r["project_key"] for r in rows):
             continue
         note = store.reread(n)
-        if not note or note.status != "active" or note.scope == "global" or note.project:
-            continue  # changed by hand since the run loaded it
+        if not note or note.status != "active" or note.scope == "global" or note.project or note.edited_by_hand:
+            continue  # changed by hand since the run loaded it, or a hand edit not yet read back
         (note.project, note.project_name), note.scope = found.pop(), "project"
         store.write(note)
         notes[note.id] = note

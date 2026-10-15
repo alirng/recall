@@ -75,7 +75,7 @@ def relink(store: NoteStore, notes: dict[str, Note]) -> int:
     best = compute(notes)
     changed = 0
     for note in notes.values():
-        if note.status != "active":
+        if note.status != "active" or note.edited_by_hand:  # a hand edit waiting to be read back stays as it is
             continue
         note.related = [i for i, _ in best.get(note.id, [])]
         if store.footer(note) != note.footer:
