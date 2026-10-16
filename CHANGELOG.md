@@ -5,6 +5,26 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-16
+
+recall's tools stop failing with `database is locked`. Search results and the chat index are
+unchanged.
+
+### Upgrading
+
+- **Restart the agents that were open when you upgraded.** Their recall MCP server still runs the
+  release it started with, and keeps failing until the agent restarts. `recall status` lists them.
+
+### Fixed
+
+- **recall's tools no longer fail with `database is locked`.** Since 0.4.0, on a machine with more
+  than one Cursor build, every index refresh opened a write that nothing committed, and an agent's
+  recall MCP server kept it open after its first tool call. Its later calls, and other agents' and
+  hooks', waited 30 seconds for the index and failed. In the eval of questions about past work, a
+  third of recall's tool calls failed this way. A refresh with nothing to write now writes nothing,
+  a refresh commits what it wrote, and the chat and note tools close their connection to the index
+  at the end of each call.
+
 ## [0.4.1] - 2026-10-16
 
 The nightly memory run survives an upgrade, and `recall status` says which agents to restart after
@@ -471,7 +491,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/alirng/recall/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/alirng/recall/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/alirng/recall/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/alirng/recall/compare/v0.2.1...v0.3.0
