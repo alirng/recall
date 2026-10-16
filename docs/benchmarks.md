@@ -30,9 +30,9 @@ counts come from the runs' transcripts via
   time, against 32% with search alone, and takes in 41% fewer tokens (both on 0.4.1, the same
   day, three runs each). Rereading the whole history got 80% on long training histories.
 - **No LLM calls to index or to search.** recall indexes on your machine (SQLite, plus an
-  optional local embedding model). On my ~2,800 chats a search took about 15 ms with
-  keywords, or 50 ms with embeddings, including embedding the query (0.3.0, median of 50
-  searches, on a laptop busy with other evals, so an upper bound).
+  optional local embedding model). On my ~2,800 chats a search takes about 11 ms with
+  keywords, or 47 ms with embeddings, including embedding the query (0.4.1, median of 50
+  searches, run twice, on a laptop).
   Only the nightly notes need a language model, and you choose which.
 
 Re-checked for 0.4.1: search is unchanged. Every model-free run on 0.4.1's code gave the same

@@ -1033,6 +1033,22 @@
       "hybrid_hit@5": 0.911,
       "n": 90,
       "note": "0.3.0: 0.922"
+    },
+    "search_latency_my_chats": {
+      "about": "50 known-item queries (the first 50 of recall eval search's sample, seed 7), store.search limit 10, after 5 warm-ups, run twice, on a copy of the eval index (2,798 chats); hybrid includes embedding the query with nomic-embed-text through Ollama. Load average about 2.5. The earlier 15 ms / 50 ms were a 12 October baseline under load 9-11.",
+      "keyword_p50_ms": 10.8,
+      "keyword_p95_ms": [
+        20.1,
+        20.6
+      ],
+      "hybrid_p50_ms": [
+        46.3,
+        47.4
+      ],
+      "hybrid_p95_ms": [
+        57.4,
+        53.3
+      ]
     }
   },
   "notes_on_my_holdout": {
