@@ -22,7 +22,7 @@ Tell the person where their chat text would go for each option, and let them cho
 
 | Option | Value for `--model` | Where chat excerpts go |
 | --- | --- | --- |
-| A local model through Ollama | `local:qwen3:4b` (after `ollama pull qwen3:4b`) | Nowhere: it stays on this machine |
+| A local model through Ollama | `local:qwen3:4b` (after `ollama pull qwen3:4b`) | Nowhere, while Ollama runs on this machine (the default); a `base_url` on another host sends them there |
 | Their Claude plan, through Claude Code | `claude:haiku` | Anthropic, under their plan |
 | Their ChatGPT plan, through Codex | `chatgpt:<model>`, a model their Codex offers (`chatgpt:` alone takes Codex's default) | OpenAI, under their plan |
 | An API key (OpenAI, Anthropic, OpenRouter) | leave `--model` out | Tell them to run `recall model` afterwards. Never ask for, type or store an API key yourself. |

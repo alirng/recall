@@ -137,7 +137,7 @@ else the `zstd` command (`brew install zstd`). With none of them, `recall index`
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall explore [lookup <question> \| backfill] [--cwd DIR]` | earlier exploration reports for this repo, and what a new exploration would get |
 | `recall jit [<prompt>] [--file F] [--error TEXT] [--cwd DIR]` | what the mid-session hooks would hand an agent, and why |
-| `recall install` · `uninstall [--only mcp,skill,hook] [--root NAME]` | connect to agents, in every folder found or one root (every config file is backed up first); install also offers to keep Claude Code chats for ten years (`--only retention`), and `install --repoint` moves hooks that run another recall onto this one |
+| `recall install` · `uninstall [--only mcp,skill,hook] [--root NAME]` | connect to agents, in every folder found or one root (every config file is backed up first); install also offers to keep Claude Code chats for ten years (`--only retention`), and `install --repoint` moves hooks that run another recall onto this one. In Codex, `message_chat` is set to ask before it runs; install adds that to an entry written by an earlier release. [SECURITY.md](../SECURITY.md) lists every file it writes |
 | `recall doctor [--json]` | each agent folder: connected or not, account hint, when last indexed |
 | `recall autopilot [on \| off] [--dry-run]` | keep every agent folder connected by itself; no argument runs the check now |
 | `recall schedule enable \| disable \| status [--at HH:MM]` | the nightly run, capped by `[dream]` in config.toml (120 minutes, 80 model calls) |
@@ -166,11 +166,12 @@ Chats stay searchable as long as you keep recall's index. Claude Code deletes tr
 30 days unless you raise `cleanupPeriodDays`, and Codex compaction has been seen rewriting a
 long session file to a fraction of its size. recall keeps a compressed copy of every chat it has
 indexed (about 16 MB for 2,900 chats), and when a file loses messages it already indexed, it
-keeps them. `recall install` offers to raise Claude Code's period to ten years. When your
-organisation sets that period through managed settings, recall keeps those chats no longer than
-the policy allows. `recall forget <chat id>` (or `--project NAME`) removes a chat from recall's
-index, archive, embeddings, extraction records and exploration reports, and from the cached
-model answers that quote it; it lists the notes that cite the chat but leaves them to you, and
-the usage log keeps only the words you asked and chat ids. The short-lived notes between chats
+keeps them. `recall install` offers to raise Claude Code's period to ten years. recall keeps its
+copy after the agent deletes the file, including when you set a short `cleanupPeriodDays`
+yourself; only an organisation's managed settings limit it, and then recall keeps those chats no
+longer than the policy allows. `recall forget <chat id>` (or `--project NAME`) removes a chat
+from recall's index, archive, embeddings, extraction records and exploration reports, and from
+the cached model answers that quote it; it lists the notes that cite the chat but leaves them to
+you, and the usage log keeps only the words you asked and chat ids. The short-lived notes between chats
 about a shared file (`cache/mail.jsonl`) can quote up to 140 characters of what a chat was
 asked; forget leaves them to age out.

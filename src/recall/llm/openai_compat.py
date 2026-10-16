@@ -23,6 +23,7 @@ from .base import (
     Result,
     SendUnconfirmed,
     http_json,
+    on_this_machine,
     parse_json,
 )
 
@@ -40,7 +41,7 @@ class OpenAICompatible(Provider):
         api_key: str | None = None,
         *,
         provider_id: str | None = None,
-        private: bool = False,
+        local: bool = False,
         price: list | None = None,
     ):
         super().__init__(model)
@@ -48,9 +49,12 @@ class OpenAICompatible(Provider):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.id = provider_id or self.id
-        self.private = private
-        self.destination = "this machine" if private else urlparse(self.base_url).hostname or self.base_url
-        if private:
+        # local: a small model you serve yourself (LM Studio, llama.cpp), whichever machine it runs on.
+        # private: it runs on this one, so prompts stay here.
+        self.local = local
+        self.private = local and on_this_machine(self.base_url)
+        self.destination = "this machine" if self.private else urlparse(self.base_url).hostname or self.base_url
+        if local:
             self.profile = LOCAL_PROFILE
         self._strict_schema = True  # switched off for servers without json_schema support
         # OpenAI's own Batch API; OpenRouter and self-hosted servers have none.
@@ -90,7 +94,7 @@ class OpenAICompatible(Provider):
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "response_format": response_format,
         }
-        if self.private:
+        if self.local:
             # Small local models can loop under constrained decoding; bound the reply.
             body.update(temperature=0, max_tokens=4096)
         return body
