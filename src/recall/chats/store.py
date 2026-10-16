@@ -10,7 +10,7 @@ import sqlite3
 import time
 from datetime import datetime
 
-from .. import paths
+from .. import __version__, paths
 from . import archive, scrub
 from .errors import ToolError, anchor, identity, reclean_errors
 from .projects import resolve
@@ -107,9 +107,17 @@ end;
 """
 
 
+class Outlived(RuntimeError):
+    """This process runs recall code that an upgrade has since replaced on disk."""
+
+
 def connect(path: str = paths.DB) -> sqlite3.Connection:
     """Open the index, creating or rebuilding its tables as needed. ":memory:" gives a
-    throwaway index, as the LongMemEval eval uses."""
+    throwaway index, as the LongMemEval eval uses.
+
+    A process an upgrade has outlived never rebuilds the chat tables: an agent's MCP server keeps the
+    code it started with until the agent restarts, and its rebuild would put the tables back to the old
+    release's schema under the new release's feet (a dream run then reads columns that are gone)."""
     if path != ":memory:":
         os.makedirs(os.path.dirname(path), exist_ok=True)
     con = sqlite3.connect(path, timeout=30)
@@ -119,9 +127,16 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
     durable = path != ":memory:"
     if durable:
         archive.ensure(con)
-    if _schema(con) != CHAT_SCHEMA_VERSION:
+    if schema(con) != CHAT_SCHEMA_VERSION:
+        if durable and (installed := _installed()) != __version__:
+            con.close()
+            now = f"recall {installed} is installed" if installed else "recall is no longer installed"
+            raise Outlived(
+                f"{now}, but this process still runs {__version__}, which it loaded earlier. It leaves the chat"
+                " index alone rather than rebuild it for that release: restart the agent that started it."
+            )
         con.execute("begin immediate")  # one process rebuilds; any other waits, then finds it done
-        built_by = _schema(con)
+        built_by = schema(con)
         if built_by != CHAT_SCHEMA_VERSION:
             if durable and built_by:
                 archive.snapshot(con, built_by)  # nothing the old tables hold is lost with them
@@ -140,9 +155,21 @@ def connect(path: str = paths.DB) -> sqlite3.Connection:
     return con
 
 
-def _schema(con) -> str | None:
+def schema(con) -> str | None:
+    """The chat schema the chat tables were built under."""
     row = con.execute("select v from meta where k='chat_schema'").fetchone()
     return row[0] if row else None
+
+
+def _installed() -> str | None:
+    """The version of the recall code on disk now, read from the file rather than the loaded module;
+    None when the file is gone. A file without the version line is taken to be this process's code."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py"), encoding="utf-8") as f:
+            m = re.search(r'^__version__ = "([^"]+)"', f.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else __version__
 
 
 def add_root_column(con: sqlite3.Connection) -> None:

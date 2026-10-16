@@ -15,6 +15,11 @@ src/auth/session.py will conflict  (harbor · main ↔ new-login)
   harbor         main, new-login
 ```
 
+After an upgrade it also names the agents to restart. An agent's recall MCP server keeps the
+release it started with until the agent restarts, so each server that started before recall was
+last installed shows as `Restart <agent>`, with its pid and start time (and, for Claude Code, the
+chat). `--json` lists them under `outlived`.
+
 The edit hook acts on it as it happens. Before an agent edits a file another chat has open
 changes to, recall applies your rule for the situation, set in `config.toml` (`recall setup`
 offers presets; these are the recommended ones):
