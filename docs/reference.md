@@ -129,7 +129,7 @@ else the `zstd` command (`brew install zstd`). With none of them, `recall index`
 | `recall projects [suggest \| show <name>] [--months N] [--all]` | your projects as lanes; `suggest` drafts projects.yaml |
 | `recall rules [project \| folder] [--write]` | which agent reads which instructions; `--write` closes the gaps |
 | `recall usage [--since 7d]` | how recall itself gets used, from its local log |
-| `recall status [--since 12h] [--json]` | what each agent is working on now, and files two chats both have open changes to |
+| `recall status [--since 12h] [--json]` | what each agent is working on now, files two chats both have open changes to, and agents to restart after an upgrade |
 | `recall why <file>[:line] \| --commit <sha>` | the chats that wrote a file, a line or a commit (local only) |
 | `recall links [--episodes]` | link commits to chats now; `--episodes` (experimental: a judge found only 24% of 21 sampled episodes right) lists failures a later commit fixed |
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |

@@ -513,6 +513,7 @@ def cmd_status(a) -> None:
     s = status.status(store.parse_since(a.since))
     if n := codex.unreadable():
         s["unreadable"] = {"agent": "codex", "chats": n, "fix": compressed.fix_hint()}
+    s["outlived"] = status.outlived()
     rows = autopilot.report(deep=False)
     if a.json:
         print(json.dumps({**s, "roots": rows}, indent=2))
@@ -523,7 +524,16 @@ def cmd_status(a) -> None:
         print(f"{o['file']} {verdict}  ({o['repo']} · {' ↔ '.join(o['branches'])})")
         for sid in o["sessions"]:
             print(f"    {names[sid]}")
-    if not s["overlaps"]:
+    by_agent: dict[str, list] = {}
+    for x in s["outlived"]:
+        by_agent.setdefault(x["agent"], []).append(x)
+    for agent, xs in by_agent.items():
+        print(f"Restart {agent}: its recall server started before recall {xs[-1]['installed']} was installed")
+        for x in xs:
+            chat = names.get(x["chat"], x["chat"]) if x["chat"] else None
+            since = time.strftime("%b %d %H:%M", time.localtime(x["started_at"]))
+            print(f"    pid {x['pid']} · since {since}" + (f" · {chat}" if chat else ""))
+    if not s["overlaps"] and not s["outlived"]:
         print("Nothing needs you.")
     live = [x for x in s["sessions"] if x["live"]]
     print(f"\n{len(live)} live, {len(s['sessions'])} since {a.since}")

@@ -9,6 +9,30 @@ struct Status: Decodable {
     let level: String
     let sessions: [Session]
     let overlaps: [Overlap]
+    let outlived: [Outlived]?  // absent from releases before it
+
+    // One line per agent whose recall server predates the install: restarting the agent fixes it.
+    var restarts: [(agent: String, detail: String)] {
+        var order: [String] = []
+        var servers: [String: [Outlived]] = [:]
+        for o in outlived ?? [] {
+            if servers[o.agent] == nil { order.append(o.agent) }
+            servers[o.agent, default: []].append(o)
+        }
+        return order.map { agent in
+            let xs = servers[agent]!
+            let since = xs.map { ago(Int(Date().timeIntervalSince1970 - $0.started_at)) }.joined(separator: ", ")
+            return (agent, "its recall predates \(xs.last!.installed) · started \(since)")
+        }
+    }
+}
+
+struct Outlived: Decodable {
+    let pid: Int
+    let agent: String
+    let chat: String?
+    let started_at: Double
+    let installed: String
 }
 
 struct Session: Decodable {
@@ -294,7 +318,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // What needs you: files two chats both have open changes to, conflicts first.
         let byId = Dictionary(uniqueKeysWithValues: status.sessions.map { ($0.id, $0) })
         // Conflicts always show; past three rows, the quieter overlaps fold into one.
-        if overlaps.isEmpty { menu.addItem(note("Nothing needs you")) }
+        if overlaps.isEmpty && status.restarts.isEmpty { menu.addItem(note("Nothing needs you")) }
+        for r in status.restarts {
+            let row = note("Restart \(r.agent)")
+            row.attributedTitle = line("Restart \(r.agent)", r.detail)
+            menu.addItem(row)
+        }
         let shown = overlaps.enumerated().filter { $0.offset < 3 || $0.element.level == "act" }.map(\.element)
         for o in shown { menu.addItem(overlapRow(o, byId)) }
         let rest = overlaps.filter { o in !shown.contains { $0.file == o.file && $0.repo == o.repo } }

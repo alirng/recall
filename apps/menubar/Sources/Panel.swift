@@ -200,15 +200,22 @@ struct PanelView: View {
     func needsYou(_ status: Status, _ p: Palette) -> some View {
         let byId = Dictionary(uniqueKeysWithValues: status.sessions.map { ($0.id, $0) })
         VStack(alignment: .leading, spacing: 10) {
+            let count = status.overlaps.count + status.restarts.count
             HStack {
                 Label(text: "Needs you")
                 Spacer()
-                if !status.overlaps.isEmpty { Label(text: "\(status.overlaps.count)") }
+                if count > 0 { Label(text: "\(count)") }
             }
-            if status.overlaps.isEmpty {
+            if count == 0 {
                 Text("Nothing needs you. No two chats have open changes to the same file.")
                     .font(PaperMono.font(12.5, 390, prose: true)).foregroundStyle(p.muted)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(status.restarts, id: \.agent) { r in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Restart \(r.agent)").font(PaperMono.font(12.5, 500)).foregroundStyle(p.ink)
+                    Text(r.detail).font(PaperMono.font(11.5)).foregroundStyle(p.muted)
+                }
             }
             ForEach(status.overlaps.prefix(4), id: \.id) { o in
                 OverlapCard(overlap: o, byId: byId, actions: actions, sending: store.sending.contains(o.id))

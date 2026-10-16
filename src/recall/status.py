@@ -714,6 +714,103 @@ def status(since: float) -> dict:
     }
 
 
+# An agent's MCP server keeps the recall it started with until the agent restarts. A server is
+# found by its script (`<env>/bin/recall serve`; the interpreter in front of it may be one a
+# framework Python re-launched) or by `<env>/bin/python -m recall serve`, and its agent by the
+# program (the command line before its first flag) of its nearest ancestor that names one.
+_SCRIPT = re.compile(r"/bin/recall\s+serve(?:\s|$)")
+_MODULE = re.compile(r"(.*?)/bin/python[\d.]*\s+-m\s+recall\s+serve(?:\s|$)")
+_HOSTS = (
+    ("cursor-agent", "cursor-agent"),
+    ("cursor", "Cursor"),
+    ("codex", "Codex"),
+    ("claude", "Claude Code"),
+    ("gemini", "Gemini CLI"),
+    ("opencode", "OpenCode"),
+)
+
+
+def outlived() -> list[dict]:
+    """recall MCP servers still running code an upgrade has since replaced: each started before recall
+    was last installed into the environment it runs from. Until the agent that started one restarts,
+    it answers with the old code, and an old enough one rebuilds the chat index for its own release.
+    Oldest first; empty when `ps` cannot be run."""
+    try:
+        listing = subprocess.run(
+            ["ps", "-ww", "-A", "-o", "pid=,ppid=,uid=,lstart=,args="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={**os.environ, "LC_ALL": "C"},
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    procs: dict[int, tuple[int, float, str]] = {}  # every process, for the walk up to an agent
+    mine: set[int] = set()  # only this user's servers are theirs to restart
+    for line in listing.splitlines():
+        parts = line.split(maxsplit=8)  # lstart is five words: "Thu Oct 15 20:39:27 2026"
+        with contextlib.suppress(ValueError, IndexError):
+            started = time.mktime(time.strptime(" ".join(parts[3:8]), "%a %b %d %H:%M:%S %Y"))
+            procs[int(parts[0])] = (int(parts[1]), started, parts[8])
+            if int(parts[2]) == os.getuid():
+                mine.add(int(parts[0]))
+    found = []
+    for pid in mine:
+        ppid, started, args = procs[pid]
+        env = _env(args) if "recall" in args else None
+        installs = env and glob.glob(
+            os.path.join(glob.escape(env), "lib", "python*", "site-packages", "recall_agents-*.dist-info")
+        )
+        try:  # an upgrade may be replacing the files right now
+            newest = installs and max(installs, key=os.path.getmtime)
+            installed_at = os.path.getmtime(newest) if newest else 0
+        except OSError:
+            continue
+        version = newest and re.fullmatch(r"recall_agents-([\w.+]+)\.dist-info", os.path.basename(newest))
+        if not version or started >= installed_at - 2:  # lstart is to the second
+            continue
+        agent, chat = _host(procs, ppid)
+        found.append(
+            {
+                "pid": pid,
+                "agent": agent,
+                "chat": chat,
+                "started_at": started,
+                "installed": version[1],
+                "installed_at": installed_at,
+            }
+        )
+    return sorted(found, key=lambda x: x["started_at"])
+
+
+def _env(args: str) -> str | None:
+    """The environment a `recall serve` command line runs from, or None if it is not one."""
+    if m := _SCRIPT.search(args):
+        before = args[: m.start()]
+        # Paths may hold spaces, so try each word that starts a path, longest first. A script reached
+        # through a link (~/.local/bin/recall) runs from the environment the link points into.
+        starts = [i for i, ch in enumerate(before) if ch == "/" and (i == 0 or before[i - 1] == " ")]
+        script = next((p for i in starts if os.path.isfile(p := os.path.join(before[i:], "bin", "recall"))), None)
+        return os.path.dirname(os.path.dirname(os.path.realpath(script))) if script else None
+    m = _MODULE.match(args)
+    return m[1] if m else None
+
+
+def _host(procs: dict[int, tuple[int, float, str]], pid: int) -> tuple[str, str | None]:
+    """The agent that started a process, and for Claude Code the chat it resumed (its id)."""
+    for _ in range(6):
+        if pid <= 1 or pid not in procs:
+            break
+        ppid, _, args = procs[pid]
+        program = args.split(" -", 1)[0].lower()
+        for needle, name in _HOSTS:
+            if needle in program:
+                resumed = re.search(r"--resume[= ]([\w-]+)", args) if needle == "claude" else None
+                return name, f"claude:{resumed[1]}" if resumed else None
+        pid = ppid
+    return "an agent", None
+
+
 def chat(chat_id: str, since: float) -> Live | None:
     """A recent chat by id."""
     return next((s for s in _sessions(since) if s.id == chat_id), None)
