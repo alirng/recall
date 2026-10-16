@@ -25,7 +25,7 @@ from .chats.sources import claude, codex, cursor, iso_ts, read_jsonl
 
 LIVE_SECONDS = 15 * 60  # a session touched this recently counts as live
 CACHE = os.path.join(paths.HOME, "cache", "status.json")
-CACHE_VERSION = 2  # bump when _read's record changes, so old entries are read again
+CACHE_VERSION = 3  # bump when _read's record changes, so old entries are read again (3: redacted)
 WARNED = os.path.join(paths.HOME, "cache", "edit-warnings.json")
 # Every agent's edit hook adds a line here, so agents whose history recall cannot read yet
 # still show up, and an edit counts before the agent's own transcript is written.
@@ -152,6 +152,15 @@ def _line(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def _quoted(text: str, n: int) -> str:
+    """A chat's words as status may cache them and quote them to other chats: redacted, then cut.
+    Redaction sees ten times what is kept, so a key across the cut is still whole when found,
+    and a long paste costs no more than that."""
+    from .chats.redact import redact
+
+    return _line(redact(text[: 10 * n]), n)
+
+
 def _read(agent: str, path: str, catalog) -> dict | None:
     """One chat, boiled down to what status needs. None for headless and empty chats."""
     if agent == "claude":
@@ -168,11 +177,11 @@ def _read(agent: str, path: str, catalog) -> dict | None:
     return {
         "id": s.id,
         "agent": s.agent,
-        "title": _line(s.title or (asks[0] if asks else "(untitled)"), 80),
+        "title": _quoted(s.title or (asks[0] if asks else "(untitled)"), 80),
         "folder": s.project,
         "branch": s.branch,
         "updated_at": s.updated_at or 0,
-        "ask": _line(asks[-1], 200) if asks else "",
+        "ask": _quoted(asks[-1], 200) if asks else "",
         "source": os.path.realpath(path),
         "edits": list(edits.items()),
     }

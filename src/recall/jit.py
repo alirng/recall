@@ -51,7 +51,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from . import paths
+from . import inject, paths
 
 if TYPE_CHECKING:
     from .integrations.hooks import Event, Reply
@@ -134,7 +134,6 @@ COMMON_NAMES = {
     "__init__.py", "__main__.py", "main.py", "index.ts", "index.tsx", "index.js", "app.tsx", "app.ts",
     "app.js", "utils.py", "utils.ts", "types.ts", "config.py", "config.ts", ".env", ".gitignore", "uv.lock",
 }  # fmt: skip
-TAG = re.compile(r"</?[A-Za-z][\w-]*(\s[^<>]*)?>")
 NOISE = re.compile(r"(^|/)(node_modules|\.git|\.venv|venv|dist|build|__pycache__|\.next|DerivedData)/")
 
 
@@ -334,8 +333,8 @@ def render(items: list[Item]) -> str:
     every chat parser strips, so memory never re-learns itself."""
     parts = []
     for kind in ("rule", "note", "chat"):
-        # Quoted chat text is data: tag-like text in it must not close or open a block.
-        lines = [TAG.sub("", i.line) for i in items if i.kind == kind]
+        # Quoted chat text is data: nothing in it may close or open a block (inject.py).
+        lines = [inject.line(i.line, LINE_CHARS) for i in items if i.kind == kind]
         if lines:
             parts.append(HEADERS[kind] + "\n" + "\n".join(lines))
     return "<recall-memory>\n" + "\n".join(parts) + "\n</recall-memory>" if parts else ""
@@ -762,10 +761,10 @@ def _note_candidates(con, query, project, now, words, allowed, cwd=None) -> list
     try:
         where, args = _note_scope(con, project, cwd)
         rows = con.execute(
-            f"""select n.id, n.title, n.body, n.project, n.scope, n.last_seen, n.type,
+            f"""select n.id, n.title, n.brief, n.project, n.scope, n.last_seen, n.type,
                        bm25(notes_fts, 0, 5.0, 1.0, 2.0) s
                 from notes_fts f join notes n on n.id = f.id
-                where notes_fts match ? and ({where})
+                where notes_fts match ? and ({where}) and n.brief != ''
                 order by s limit 30""",
             [q, *args],
         ).fetchall()
@@ -890,7 +889,8 @@ def _file_rules(agent: str, root: str, rel: str, state: State | None) -> list[It
     for path, globs, what in scoped:
         patterns = [g.strip() for g in re.split(r"[,\s]+", globs) if g.strip()]
         if any(_glob(rel, g) for g in patterns):
-            line = f"- {_clip(what.rstrip('.'), 200)} (`{path}`, for {globs})"
+            where = inject.line(path.replace("`", ""), 120)  # the rule file's own words: capped like them
+            line = f"- {_clip(what.rstrip('.'), 200)} (`{where}`, for {inject.line(globs, 80)})"
             out.append(Item(f"rule:{path}", "rule", line))
     return out
 
@@ -907,8 +907,8 @@ def _file_notes(con, names: list[str], project: dict | None, cwd: str | None) ->
     try:
         scope, args = _note_scope(con, project, cwd)
         rows = con.execute(
-            f"""select n.id, n.title, n.body, n.last_seen from notes n
-                where ({scope}) and ({match}) order by n.last_seen desc limit 2""",
+            f"""select n.id, n.title, n.brief, n.last_seen from notes n
+                where ({scope}) and ({match}) and n.brief != '' order by n.last_seen desc limit 2""",
             [*args, *[x for name in names for x in (name, name)]],
         ).fetchall()
     except Exception:
@@ -1211,9 +1211,14 @@ def _chat_line(con, row: dict, meta) -> str:
 
 def _note_line(nid: str, title: str, body: str, last_seen: str | None) -> str:
     """The note's title and the gist of its body, cut so the id at the end always fits."""
+    from .memory.said import dangerous
+
     tail = f" (note {nid}{', ' + last_seen[:10] if last_seen else ''})"
     head = f"- {_clip(title, 90)}: "
-    return head + _gist(body, max(40, LINE_CHARS - len(head) - len(tail))) + tail
+    gist = _gist(body, max(40, LINE_CHARS - len(head) - len(tail)))
+    # The rules passed notes.pushed as written; _gist rewrites them (code marks and links out), so
+    # what is delivered is checked again, and only the title goes when it no longer passes.
+    return head.rstrip(": ") + tail if dangerous(gist) else head + gist + tail
 
 
 def _outcome(con, sid: str) -> str:
