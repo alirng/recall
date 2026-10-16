@@ -5,6 +5,11 @@ Reads each agent's history straight from disk (read-only) instead of the index, 
 current to the second. Each transcript's summary is cached by its size and mtime, so a
 refresh only re-reads the chats that moved. Edits are taken from the agents' own tool calls,
 so a file changed through a shell command does not show up.
+
+The edit hook runs before every edit, so it looks twice. First, cheaply (_others_may_edit):
+the edit log and, for each transcript that changed lately, the files its edit tool calls name,
+read from where the last look stopped. Only when one of those names the file being edited does
+it read those chats in full and ask git.
 """
 
 import contextlib
@@ -15,13 +20,14 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from itertools import combinations
 
 from . import paths
-from .chats.sources import claude, codex, cursor, iso_ts, read_jsonl
 
 LIVE_SECONDS = 15 * 60  # a session touched this recently counts as live
 CACHE = os.path.join(paths.HOME, "cache", "status.json")
@@ -30,6 +36,14 @@ WARNED = os.path.join(paths.HOME, "cache", "edit-warnings.json")
 # Every agent's edit hook adds a line here, so agents whose history recall cannot read yet
 # still show up, and an edit counts before the agent's own transcript is written.
 EDITS = os.path.join(paths.HOME, "cache", "edits.jsonl")
+# The edit hook's first look: per recent transcript, how far it has been read and the files its
+# edit tool calls named. The list of recent transcripts comes from globbing every agent's history
+# at most every RELIST_SECONDS, so a chat that starts (or resumes) without recall's hooks, such as
+# Codex before its hooks are trusted, is seen by other chats' edit hooks within that time.
+EDIT_INDEX = os.path.join(paths.HOME, "cache", "edit-index.json")
+EDIT_INDEX_VERSION = 1
+RELIST_SECONDS = 300
+LIST_HORIZON = 86400  # a relist keeps transcripts changed this recently, or within the hook's window
 AGENTS = {
     "claude": "Claude Code",
     "codex": "Codex",
@@ -46,6 +60,12 @@ _PATH_KEYS = ("file_path", "notebook_path", "path", "target_file")
 _PATCH_FILE = re.compile(
     r"\*\*\* (?:Add|Update|Delete) File: (.+?)(?=\\n|\n|\"|$)|\*\*\* Move to: (.+?)(?=\\n|\n|\"|$)", re.M
 )
+# What a transcript line must hold to name an edit (_named), found in the raw bytes so that the
+# edit hook's first look decodes only those lines.
+_EDIT_LINE = {
+    "codex": re.compile(rb"\*\*\* (?:Add|Update|Delete) File: |\*\*\* Move to: "),
+    "other": re.compile(rb'"name": ?"(?:' + "|".join(sorted(_EDIT_TOOLS)).encode() + rb')"'),
+}
 
 
 def patch_hunks(text: str) -> tuple[list[str], list[str]]:
@@ -119,30 +139,45 @@ def _edited(out: dict, path: str, ts: float | None) -> None:
     out[path] = ts
 
 
+def _named(agent: str, d: dict, cwd: str | None) -> list[str]:
+    """The files one transcript line's edit tool calls name: a Codex apply_patch, or a Claude
+    Code or Cursor edit tool."""
+    if agent == "codex":
+        payload = d.get("payload") or {}
+        if d.get("type") != "response_item" or payload.get("type") not in ("custom_tool_call", "function_call"):
+            return []
+        return patch_files(str(payload.get("input") or payload.get("arguments") or ""), cwd)
+    content = (d.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    out = []
+    for b in content:
+        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in _EDIT_TOOLS:
+            args = b.get("input") or {}
+            target = next((args[k] for k in _PATH_KEYS if isinstance(args.get(k), str)), None)
+            if target:
+                out.append(target)
+    return out
+
+
 def _tool_edits(path: str) -> dict[str, float | None]:
     """Files named by edit tool calls in a Claude Code or Cursor transcript, with when each
     was last edited, oldest first."""
+    from .chats.sources import iso_ts, read_jsonl
+
     out: dict[str, float | None] = {}
     for d in read_jsonl(path):
-        content = (d.get("message") or {}).get("content")
-        if not isinstance(content, list):
-            continue
-        for b in content:
-            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in _EDIT_TOOLS:
-                args = b.get("input") or {}
-                target = next((args[k] for k in _PATH_KEYS if isinstance(args.get(k), str)), None)
-                if target:
-                    _edited(out, target, iso_ts(d.get("timestamp")))
+        for target in _named("claude", d, None):
+            _edited(out, target, iso_ts(d.get("timestamp")))
     return out
 
 
 def _codex_edits(path: str, cwd: str | None) -> dict[str, float | None]:
+    from .chats.sources import iso_ts, read_jsonl
+
     out: dict[str, float | None] = {}
     for d in read_jsonl(path):
-        payload = d.get("payload") or {}
-        if d.get("type") != "response_item" or payload.get("type") not in ("custom_tool_call", "function_call"):
-            continue
-        for target in patch_files(str(payload.get("input") or payload.get("arguments") or ""), cwd):
+        for target in _named("codex", d, cwd):
             _edited(out, target, iso_ts(d.get("timestamp")))
     return out
 
@@ -154,6 +189,8 @@ def _line(text: str, n: int) -> str:
 
 def _read(agent: str, path: str, catalog) -> dict | None:
     """One chat, boiled down to what status needs. None for headless and empty chats."""
+    from .chats.sources import claude, codex, cursor
+
     if agent == "claude":
         s = claude.load(path)
     elif agent == "codex":
@@ -178,7 +215,50 @@ def _read(agent: str, path: str, catalog) -> dict | None:
     }
 
 
-def _sessions(since: float) -> list[Live]:
+def _transcripts() -> dict[str, str]:
+    """Every agent transcript on disk, path -> agent: a glob over all of each agent's history."""
+    from .chats.sources import claude, codex, cursor
+
+    patterns = {
+        "claude": os.path.join(claude.ROOT, "*", "*.jsonl"),
+        "codex": os.path.join(codex.ROOT, "sessions", "**", "*.jsonl"),
+        "cursor": os.path.join(cursor.PROJECTS, "*", "agent-transcripts", "*", "*.jsonl"),
+    }
+    return {path: agent for agent, pattern in patterns.items() for path in glob.glob(pattern, recursive=True)}
+
+
+def _transcript_agent(path: str) -> str | None:
+    """The agent whose transcript `path` is, when it is one _transcripts() would find."""
+    from .chats.sources import claude, codex, cursor
+
+    up = [path]
+    for _ in range(4):
+        up.append(os.path.dirname(up[-1]))
+    if not path.endswith(".jsonl"):
+        return None
+    if up[2] == claude.ROOT:
+        return "claude"
+    if path.startswith(os.path.join(codex.ROOT, "sessions") + os.sep):
+        return "codex"
+    if up[4] == cursor.PROJECTS and os.path.basename(up[2]) == "agent-transcripts":
+        return "cursor"
+    return None
+
+
+def _write_json(path: str, data) -> None:
+    """Replace a cache file whole. Each writer has its own temporary file, since hooks of several
+    chats (and an agent's parallel tool calls) write at once."""
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+
+
+def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
+    """The chats active since `since`, from every agent's transcripts and the edit log. `only`
+    reads just these transcripts (path -> agent) instead of globbing every agent's history."""
     try:
         with open(CACHE) as f:
             stored = json.load(f)
@@ -189,43 +269,37 @@ def _sessions(since: float) -> list[Live]:
 
     def codex_catalog():
         nonlocal catalog
+        from .chats.sources import codex
+
         catalog = catalog if catalog is not None else codex._catalog()
         return catalog
 
     found, fresh, changed = [], {}, False
-    patterns = {
-        "claude": os.path.join(claude.ROOT, "*", "*.jsonl"),
-        "codex": os.path.join(codex.ROOT, "sessions", "**", "*.jsonl"),
-        "cursor": os.path.join(cursor.PROJECTS, "*", "agent-transcripts", "*", "*.jsonl"),
-    }
-    for agent, pattern in patterns.items():
-        for path in glob.glob(pattern, recursive=True):
-            try:
-                st = os.stat(path)
-            except OSError:
-                continue
-            if st.st_mtime < since:
-                continue
-            fp = f"{st.st_mtime_ns}:{st.st_size}"
-            hit = cache.get(path)
-            if hit and hit["fp"] == fp:
-                rec = hit["rec"]
-            else:
-                rec, changed = _read(agent, path, codex_catalog), True
-            fresh[path] = {"fp": fp, "rec": rec}
-            if rec:
-                live = Live(**{k: v for k, v in rec.items() if k != "edits"})
-                # The last message, not the file's mtime: apps rewrite transcripts (titles,
-                # compaction) without anyone working in the chat.
-                live.updated_at = live.updated_at or st.st_mtime
-                live.edits = dict(rec["edits"])
-                found.append(live)
+    for path, agent in (_transcripts() if only is None else only).items():
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if st.st_mtime < since:
+            continue
+        fp = f"{st.st_mtime_ns}:{st.st_size}"
+        hit = cache.get(path)
+        if hit and hit["fp"] == fp:
+            rec = hit["rec"]
+        else:
+            rec, changed = _read(agent, path, codex_catalog), True
+        fresh[path] = {"fp": fp, "rec": rec}
+        if rec:
+            live = Live(**{k: v for k, v in rec.items() if k != "edits"})
+            # The last message, not the file's mtime: apps rewrite transcripts (titles,
+            # compaction) without anyone working in the chat.
+            live.updated_at = live.updated_at or st.st_mtime
+            live.edits = dict(rec["edits"])
+            found.append(live)
+    if only is not None:
+        fresh = {**cache, **fresh}  # the chats not read this time keep their entries
     if changed or len(fresh) != len(cache):
-        with contextlib.suppress(OSError):
-            os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-            with open(CACHE + ".tmp", "w") as f:
-                json.dump({"version": CACHE_VERSION, "chats": fresh}, f)
-            os.replace(CACHE + ".tmp", CACHE)
+        _write_json(CACHE, {"version": CACHE_VERSION, "chats": fresh})
 
     # A hook's chat id is not always the transcript's, so the transcript path joins them.
     by_id = {s.id: s for s in found}
@@ -257,9 +331,10 @@ def _log(
         if os.path.exists(EDITS) and os.path.getsize(EDITS) > 512_000:
             # Keep the newest 1,000 lines from the last two days, so the file stays small.
             keep = [x for x in _log_lines() if x.get("at", 0) > time.time() - 2 * 86400][-1000:]
-            with open(EDITS + ".tmp", "w") as f:
+            tmp = f"{EDITS}.{os.getpid()}.tmp"
+            with open(tmp, "w") as f:
                 f.writelines(json.dumps(x) + "\n" for x in keep)
-            os.replace(EDITS + ".tmp", EDITS)
+            os.replace(tmp, EDITS)
         with open(EDITS, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
@@ -289,6 +364,128 @@ def _logged(since: float) -> dict[str, dict]:
         if spans := x.get("lines"):
             e["regions"].setdefault(x["file"], []).extend(spans)
     return out
+
+
+def _edit_index(since: float) -> dict[str, dict]:
+    """Every transcript that changed since `since`, path -> {"agent", "files"}: the files its
+    edit tool calls named, brought up to date by reading only what was written since the last
+    look (EDIT_INDEX). Which transcripts are recent is relisted at most every RELIST_SECONDS."""
+    try:
+        with open(EDIT_INDEX) as f:
+            stored = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        stored = {}
+    if not isinstance(stored, dict) or stored.get("version") != EDIT_INDEX_VERSION:
+        stored = {}
+    now, changed = time.time(), False
+    chats: dict[str, dict] = stored.get("chats") or {}
+    if now - stored.get("listed_at", 0) > RELIST_SECONDS or since < stored.get("horizon", now):
+        horizon = min(since, now - LIST_HORIZON)
+        recent = {}
+        for path, agent in _transcripts().items():
+            with contextlib.suppress(OSError):
+                if os.stat(path).st_mtime >= horizon:
+                    recent[path] = agent
+        chats = {p: chats.get(p) or {"agent": agent, "ino": None, "off": 0, "files": []} for p, agent in recent.items()}
+        stored |= {"listed_at": now, "horizon": horizon}
+        changed = True
+    out = {}
+    for path, rec in chats.items():
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if st.st_mtime < since:
+            continue
+        if rec["ino"] != st.st_ino or st.st_size < rec["off"]:  # replaced or cut short: read it again
+            rec = chats[path] = {**rec, "ino": st.st_ino, "off": 0, "files": []}
+        if st.st_size > rec["off"]:
+            with contextlib.suppress(OSError):
+                rec = chats[path] = _read_edits(path, rec)
+                changed = True
+        out[path] = rec
+    if changed:
+        _write_json(EDIT_INDEX, {**stored, "version": EDIT_INDEX_VERSION, "chats": chats})
+    return out
+
+
+def _read_edits(path: str, rec: dict) -> dict:
+    """`rec` with the files named by the edit tool calls `path` gained since rec["off"]. Only lines
+    that can hold one are decoded. A file that no longer ends a line where the last look stopped was
+    rewritten, and is read again from the start."""
+    agent, off = rec["agent"], rec["off"]
+    files = dict.fromkeys(rec["files"])
+    with open(path, "rb") as f:
+        if off:
+            f.seek(off - 1)
+            if f.read(1) != b"\n":
+                off, files = 0, {}
+                f.seek(0)
+        data = f.read()
+    end = data.rfind(b"\n") + 1  # whole lines only: the rest is still being written
+    marker = _EDIT_LINE["codex" if agent == "codex" else "other"]
+    m = marker.search(data, 0, end)
+    while m:
+        start, stop = data.rfind(b"\n", 0, m.start()) + 1, data.find(b"\n", m.start(), end)
+        with contextlib.suppress(Exception):  # a line _named cannot make sense of names nothing
+            d = json.loads(data[start:stop])
+            # Paths as written: a patch's are relative to where Codex ran, which the match allows for.
+            files.update(dict.fromkeys(_named(agent, d, None) if isinstance(d, dict) else []))
+        m = marker.search(data, stop, end)
+    return {**rec, "off": off + end, "files": list(files)}
+
+
+def _others_may_edit(
+    agent: str, session: str, repo: str, rel: str, since: float, source: str | None, tops: dict[str, str | None]
+) -> tuple[dict[str, str] | None, str | None]:
+    """The edit hook's first look: the transcripts (path -> agent) of other chats whose edit tool
+    calls, or lines in the edit log, may name `rel` (the file being edited, by its path in the
+    repo), or None when no other chat can have edited it; and this chat's own transcript, if seen.
+    It errs towards too many: those chats are then read in full, and git decides. A full path with
+    the file's name is placed as _resolve places it; a relative one (from where the chat ran, not
+    known yet) counts when either ends with the other. This chat's own transcript is the hook's, or
+    the one named for its session id, as Claude Code, Cursor and Codex name them."""
+    repos: dict[str, str | None] = {}
+
+    @functools.cache
+    def names(p: str) -> bool:
+        p = os.path.normpath(p)
+        if not os.path.isabs(p):
+            return p == rel or rel.endswith(os.sep + p) or p.endswith(os.sep + rel)
+        if os.path.basename(p) != os.path.basename(rel):
+            return False
+        full = os.path.realpath(p)
+        t = _top(full, tops)
+        return bool(t) and os.path.relpath(full, t) == rel and repos.setdefault(t, _repo_dir(t)) == repo
+
+    me, hit, out, logged = f"{agent}:{session}", False, {}, set()
+    for x in _log_lines():
+        if x.get("at", 0) < since or not all(k in x for k in ("agent", "session", "file")):
+            continue
+        if f"{x['agent']}:{x['session']}" != me and names(x["file"]):
+            hit = True
+            if x.get("transcript"):
+                logged.add(x["transcript"])
+    index = _edit_index(since)
+    own = None
+    named = (os.sep + f"{session}.jsonl", f"-{session}.jsonl") if len(session or "") >= 8 else None
+    for path, rec in index.items():
+        if named and rec["agent"] == agent and path.endswith(named):
+            own = path
+        elif any(names(f) for f in rec["files"]):
+            if os.path.realpath(path) == source:
+                own = path
+            else:
+                hit = True
+                out[path] = rec["agent"]
+    if logged:  # read by the path a full scan finds them at; a chat no scan finds is known by its log lines
+        listed = {os.path.realpath(p): p for p in index}
+        for real in logged - {source}:
+            if real in listed:
+                out[listed[real]] = index[listed[real]]["agent"]
+            elif kind := _transcript_agent(real):
+                out[real] = kind
+    return (out if hit else None), own
 
 
 WHOLE = [1, 10**9]  # an edit that rewrites the whole file
@@ -366,9 +563,35 @@ _ENV = {k: v for k, v in os.environ.items() if k not in _REPO_VARS} | {
 }
 
 
+@functools.cache
+def _git_bin() -> str:
+    """The git to run. On a Mac, /usr/bin/git is a stub that asks xcrun for the developer tools'
+    git on every call, which doubles what each call costs (about 15 ms against 7): the edit hook
+    makes several, so it runs the one the stub would: DEVELOPER_DIR's, else xcode-select's, else
+    the only developer tools installed. Anything less clear-cut keeps the stub."""
+    found = shutil.which("git") or "git"
+    if sys.platform != "darwin" or found != "/usr/bin/git":
+        return found
+    link = "/var/db/xcode_select_link"
+    if os.environ.get("DEVELOPER_DIR"):
+        tools = [os.environ["DEVELOPER_DIR"]]
+    elif os.path.islink(link):
+        tools = [os.path.realpath(link)]
+    else:
+        tools = [
+            d
+            for d in ("/Applications/Xcode.app/Contents/Developer", "/Library/Developer/CommandLineTools")
+            if os.access(os.path.join(d, "usr", "bin", "git"), os.X_OK)
+        ]
+    real = os.path.join(tools[0], "usr", "bin", "git") if len(tools) == 1 else ""
+    return real if real and os.access(real, os.X_OK) else found
+
+
 def _git(folder: str, *args: str) -> list[str] | None:
     try:
-        r = subprocess.run(["git", *_GIT, "-C", folder, *args], capture_output=True, text=True, timeout=5, env=_ENV)
+        r = subprocess.run(
+            [_git_bin(), *_GIT, "-C", folder, *args], capture_output=True, text=True, timeout=5, env=_ENV
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout.splitlines() if r.returncode == 0 else None
@@ -410,12 +633,39 @@ def _repo_dir(top: str) -> str | None:
         return os.path.realpath(gitdir)  # a submodule's git dir is its own
 
 
+def _together(*calls):
+    """The results of these functions, run at once in threads: a git call is mostly the wait
+    for its process (about 10 ms each on a Mac), so independent ones need not queue."""
+    import threading
+
+    out: list = [None] * len(calls)
+    errors: list[BaseException] = []
+
+    def run(i: int) -> None:
+        try:
+            out[i] = calls[i]()
+        except BaseException as e:  # raised in the caller, as if the calls had run in turn
+            errors.append(e)
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        raise errors[0]
+    return out
+
+
 def _checkout(top: str) -> Checkout | None:
-    info = _git(top, "rev-parse", "--git-common-dir", "--abbrev-ref", "HEAD")
+    # -z keeps paths with spaces or non-ASCII letters unquoted; a rename's old path follows it.
+    info, out, ref = _together(
+        lambda: _git(top, "rev-parse", "--git-common-dir", "--abbrev-ref", "HEAD"),
+        lambda: _git(top, "status", "--porcelain", "-z", "--untracked-files=all"),
+        lambda: _git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"),
+    )
     if not info or len(info) < 2:
         return None
-    # -z keeps paths with spaces or non-ASCII letters unquoted; a rename's old path follows it.
-    out = _git(top, "status", "--porcelain", "-z", "--untracked-files=all")
     tokens = "\n".join(out or []).split("\0")
     porcelain, i = [], 0
     while i < len(tokens):
@@ -424,13 +674,15 @@ def _checkout(top: str) -> Checkout | None:
             i += 1 if set(tokens[i][:2]) & {"R", "C"} else 0
         i += 1
     open_ = {line[3:] for line in porcelain}
-    default = (_git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ["main"])[0]
-    base = (_git(top, "merge-base", default, "HEAD") or [None])[0]
+    default = (ref or ["main"])[0]
+    found, differs = _together(
+        lambda: _git(top, "merge-base", default, "HEAD"), lambda: _git(top, "diff", "--name-only", default)
+    )
+    base = (found or [None])[0]
     if base:
         open_.update(_git(top, "diff", "--name-only", base, "HEAD") or [])
     # A squash-merged or rebased branch keeps its own commits, so only what still differs
     # from the default branch's tip is open. New untracked files always are.
-    differs = _git(top, "diff", "--name-only", default)
     if differs is not None:
         untracked = {line[3:] for line in porcelain if line.startswith("??")}
         open_ = (open_ & set(differs)) | untracked
@@ -465,7 +717,7 @@ def _hunks(top: str, base: str, rel: str, untracked: bool) -> tuple[tuple[float,
 
 @functools.cache
 def _merge_base(a: str, b: str) -> str | None:
-    heads = [(_git(top, "rev-parse", "HEAD") or [None])[0] for top in (a, b)]
+    heads = [(h or [None])[0] for h in _together(*(lambda top=top: _git(top, "rev-parse", "HEAD") for top in (a, b)))]
     return (_git(a, "merge-base", *heads) or [None])[0] if None not in heads else None
 
 
@@ -483,8 +735,9 @@ def _conflict(a: Checkout, b: Checkout, rel: str) -> bool:
     base = _merge_base(a.top, b.top)
     if not base:
         return False
-    mine = _hunks(a.top, base, rel, rel in a.untracked)
-    theirs = _hunks(b.top, base, rel, rel in b.untracked)
+    mine, theirs = _together(
+        lambda: _hunks(a.top, base, rel, rel in a.untracked), lambda: _hunks(b.top, base, rel, rel in b.untracked)
+    )
     return any(x0 <= y1 and y0 <= x1 for x0, x1 in mine for y0, y1 in theirs)
 
 
@@ -899,27 +1152,50 @@ def check_edit(
     def is_me(s: Live) -> bool:
         return s.id == me or bool(source and s.source == source)
 
-    sessions = _sessions(since)
+    # Most edits are to a file no other chat has touched: the first look settles those without
+    # reading any chat in full or running git. Otherwise only the chats it names are read.
+    near, own = _others_may_edit(agent, session_id, repo, rel, since, source, tops)
+    if near is None:
+        return None
+    sessions = _sessions(since, only=near)
     others = [(s, theirs) for s in sessions if not is_me(s) and rel in (theirs := in_repo(s))]
     if not others:
         return None
     mine = next((s for s in sessions if s.id == me), None) or next((s for s in sessions if is_me(s)), None)
-    my_files = {f for s in sessions if is_me(s) for f in in_repo(s)} | {rel}
     # After an edit (Cursor's postToolUse) the file already holds it; the lines this chat's
     # hook recorded before the edit stand in.
     lines = lines or (mine.regions.get(path) if mine else None)
-    checkouts: dict[str, Checkout | None] = {top: _checkout(top)}
-    if not checkouts[top]:
-        return None
     rank = {name: i for i, name in enumerate(reversed(SITUATIONS))}  # overlap 0 … same_copy 3
+    try:
+        with open(WARNED) as f:
+            warned = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        warned = {}
+    seen = warned.get(me, {}).get("chats", {})
+
+    def worst(t: str) -> int:
+        """The worst situation a chat with changes in checkout `t` can still be raised for."""
+        could = ("same_copy", "apart", "overlap") if t == top else ("conflict", "overlap")
+        return max((rank[sit] for sit in could if want[sit] in acts), default=-1)
+
+    # A chat already raised for the worst it can be needs no git: it is not raised again.
+    others = [(s, theirs) for s, theirs in others if worst(theirs[rel][0]) > seen.get(s.id, -1)]
+    checkouts: dict[str, Checkout | None] = {}
+
+    def checkout(t: str) -> Checkout | None:
+        if t not in checkouts:
+            checkouts[t] = _checkout(t)
+        return checkouts[t]
+
     found = []
     for s, theirs in others:
         t, when = theirs[rel]
-        if t not in checkouts:
-            checkouts[t] = _checkout(t)
-        c = checkouts[t]
+        _together(*(lambda x=x: checkout(x) for x in {t, top} - set(checkouts)))  # git for both at once
+        c = checkout(t)
         if not c or rel not in c.open or _committed_since(c, rel, when):
             continue
+        if not checkout(top):  # without this checkout's own state nothing can be judged
+            return None
         spans = s.regions.get(os.path.join(t, rel), [])
         if t == top and time.time() - s.updated_at <= LIVE_SECONDS:
             situation = "apart" if lines and _apart(lines, spans) else "same_copy"
@@ -928,27 +1204,33 @@ def check_edit(
         else:
             situation = "overlap"
         if want[situation] in acts:
-            shared = sorted(f for f, (ft, _) in theirs.items() if f in my_files and ft == t and f in c.open)
-            found.append((situation, s, c, shared, t == top, spans))
-    if not found:
-        return None
-
-    try:
-        with open(WARNED) as f:
-            warned = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        warned = {}
-    seen = warned.get(me, {}).get("chats", {})
-    fresh = [x for x in found if rank[x[0]] > seen.get(x[1].id, -1)]
-    if not fresh:
+            found.append((situation, s, c, theirs, t, spans))
+    raise_ = [x for x in found if rank[x[0]] > seen.get(x[1].id, -1)]
+    if not raise_:
         return None
     now = time.time()
     warned = {k: v for k, v in warned.items() if now - v.get("at", 0) < 2 * 86400}
-    warned[me] = {"at": now, "chats": {**seen, **{s.id: rank[sit] for sit, s, *_ in fresh}}}
-    with contextlib.suppress(OSError):
-        os.makedirs(os.path.dirname(WARNED), exist_ok=True)
-        with open(WARNED, "w") as f:
-            json.dump(warned, f)
+    warned[me] = {"at": now, "chats": {**seen, **{s.id: rank[sit] for sit, s, *_ in raise_}}}
+    _write_json(WARNED, warned)
+
+    # This chat's own transcript is read only now there is something to say: its title, what it
+    # was last asked, and the other files it edited, which the two chats may share.
+    own = own or transcript
+    if own and not {own, source} & set(near) and (kind := _transcript_agent(own)):
+        sessions = _sessions(since, only={**near, own: kind})
+        mine = next((s for s in sessions if s.id == me), None) or next((s for s in sessions if is_me(s)), mine)
+    my_files = {f for s in sessions if is_me(s) for f in in_repo(s)} | {rel}
+    fresh = [
+        (
+            sit,
+            s,
+            c,
+            sorted(f for f, (ft, _) in theirs.items() if f in my_files and ft == t and f in c.open),
+            t == top,
+            spans,
+        )
+        for sit, s, c, theirs, t, spans in raise_
+    ]
 
     action = min((want[sit] for sit, *_ in fresh), key=ACTIONS.index)
     default = (_git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ["main"])[0]
@@ -1004,10 +1286,14 @@ def check_edit(
 def on_edit(event):
     """The edit hook (hooks.py): the person's rules for each file the edit touches."""
     from . import usage
-    from .chats.store import parse_since
     from .integrations.hooks import Reply
 
-    since = parse_since(event.raw.get("recall_since") or "12h")
+    if window := event.raw.get("recall_since"):
+        from .chats.store import parse_since
+
+        since = parse_since(window)
+    else:
+        since = time.time() - 12 * 3600  # the default 12h, without loading the chat index's module
     found = [
         d
         for f in event.files

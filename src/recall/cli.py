@@ -7,7 +7,6 @@ import sys
 import time
 
 from . import __version__, config, paths
-from .chats import indexer, store
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -28,6 +27,8 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def cmd_index(a) -> None:
+    from .chats import indexer, store
+
     started = time.time()
     result = indexer.index(store.connect(), only=a.source, force=a.force, log=lambda m: print(m, file=sys.stderr))
     for name, r in result.items():
@@ -45,6 +46,7 @@ def cmd_index(a) -> None:
 
 def cmd_embed(a) -> None:
     from . import embeddings
+    from .chats import store
 
     embedder = embeddings.configured()
     if embedder is None:
@@ -62,6 +64,7 @@ def cmd_embed(a) -> None:
 
 def cmd_search(a) -> None:
     from . import usage
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -86,6 +89,7 @@ def cmd_search(a) -> None:
 
 def cmd_show(a) -> None:
     from . import usage
+    from .chats import store
 
     chat = store.read(store.connect(), a.chat_id, a.query, a.offset, a.limit, max_chars=4000)
     usage.record("cli", "show", {"chat_id": a.chat_id, "query": a.query}, chat or {"error": "not found"})
@@ -100,6 +104,7 @@ def cmd_show(a) -> None:
 
 def cmd_forget(a) -> None:
     from . import forget
+    from .chats import indexer, store
 
     if not (a.chat_id or a.project):
         sys.exit("name a chat id, or --project NAME")
@@ -146,6 +151,7 @@ def cmd_forget(a) -> None:
 
 
 def cmd_stats(a) -> None:
+    from .chats import store
     from .chats.sources import codex, compressed
 
     out = store.stats(store.connect())
@@ -156,6 +162,7 @@ def cmd_stats(a) -> None:
 
 def cmd_why(a) -> None:
     from . import commits, usage
+    from .chats import indexer, store
 
     if not a.target and not a.commit:
         sys.exit("recall why needs a file (path, path:line or path:start-end) or --commit <sha>")
@@ -170,6 +177,7 @@ def cmd_why(a) -> None:
 
 def cmd_links(a) -> None:
     from . import commits
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -224,6 +232,7 @@ def cmd_dream(a) -> None:
 
 
 def cmd_memory(a) -> None:
+    from .chats import store
     from .memory import context
     from .memory.notes import NoteStore
 
@@ -301,6 +310,7 @@ def cmd_hook(a) -> None:
 
 def cmd_explore(a) -> None:
     from . import explore
+    from .chats import store
 
     con = explore.connect()
     if a.action == "backfill":
@@ -345,6 +355,7 @@ def cmd_explore(a) -> None:
 
 def cmd_projects(a) -> None:
     from . import projects
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -395,6 +406,7 @@ def cmd_projects(a) -> None:
 
 def cmd_rules(a) -> None:
     from . import projects, rules
+    from .chats import store
 
     con = store.connect()
     target = " ".join(a.target) if a.target else None
@@ -431,6 +443,7 @@ def cmd_rules(a) -> None:
 
 def cmd_usage(a) -> None:
     from . import usage
+    from .chats import store
 
     s = usage.summary(store.parse_since(a.since))
     if a.json:
@@ -473,6 +486,7 @@ def cmd_jit(a) -> None:
     """What jit would hand an agent for a prompt, a file it reads, or a failed command, and
     why. The hooks themselves answer through `recall hook` (integrations/hooks.py)."""
     from . import jit
+    from .chats import store
 
     con = store.connect()
     cwd = os.path.abspath(a.cwd or os.getcwd())
@@ -504,6 +518,7 @@ def cmd_jit(a) -> None:
 
 def cmd_status(a) -> None:
     from . import status
+    from .chats import store
 
     if a.hook:  # the edit hook's first command; `recall hook` answers it now
         return cmd_hook(a)
@@ -549,6 +564,7 @@ def cmd_status(a) -> None:
 
 def cmd_resolve(a) -> None:
     from . import mail
+    from .chats import store
 
     out = mail.resolve(a.repo, a.file, store.parse_since(a.since))
     if a.json:
@@ -753,6 +769,7 @@ COMMA_SAFE_CASES = ("memorycode", "swe-contextbench")
 
 def cmd_eval(a) -> None:
     from . import evals
+    from .chats import store
 
     if a.case and a.kind in COMMA_SAFE_CASES:  # ID,ID,... as well as repeated --case
         a.case = [i for c in a.case for i in c.split(",") if i]
