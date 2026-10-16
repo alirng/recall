@@ -79,7 +79,7 @@
   },
   "tokens_per_question": {
     "title": "Context added to an agent per question",
-    "subtitle": "Estimated Claude tokens on held-out cases, with recall's tool definitions (2.5k in 0.3.0, 3.3k since 0.4.0).",
+    "subtitle": "Estimated Claude tokens on held-out cases, both releases run on 16 October, with recall's tool definitions (2.5k in 0.3.0, 3.3k since 0.4.0).",
     "unit": "k",
     "max": 20,
     "ticks": [
@@ -93,30 +93,30 @@
       {
         "group": "SWE-ContextBench Lite, 40 held-out issues",
         "name": "recall 0.4.1",
-        "value": 7.6,
+        "value": 7.8,
         "ours": true,
         "note": "3 runs; past fix found 87%"
       },
       {
         "group": "SWE-ContextBench Lite, 40 held-out issues",
         "name": "recall 0.3.0",
-        "value": 9.2,
+        "value": 7.3,
         "cls": "past",
-        "note": "1 run; found 90%"
+        "note": "3 runs; found 84%"
       },
       {
         "group": "My questions about past work, 47 held out",
         "name": "recall 0.4.2",
-        "value": 13.3,
+        "value": 13.6,
         "ours": true,
         "note": "3 runs; 84% correct"
       },
       {
         "group": "My questions about past work, 47 held out",
         "name": "recall 0.3.0",
-        "value": 16.1,
+        "value": 13.4,
         "cls": "past",
-        "note": "3 runs; 85% correct"
+        "note": "3 runs; 87% correct"
       }
     ],
     "reported_elsewhere": [
@@ -331,16 +331,16 @@
   },
   "agent_tokens": {
     "title": "Tokens of recall output an agent takes in per question, held-out cases (docs/benchmarks/agent_tokens.py)",
-    "about": "Estimated Claude tokens: tool-result text from each run's transcripts, converted with one factor fitted over all the runs compared, plus recall's tool definitions measured directly with tools loaded up front (2,591 tokens in 0.2.1, 2,480 in 0.3.0, 3,260 in 0.4.1); means per question. Claude Code with Claude Haiku 5.5 and only recall's MCP tools, loaded up front (0.4.1: snapshot of its src with the harness's --tools set to \"\", as the 0.3.0 release run). SWE-ContextBench, fitted over 0.2.1 x5, 0.3.0 x1 and 0.4.1 x3 (360 transcripts, 1.230 tokens per word piece): 14.7k, 9.2k, 7.6k; fitted over 0.2.1 and 0.3.0 alone (1.196): 14.4k and 9.0k. My questions, fitted over 0.2.1, 0.3.0 and 0.4.2 (423 transcripts, 1.419): 19.2k, 16.1k, 13.3k; over 0.2.1 and 0.3.0 alone: 19.1k and 16.0k. 0.4.1's run of my questions is left out: 125 of 141 answers hit recall tool errors from an MCP server bug that left the index write lock open (fixed in 0.4.2); it scored 0.759. 0.4.2 scores 0.844, and 0.3.0's code run the same day 0.865, within noise.",
+    "about": "Estimated Claude tokens: tool-result text from each run's transcripts, converted with one factor fitted over the runs compared, plus recall's tool definitions measured directly with tools loaded up front (2,591 tokens in 0.2.1, 2,480 in 0.3.0, 3,260 in 0.4.1 and 0.4.2); means per question. Claude Code with Claude Haiku 5.5 and only recall's MCP tools, loaded up front (0.4.1 and 0.4.2: snapshots of their src with the harness's --tools set to \"\", as 0.3.0's own harness). Compare within a day: the model's behaviour shifted between 12 and 16 October, and 0.3.0's code took in 9.0k and 16.0k tokens on 12 October against 7.3k and 13.4k on 16 October. 16 October fits: SWE-ContextBench 0.3.0 x3 and 0.4.1 x3 (240 transcripts, 1.283 tokens per word piece): 7,283 and 7,812, per run 7,301/7,278/7,271 and 7,712/7,786/7,938; hit 0.842 and 0.867, paired +0.025 [-0.042, +0.100]. My questions 0.3.0 x3 and 0.4.2 x3 (282 transcripts, 1.454): 13,410 and 13,594; accuracy 0.865 and 0.844, paired -0.021 [-0.078, +0.035]. 0.4.1's run of my questions is left out: 125 of 141 answers hit recall tool errors from an MCP server bug that left the index write lock open (fixed in 0.4.2).",
     "rows": [
       {
         "eval": "SWE-ContextBench Lite agent",
         "split": "test",
         "n": 40,
         "release": "0.2.1",
+        "date": "2026-10-12",
         "runs": 5,
-        "tokens": 14700,
-        "tokens_fit_without_0_4_1": 14400,
+        "tokens": 14400,
         "hit": 0.9
       },
       {
@@ -348,22 +348,39 @@
         "split": "test",
         "n": 40,
         "release": "0.3.0",
+        "date": "2026-10-12",
         "runs": 1,
-        "tokens": 9200,
-        "tokens_fit_without_0_4_1": 9000,
-        "hit": 0.9
+        "tokens": 9000,
+        "hit": 0.9,
+        "change": -0.37
+      },
+      {
+        "eval": "SWE-ContextBench Lite agent",
+        "split": "test",
+        "n": 40,
+        "release": "0.3.0",
+        "date": "2026-10-16",
+        "runs": 3,
+        "tokens": 7300,
+        "tokens_by_run": [
+          7301,
+          7278,
+          7271
+        ],
+        "hit": 0.842
       },
       {
         "eval": "SWE-ContextBench Lite agent",
         "split": "test",
         "n": 40,
         "release": "0.4.1",
+        "date": "2026-10-16",
         "runs": 3,
-        "tokens": 7600,
+        "tokens": 7800,
         "tokens_by_run": [
-          7529,
-          7599,
-          7746
+          7712,
+          7786,
+          7938
         ],
         "hit": 0.867,
         "hit_by_run": [
@@ -371,13 +388,14 @@
           0.825,
           0.875
         ],
-        "change": -0.17
+        "change": 0.07
       },
       {
         "eval": "my questions about past work (private cases)",
         "split": "test",
         "n": 47,
         "release": "0.2.1",
+        "date": "2026-10-12",
         "runs": 3,
         "tokens": 19100,
         "accuracy": 0.851
@@ -387,6 +405,7 @@
         "split": "test",
         "n": 47,
         "release": "0.3.0",
+        "date": "2026-10-12",
         "runs": 3,
         "tokens": 16000,
         "accuracy": 0.851,
@@ -396,21 +415,22 @@
         "eval": "my questions about past work (private cases)",
         "split": "test",
         "n": 47,
-        "release": "0.4.1",
+        "release": "0.3.0",
+        "date": "2026-10-16",
         "runs": 3,
-        "accuracy": 0.759,
-        "excluded": "125 of 141 answers hit recall tool errors (index write lock bug, fixed in 0.4.2)"
+        "tokens": 13400,
+        "accuracy": 0.865
       },
       {
         "eval": "my questions about past work (private cases)",
         "split": "test",
         "n": 47,
         "release": "0.4.2",
+        "date": "2026-10-16",
         "runs": 3,
-        "tokens": 13300,
+        "tokens": 13600,
         "accuracy": 0.844,
-        "change": -0.17,
-        "note": "0.3.0's code re-run the same day: 0.865; paired -0.021 [-0.078, +0.035]"
+        "change": 0.01
       }
     ]
   },
@@ -477,7 +497,7 @@
   },
   "memorycode_agent": {
     "title": "MemoryCode, an agent writing code that follows the latest conventions (recall eval memorycode --agent)",
-    "about": "Claude Haiku 5.5 in Claude Code, 3 requests per history, graded by the benchmark's own checks. long = 20 to 100 sessions, short = 1 to 15. The recall arms run on the 40 held-out histories; 0.2.1 with its notes at session start was not measured. 'notes at session start' (--arm hook): 0.3.0's notes in the session-start block, plus recall's tools. The no-memory and whole-history rows without a harness are training histories, for reference. harness 'tool search': Claude Code loads recall's tools as it does by default (the figures docs/benchmarks.md and the README quote, 2026-10-13); rows without a harness are the 0.3.0 release run, which loaded the tools up front. 2026-10-16 rows: both arms on 0.4.1 the same day, toolsearch harness, 40 held-out histories, 3 runs each; 'notes at session start' uses the notes Claude Haiku 5.5 wrote in the 0.4.1 notes run. Compare arms only within a day: the 13 Oct code re-run on 16 Oct scores 0.668 on search alone against its 0.732 on 13 Oct, a change on the model or service side.",
+    "about": "Claude Haiku 5.5 in Claude Code, 3 requests per history, graded by the benchmark's own checks. long = 20 to 100 sessions, short = 1 to 15. The recall arms run on the 40 held-out histories; 0.2.1 with its notes at session start was not measured. 'notes at session start' (--arm hook): 0.3.0's notes in the session-start block, plus recall's tools. The no-memory and whole-history rows without a harness are training histories, for reference. harness 'tool search': Claude Code loads recall's tools as it does by default (rows dated 2026-10-16 are the figures docs/benchmarks.md and the README quote; the undated tool-search rows are 2026-10-13); rows without a harness are the 0.3.0 release run, which loaded the tools up front. 2026-10-16 rows: both arms on 0.4.1 the same day, toolsearch harness, 40 held-out histories, 3 runs each; 'notes at session start' uses the notes Claude Haiku 5.5 wrote in the 0.4.1 notes run. Compare arms only within a day: the 13 Oct code re-run on 16 Oct scores 0.668 on search alone against its 0.732 on 13 Oct, a change on the model or service side.",
     "rows": [
       {
         "arm": "no memory",
@@ -831,7 +851,7 @@
   },
   "by_type": {
     "title": "LongMemEval_S by question type",
-    "subtitle": "All 500 questions; Claude Haiku 5.5 answers and judges. recall 0.4.1.",
+    "subtitle": "All 500 questions; Claude Haiku 5.5 answers and judges. recall 0.4.1; answer sessions only measured on 9 October.",
     "categories": [
       "Single session,\nuser",
       "Single session,\nassistant",

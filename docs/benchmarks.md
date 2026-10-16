@@ -17,10 +17,10 @@ counts come from the runs' transcripts via
   run). The memory products the benchmark's authors tested found it 39–73% of the time, each at
   its own cutoff, after running an LLM over every session; at each of those cutoffs 0.4.1 is
   ahead. recall runs no LLM to index.
-- **17% fewer tokens added to an agent's context per question than 0.3.0**: about 7.6k
-  estimated Claude tokens against 9.2k on the 40 held-out SWE-ContextBench issues, counting
-  recall's ~3.3k of tool definitions, with the past fix found as often (87% across three runs,
-  90% in 0.3.0's one).
+- **About 7.8k tokens added to an agent's context per question**, counting recall's ~3.3k of
+  tool definitions, on the 40 held-out SWE-ContextBench issues, with the past fix named 87% of
+  the time. That is 7% more than 0.3.0 run the same day (7.3k, 84% found): what the tools
+  return is about the same, and the extra is the definitions of the tools 0.4.0 added.
 - **Notes hold 91% of the coding conventions you set, in their latest form**, and record 90% of
   changed conventions correctly, when Claude Haiku 5.5 writes them (MemoryCode, 40 held-out
   histories, three runs each). Written by gpt-6-luna they hold 67%, up from 62% in 0.3.0. On
@@ -28,11 +28,11 @@ counts come from the runs' transcripts via
 - **The notes reach the agent.** With those notes loaded at session start, Claude Haiku 5.5
   follows the latest conventions on long MemoryCode histories (20 to 100 sessions) 75% of the
   time, against 32% with search alone, and takes in 41% fewer tokens (both on 0.4.1, the same
-  day, three runs each). Rereading the whole history got 80% on the training histories.
+  day, three runs each). Rereading the whole history got 80% on long training histories.
 - **No LLM calls to index or to search.** recall indexes on your machine (SQLite, plus an
-  optional local embedding model). On my ~2,800 chats a search takes about 15 ms with
-  keywords, or 50 ms with embeddings, including embedding the query (median of 50 searches, on
-  a laptop busy with other evals, so an upper bound).
+  optional local embedding model). On my ~2,800 chats a search took about 15 ms with
+  keywords, or 50 ms with embeddings, including embedding the query (0.3.0, median of 50
+  searches, on a laptop busy with other evals, so an upper bound).
   Only the nightly notes need a language model, and you choose which.
 
 Re-checked for 0.4.1: search is unchanged. Every model-free run on 0.4.1's code gave the same
@@ -80,28 +80,29 @@ the benchmark's quirks:
 
 ## Tokens per answer
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/agent-tokens-dark.svg"><img src="benchmarks/agent-tokens-light.svg" alt="Bar chart of the context added to an agent per question, in Claude tokens including recall's tool definitions. SWE-ContextBench Lite, 40 held-out issues: recall 0.4.1 7.6k (3 runs), recall 0.3.0 9.2k (1 run). My questions about past work, 47 held out: recall 0.4.2 13.3k, recall 0.3.0 16.1k (3 runs each)" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/agent-tokens-dark.svg"><img src="benchmarks/agent-tokens-light.svg" alt="Bar chart of the context added to an agent per question, in Claude tokens including recall's tool definitions. both releases run on 16 October, 3 runs each. SWE-ContextBench Lite, 40 held-out issues: recall 0.4.1 7.8k, recall 0.3.0 7.3k. My questions about past work, 47 held out: recall 0.4.2 13.6k, recall 0.3.0 13.4k" width="760"></picture></p>
 
 recall does not hand an agent a fixed block of context: the agent searches and reads what it
 needs, and what matters is how much that adds. Claude Haiku 5.5, running in Claude Code with
-only recall's tools, loaded up front, took in about 7.6k Claude tokens per held-out
-SWE-ContextBench issue with 0.4.1 (three runs: 7.5k, 7.6k and 7.7k) against 9.2k with 0.3.0 (the
-release run), and named the past fix for 87% of them (90% in 0.3.0's one run; single runs vary
-by about ±5 points). 0.4.1's tool definitions are larger, 3,260 tokens against 2,480, because
-0.4.0 added tools, and its tools returned about a third less text per issue.
+only recall's tools, loaded up front, took in about 7.8k Claude tokens per held-out
+SWE-ContextBench issue with 0.4.1 and 7.3k with 0.3.0's code run the same day (three runs each),
+and named the past fix for 87% and 84% of them (within run noise). What the tools returned was
+about the same, 4.6k tokens an issue against 4.8k; the difference is the tool definitions, 3,260
+tokens against 2,480, because 0.4.0 added tools. On 47 held-out questions about my own past work,
+also the same day, 0.4.2 took in 13.6k tokens a question and 0.3.0's code 13.4k, and they
+answered 84.4% and 86.5% correctly (within run noise). 0.4.1 is not shown there: in its run most
+questions hit an MCP server bug, fixed in 0.4.2, that left the index locked, so recall's tools
+returned errors instead of results.
 
-On 47 held-out questions about my own past work (three runs each), 0.4.2 took in 13.3k tokens a
-question against 16.1k for 0.3.0, and answered 84.4% correctly, against 85.1% for 0.3.0's
-release run and 86.5% for 0.3.0's code re-run the same day (within run noise). 0.4.1 is not
-shown: in its run most questions hit an MCP server bug, fixed in 0.4.2, that left the index
-locked, so recall's tools returned errors instead of results and it answered 75.9% correctly.
+Compare these figures only within a day. On 12 October, 0.3.0's release runs took in 9.0k and
+16.0k tokens; on 16 October the same code took in 7.3k and 13.4k, because the agent called the
+same tools less. Something on the model's side changed in between, as with MemoryCode below.
 
 The counts are estimates in Claude tokens (word pieces of tool output times a factor fitted to
 Claude's own per-call counts, R² of 0.98 or better) and include recall's tool definitions,
 measured directly as the first call's input with recall connected minus without (2,591 tokens in
-0.2.1, 2,480 in 0.3.0, 3,260 in 0.4.1 and 0.4.2). The factor is fitted over all the runs
-compared, so 0.3.0's SWE-ContextBench figure reads 9.2k next to 0.4.1 and 9.0k when fitted with
-0.2.1's runs alone.
+0.2.1, 2,480 in 0.3.0, 3,260 in 0.4.1 and 0.4.2). The factor is fitted over the runs compared,
+so the releases in one comparison share it.
 
 Memory products report the context they give their answer model on chat benchmarks: Mem0 6,956
 tokens a query on LoCoMo (its own figure), EverMemOS 2.8k (its paper's token column, which it
@@ -126,8 +127,11 @@ every convention there in its latest form, and is a replaced form still stated a
 | Notes learned only from unrelated talk (lower is better) | 30% | 23% | **15%** |
 | Model calls, three runs | 1,927 | 1,926 | 2,305 |
 
-With the same model, 0.4.1 moves every measure the right way against 0.3.0, history by history,
-though each change is within run noise (conventions held: +5.0 points, 95% CI -0.7 to +10.9).
+With the same model, 0.4.1 moves every measure the right way against 0.3.0, history by history.
+Fewer notes come from unrelated talk (-6.2 points, 95% CI -8.8 to -3.3); the other changes are
+within run noise (conventions held: +5.0 points, -0.7 to +10.9). 0.3.0's run is from 12 October
+and 0.4.1's from 16 October, and a model's behaviour can shift between days (see the agent
+results below), so read this comparison loosely.
 Since 0.4.0 a note holds its rules one by one and consolidation changes only the one that
 changed; replaying the same extracted facts through each release's consolidation, facts lost
 when notes merge fell from 12.5% to 8.1% and stale notes from 9.3% to 4.8%. The bigger lever is
@@ -210,11 +214,11 @@ one run.
   90.6% of the time** (top five, LongMemEval_S, 470 questions): among the highest session-retrieval
   scores published for the benchmark.
 - **88.4% of answers correct with Claude Haiku 5.5** across all 500 questions on 0.4.1, reading
-  recall's top 10 chats (about 44k tokens a question; 87.4% when first measured on 0.2.0). Handed
-  exactly the right sessions, the same model scores 92.0%. Reading only matched windows of the
-  top 5 chats, it scores 84.2% on about 17.5k tokens. On 0.2.0, reading the top 20 chats reached
-  90.5% for under a cent a question, on a 200-question sample where the right sessions alone
-  scored 91.0%.
+  recall's top 10 chats (about 44k tokens a question; 87.4% when first measured on 0.2.0).
+  Reading only matched windows of the top 5 chats, it scores 84.2% on about 17.5k tokens. Handed
+  exactly the right sessions, the same model scored 92.0% (measured on 9 October; that figure
+  does not depend on recall). On 0.2.0, reading the top 20 chats reached 90.5% for under a cent
+  a question, on a 200-question sample where the right sessions alone scored 91.0%.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/accuracy-dark.svg"><img src="benchmarks/accuracy-light.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 0.4.1 88.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory (Honcho's run with Haiku 4.5) 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></picture></p>
 
@@ -250,7 +254,7 @@ uv run --with pyarrow recall eval memorycode --data DIR --agent --arm hook --not
 uv run recall eval amb --data DIR                                                                 # agent-memory-bench retrieval
 uv run recall eval longmemeval --cases longmemeval_s_cleaned.json --hybrid [--qa claude:claude-haiku-5-5]
 uv run recall eval locomo --cases locomo10.json --hybrid
-python docs/benchmarks/agent_tokens.py DEFS_BEFORE DEFS_AFTER before:RUN_DIR ... after:RUN_DIR ...   # Claude tokens per question
+python docs/benchmarks/agent_tokens.py 0.3.0=2480 RUN_DIR ... 0.4.1=3260 RUN_DIR ...   # Claude tokens per question, one release per group
 ```
 
 Each run writes a folder with every case's transcript, the scores with bootstrap confidence
