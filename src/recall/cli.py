@@ -7,7 +7,6 @@ import sys
 import time
 
 from . import __version__, config, paths
-from .chats import indexer, store
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -28,7 +27,16 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def cmd_index(a) -> None:
+    from .chats import indexer, store
+
     started = time.time()
+    if a.background:  # started by a tool call's refresh (indexer.py): low priority, and killed at the deadline
+        import signal
+
+        from . import power
+
+        power.lower_priority()
+        signal.alarm(indexer.CHILD_DEADLINE)  # work committed so far stays; the next run carries on from it
     result = indexer.index(store.connect(), only=a.source, force=a.force, log=lambda m: print(m, file=sys.stderr))
     for name, r in result.items():
         if "restored" in r:
@@ -44,24 +52,38 @@ def cmd_index(a) -> None:
 
 
 def cmd_embed(a) -> None:
-    from . import embeddings
+    from . import embeddings, power
+    from .chats import store
 
+    power.lower_priority()  # a backfill, mostly started by a tool call: everything else gets the CPU first
     embedder = embeddings.configured()
     if embedder is None:
         sys.exit(
             "embeddings are off: add an [embeddings] table to config.toml and install the extra "
             "(uv tool install 'recall-agents[embeddings]'); see embeddings.py"
         )
-    con = store.connect()
-    todo = embeddings.pending(con, embedder)
-    print(f"{len(todo)} messages to embed with {embedder.model}", file=sys.stderr)
-    started = time.time()
-    done = embeddings.index_messages(con, embedder, todo, log=lambda m: print(m, file=sys.stderr))
-    print(f"embedded {done} messages in {time.time() - started:.0f}s")
+    with embeddings.embedding_lock() as mine:
+        if not mine:
+            print("another recall embed is running", file=sys.stderr)
+            return
+        con = store.connect()
+        todo = embeddings.pending(con, embedder)
+        print(f"{len(todo)} messages to embed with {embedder.model}", file=sys.stderr)
+        started = time.time()
+        done = embeddings.index_messages(
+            con,
+            embedder,
+            todo,
+            log=lambda m: print(m, file=sys.stderr),
+            deadline=started + embeddings.EMBED_DEADLINE,
+        )
+    left = f"; stopped at the time limit with {len(todo) - done} left for the next run" if done < len(todo) else ""
+    print(f"embedded {done} messages in {time.time() - started:.0f}s{left}")
 
 
 def cmd_search(a) -> None:
     from . import usage
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -86,6 +108,7 @@ def cmd_search(a) -> None:
 
 def cmd_show(a) -> None:
     from . import usage
+    from .chats import store
 
     chat = store.read(store.connect(), a.chat_id, a.query, a.offset, a.limit, max_chars=4000)
     usage.record("cli", "show", {"chat_id": a.chat_id, "query": a.query}, chat or {"error": "not found"})
@@ -100,6 +123,7 @@ def cmd_show(a) -> None:
 
 def cmd_forget(a) -> None:
     from . import forget
+    from .chats import indexer, store
 
     if not (a.chat_id or a.project):
         sys.exit("name a chat id, or --project NAME")
@@ -151,16 +175,20 @@ def cmd_forget(a) -> None:
 
 
 def cmd_stats(a) -> None:
+    from .chats import indexer, store
     from .chats.sources import codex, compressed
 
     out = store.stats(store.connect())
     if n := codex.unreadable():  # zstd-compressed rollouts nothing here can decode: not in the numbers above
         out.setdefault("codex", {})["unreadable"] = {"chats": n, "fix": compressed.fix_hint()}
+    if parked := indexer.parked():  # failed every read: read again when their files change
+        out["not_indexed"] = {"chats": len(parked), "retry": "recall index --force"}
     print(json.dumps(out, indent=2))
 
 
 def cmd_why(a) -> None:
     from . import commits, usage
+    from .chats import indexer, store
 
     if not a.target and not a.commit:
         sys.exit("recall why needs a file (path, path:line or path:start-end) or --commit <sha>")
@@ -175,6 +203,7 @@ def cmd_why(a) -> None:
 
 def cmd_links(a) -> None:
     from . import commits
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -205,10 +234,24 @@ def cmd_links(a) -> None:
 
 
 def cmd_dream(a) -> None:
-    from . import autopilot
+    from . import autopilot, power
     from .llm import FatalError
     from .memory import dream
 
+    # First, before anything opens the index: a run launchd starts on waking often finds the machine on battery.
+    # A person at a terminal asked for this run: it goes ahead.
+    waits = power.defer(a.on_battery or ("run" if sys.stdin.isatty() else None))
+    power.note("dream", waits)
+    if waits:
+        print(
+            time.strftime("%H:%M:%S"),
+            "deferred: on battery. The first tool call or session start on power runs it;"
+            ' `recall dream --on-battery run` runs it now, and [power] on_battery = "run" always.',
+            file=sys.stderr,
+        )
+        return
+    if a.background:  # a catch-up started by a tool call or a session start (power.catch_up)
+        power.lower_priority()
     autopilot.run("nightly", log=lambda m: print(time.strftime("%H:%M:%S"), "autopilot:", m, file=sys.stderr))
 
     opts = dream.Options(
@@ -229,6 +272,7 @@ def cmd_dream(a) -> None:
 
 
 def cmd_memory(a) -> None:
+    from .chats import store
     from .memory import context
     from .memory.notes import NoteStore
 
@@ -306,6 +350,7 @@ def cmd_hook(a) -> None:
 
 def cmd_explore(a) -> None:
     from . import explore
+    from .chats import store
 
     con = explore.connect()
     if a.action == "backfill":
@@ -350,6 +395,7 @@ def cmd_explore(a) -> None:
 
 def cmd_projects(a) -> None:
     from . import projects
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -400,6 +446,7 @@ def cmd_projects(a) -> None:
 
 def cmd_rules(a) -> None:
     from . import projects, rules
+    from .chats import store
 
     con = store.connect()
     target = " ".join(a.target) if a.target else None
@@ -436,6 +483,7 @@ def cmd_rules(a) -> None:
 
 def cmd_usage(a) -> None:
     from . import usage
+    from .chats import store
 
     s = usage.summary(store.parse_since(a.since))
     if a.json:
@@ -478,6 +526,7 @@ def cmd_jit(a) -> None:
     """What jit would hand an agent for a prompt, a file it reads, or a failed command, and
     why. The hooks themselves answer through `recall hook` (integrations/hooks.py)."""
     from . import jit
+    from .chats import store
 
     con = store.connect()
     cwd = os.path.abspath(a.cwd or os.getcwd())
@@ -509,16 +558,18 @@ def cmd_jit(a) -> None:
 
 def cmd_status(a) -> None:
     from . import status
+    from .chats import store
 
     if a.hook:  # the edit hook's first command; `recall hook` answers it now
         return cmd_hook(a)
-    from . import autopilot
+    from . import autopilot, power
     from .chats.sources import codex, compressed
 
     s = status.status(store.parse_since(a.since))
     if n := codex.unreadable():
         s["unreadable"] = {"agent": "codex", "chats": n, "fix": compressed.fix_hint()}
     s["outlived"] = status.outlived()
+    s["power"] = {"on_battery": power.on_battery(), "deferred": power.deferred()}
     rows = autopilot.report(deep=False)
     if a.json:
         print(json.dumps({**s, "roots": rows}, indent=2))
@@ -549,11 +600,14 @@ def cmd_status(a) -> None:
         print(f"  {repo:14} {', '.join(dict.fromkeys(x['branch'] or '?' for x in xs))}")
     if note := codex.unreadable_note():
         print(f"\n{note}")
+    for line in power.summary():
+        print(f"\n{line}")
     print("\n" + autopilot.summary_line(rows))
 
 
 def cmd_resolve(a) -> None:
     from . import mail
+    from .chats import store
 
     out = mail.resolve(a.repo, a.file, store.parse_since(a.since))
     if a.json:
@@ -660,7 +714,8 @@ def cmd_autopilot(a) -> None:
 
 
 def cmd_doctor(a) -> None:
-    from . import autopilot
+    from . import autopilot, power
+    from .chats import indexer
     from .chats.sources import codex
 
     rows = autopilot.report()
@@ -700,6 +755,8 @@ def cmd_doctor(a) -> None:
         print(f"{r['root']:15} {where}\n{'':15} {text}; {seen}" + (f"; {r['account']}" if r["account"] else ""))
         if r["hooks_run"]:
             print(f"{'':15} hooks run {', '.join(r['hooks_run'])}, not this recall ({r['this_recall']})")
+        if r["message_chat_unasked"]:
+            print(f"{'':15} Codex runs message_chat without asking you: `recall install` makes it ask")
     on = autopilot.enabled()
     print(
         f"\nautopilot: {'on' if on else 'off'}"
@@ -716,6 +773,14 @@ def cmd_doctor(a) -> None:
         print("  `recall install --repoint` points the hooks at this recall; autopilot never moves them")
     for line in autopilot.recent():
         print(f"  {line}")
+    for line in power.summary():
+        print(f"\n{line}")
+    if parked := indexer.parked():
+        print(
+            f"\n{len(parked)} chat(s) failed to index {indexer.MAX_ATTEMPTS} times and wait for their files to change;"
+            " `recall index --force` tries them now:"
+        )
+        print("\n".join(f"  {key.replace(home, '~')}" for key in parked[:5]) + ("\n  …" if len(parked) > 5 else ""))
     if note := codex.unreadable_note():
         print(f"\n{note}")
 
@@ -758,6 +823,7 @@ COMMA_SAFE_CASES = ("memorycode", "swe-contextbench")
 
 def cmd_eval(a) -> None:
     from . import evals
+    from .chats import store
 
     if a.case and a.kind in COMMA_SAFE_CASES:  # ID,ID,... as well as repeated --case
         a.case = [i for c in a.case for i in c.split(",") if i]
@@ -924,6 +990,7 @@ def _parser() -> argparse.ArgumentParser:
     sp = command("index", cmd_index, "index new and changed chats")
     sp.add_argument("--force", action="store_true", help="re-read every chat")
     sp.add_argument("--source", action="append", help="claude, codex, cursor or cursor-legacy")
+    sp.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
     for name, help_text in (("search", "find chats by topic"), ("recent", "most recently active chats")):
         sp = command(name, cmd_search, help_text)
         if name == "search":
@@ -969,6 +1036,12 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-batch", action="store_true", help="never use the provider's batch API this run")
     sp.add_argument("--extract-only", action="store_true", help="read chats but do not update notes")
     sp.add_argument("--consolidate-only", action="store_true", help="update notes without reading chats")
+    sp.add_argument(
+        "--on-battery",
+        choices=["defer", "run"],
+        help="on battery: wait for power, or run (default: [power] on_battery)",
+    )
+    sp.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
     sp = command("memory", cmd_memory, "browse memory notes")
     sp.add_argument("action", nargs="?", choices=["stats", "search", "show", "link"], default="stats")
     sp.add_argument("terms", nargs="*")

@@ -5,8 +5,9 @@ Ollama's OpenAI-compatible endpoint cannot raise the context window from its
 """
 
 import time
+from urllib.parse import urlparse
 
-from .base import Provider, Result, http_json, parse_json
+from .base import Provider, Result, http_json, on_this_machine, parse_json
 from .openai_compat import LOCAL_PROFILE
 
 DEFAULT_URL = "http://localhost:11434"
@@ -15,12 +16,14 @@ DEFAULT_URL = "http://localhost:11434"
 class Ollama(Provider):
     id = "local"
     title = "Ollama"
-    private = True
     profile = LOCAL_PROFILE
 
     def __init__(self, model: str, base_url: str = DEFAULT_URL):
         super().__init__(model)
         self.base_url = base_url.rstrip("/")
+        self.private = on_this_machine(self.base_url)
+        if not self.private:
+            self.destination = urlparse(self.base_url).hostname or self.base_url
 
     def models(self) -> list[str]:
         return sorted(m["name"] for m in http_json(f"{self.base_url}/api/tags", timeout=5)["models"])

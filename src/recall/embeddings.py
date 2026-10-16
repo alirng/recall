@@ -13,20 +13,30 @@ and keyed by its text, so a chat that grows only embeds its new messages. `recal
 builds them; a search embeds only the query. If the model cannot be reached, search uses
 keywords alone. The arithmetic needs numpy, which the `embeddings` extra installs.
 
+Search reads the vectors from one file beside the index that every recall process maps
+(vectorfile.py), so an agent session's server keeps no copy of them.
+
 Why fuse rather than replace: on LongMemEval, porter BM25 already finds most answer sessions,
 and published hybrids gain a few points over it while dense retrieval alone does worse
 (see docs/research/retrieval-benchmarks.md).
 """
 
+import contextlib
+import fcntl
 import hashlib
+import os
 import sys
 import time
 
-from . import config, keys
+from . import config, keys, paths, vectorfile
 
 MAX_CHARS = 2000  # of each message; the opening of a long reply says what it is about
 BATCH = 32
 INLINE_LIMIT = 200  # new messages a search may embed before answering; more go to the background
+QUERY_TIMEOUT = 10  # seconds a search waits for its query's vector before going by keywords
+INLINE_TIMEOUT = 30  # each request while a search or a tool call waits on it
+BATCH_TIMEOUT = 300  # each request of a backfill, which nobody waits on
+EMBED_DEADLINE = 20 * 60  # a `recall embed` run stops after this; the next one carries on
 # Some models are trained with task prefixes and retrieve noticeably worse without them.
 PREFIXES = {
     "nomic-embed-text": ("search_query: ", "search_document: "),
@@ -39,9 +49,21 @@ create table if not exists vectors (
 );
 create table if not exists note_vectors (note_id text primary key, model text, hash text, vec blob);
 """
+# Chats whose messages changed since pending() last read them. Triggers mark them, so writes by
+# a release that knows nothing of this are marked too. Rebuilding the chat tables drops the
+# triggers with the messages table, and pending() then reads every message once.
+DIRTY = """
+create table if not exists embed_dirty (id integer primary key autoincrement, session_id text unique);
+create trigger if not exists messages_embed_ai after insert on messages begin
+  insert or replace into embed_dirty(session_id) values (new.session_id);
+end;
+create trigger if not exists messages_embed_au after update of text on messages begin
+  insert or replace into embed_dirty(session_id) values (new.session_id);
+end;
+"""
+CHECKED = "embed_checked"  # meta: the model and text cut the last read of every message was for
 
 _embedder: tuple[str, "Embedder | None"] | None = None
-_matrix: dict = {}
 
 
 class Embedder:
@@ -60,18 +82,19 @@ class Embedder:
     def model(self) -> str:
         return f"{self.provider}:{self.name}"
 
-    def embed(self, texts: list[str], query: bool = False) -> list[list[float]]:
+    def embed(self, texts: list[str], query: bool = False, timeout: float | None = None) -> list[list[float]]:
         from .llm.base import http_json
 
+        timeout = timeout or (QUERY_TIMEOUT if query else BATCH_TIMEOUT)
         prefix = self.query_prefix if query else self.document_prefix
         inputs = [prefix + t[:MAX_CHARS] for t in texts]
         if self.provider == "ollama":
             # keep_alive holds the model in memory between searches, rather than Ollama's 5 minutes
             payload = {"model": self.name, "input": inputs, "keep_alive": "30m"}
-            out = http_json(f"{self.base_url}/api/embed", payload, timeout=300)
+            out = http_json(f"{self.base_url}/api/embed", payload, timeout=timeout)
             return out["embeddings"]
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        out = http_json(f"{self.base_url}/embeddings", {"model": self.name, "input": inputs}, headers, timeout=300)
+        out = http_json(f"{self.base_url}/embeddings", {"model": self.name, "input": inputs}, headers, timeout=timeout)
         return [d["embedding"] for d in sorted(out["data"], key=lambda d: d["index"])]
 
 
@@ -102,23 +125,66 @@ def query_vector(query: str, embedder: "Embedder | None" = None):
 
 
 def pending(con, embedder: "Embedder") -> list[tuple]:
-    """Messages with no vector from this model for their current text."""
+    """Messages with no vector from this model for their current text. Reads only the chats
+    marked as changed since the last call, or every message once after the chat tables were
+    rebuilt or the model changed. A chat with messages still to embed stays marked until a
+    later call finds them done."""
     con.executescript(SCHEMA)
-    have = {
-        (r[0], r[1]): r[2]
-        for r in con.execute("select session_id, seq, hash from vectors where model = ?", (embedder.model,))
-    }
+    checked = f"{embedder.model} {MAX_CHARS}"
+    row = con.execute("select v from meta where k = ?", (CHECKED,)).fetchone() if _has_table(con, "meta") else None
+    every = not _has_trigger(con, "messages_embed_au") or not row or row[0] != checked
+    if every:
+        con.executescript(DIRTY)  # first, so a message written while the read below runs is marked
+    marks = {r[0]: r[1] for r in con.execute("select session_id, id from embed_dirty")}
+    if every:
+        have = {
+            (r[0], r[1]): r[2]
+            for r in con.execute("select session_id, seq, hash from vectors where model = ?", (embedder.model,))
+        }
+        rows = con.execute("select session_id, seq, text from messages")
+    else:
+        sids = list(marks)
+        have = {
+            (r[0], r[1]): r[2]
+            for r in _chunked(
+                con,
+                "select session_id, seq, hash from vectors where model = ? and session_id in",
+                sids,
+                [embedder.model],
+            )
+        }
+        rows = _chunked(con, "select session_id, seq, text from messages where session_id in", sids)
     out = []
-    for r in con.execute("select session_id, seq, text from messages"):
+    for r in rows:
         h = _hash(r[2])
         if have.get((r[0], r[1])) != h:
             out.append((r[0], r[1], r[2], h))
+    waiting = {r[0] for r in out}
+    # a mark set again since the read above has a new id, so this leaves it
+    con.executemany(
+        "delete from embed_dirty where session_id = ? and id = ?",
+        [(s, i) for s, i in marks.items() if s not in waiting],
+    )
+    if every:
+        con.executemany("insert or ignore into embed_dirty(session_id) values (?)", [(s,) for s in waiting])
+        con.execute("create table if not exists meta (k text primary key, v text)")
+        con.execute("insert or replace into meta values (?, ?)", (CHECKED, checked))
+    con.commit()
     return out
 
 
-def index_messages(con, embedder: "Embedder", todo: list[tuple] | None = None, cache=None, log=None) -> int:
+def index_messages(
+    con,
+    embedder: "Embedder",
+    todo: list[tuple] | None = None,
+    cache=None,
+    log=None,
+    deadline: float | None = None,
+    timeout: float | None = None,
+) -> int:
     """Embed the messages that need it. cache: an optional connection holding vectors by
-    text hash from earlier runs, so the same text is never embedded twice."""
+    text hash from earlier runs, so the same text is never embedded twice. deadline: a
+    time.time() to stop by, checked between batches. timeout: seconds each request may take."""
     np = _numpy()
     todo = pending(con, embedder) if todo is None else todo
     if cache is not None:
@@ -127,6 +193,11 @@ def index_messages(con, embedder: "Embedder", todo: list[tuple] | None = None, c
         )
     done = 0
     for i in range(0, len(todo), BATCH):
+        if deadline and time.time() > deadline:
+            break
+        wait = timeout or BATCH_TIMEOUT
+        if deadline:
+            wait = max(5.0, min(wait, deadline - time.time()))
         batch = todo[i : i + BATCH]
         vecs: dict[str, bytes] = {}
         if cache is not None:
@@ -135,7 +206,7 @@ def index_messages(con, embedder: "Embedder", todo: list[tuple] | None = None, c
             vecs = dict(cache.execute(q, [embedder.model, *hashes]))
         missing = [b for b in batch if b[3] not in vecs]
         if missing:
-            for (_, _, _, h), v in zip(missing, embedder.embed([b[2] for b in missing]), strict=True):
+            for (_, _, _, h), v in zip(missing, embedder.embed([b[2] for b in missing], timeout=wait), strict=True):
                 vecs[h] = np.asarray(_unit(v), dtype=np.float16).tobytes()
             if cache is not None:
                 cache.executemany(
@@ -151,7 +222,26 @@ def index_messages(con, embedder: "Embedder", todo: list[tuple] | None = None, c
         done += len(batch)
         if log and done % (BATCH * 20) < BATCH:
             log(f"embeddings: {done}/{len(todo)}")
+    if done:
+        try:  # bring the shared file up to date here, so a search does not have to
+            vectorfile.current(con, embedder.model, writer=True)
+        except Exception as e:
+            print(f"recall: could not update the shared vector file: {e}", file=sys.stderr)
     return done
+
+
+@contextlib.contextmanager
+def embedding_lock():
+    """Held while chat messages are embedded, so a `recall embed` backfill and a server's refresh
+    never embed the same messages at once. Yields False, without waiting, when another holds it."""
+    os.makedirs(paths.HOME, exist_ok=True)
+    with open(os.path.join(paths.HOME, "embed.lock"), "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
 def refresh(con, background: bool = False, log=None) -> int:
@@ -160,29 +250,43 @@ def refresh(con, background: bool = False, log=None) -> int:
     embedder = configured()
     if embedder is None:
         return 0
-    try:
-        todo = pending(con, embedder)
-    except Exception:
-        return 0
-    if not todo:
-        return 0
-    if background and len(todo) > INLINE_LIMIT:
+    with embedding_lock() as mine:
+        if not mine:  # the chats it did not take stay marked for the next refresh
+            if log:
+                log("embeddings: skipped, a recall embed is running")
+            return 0
+        try:
+            todo = pending(con, embedder)
+        except Exception:
+            return 0
+        if todo and not (background and len(todo) > INLINE_LIMIT):
+            try:
+                if background:  # a tool call is waiting, holding the index lock: never longer than this
+                    deadline = time.time() + INLINE_TIMEOUT
+                    return index_messages(con, embedder, todo, log=log, deadline=deadline, timeout=INLINE_TIMEOUT)
+                return index_messages(con, embedder, todo, log=log)
+            except Exception as e:
+                print(f"recall: could not embed new messages: {e}", file=sys.stderr)
+                return 0
+    if todo:  # once the lock is let go, or the run this starts would find it taken
         _spawn_backfill(con)
-        return 0
-    try:
-        return index_messages(con, embedder, todo, log=log)
-    except Exception as e:
-        print(f"recall: could not embed new messages: {e}", file=sys.stderr)
-        return 0
+    return 0
 
 
 def ranking(con, vector, fsql: str, fargs: list, msql: str, margs: list, pool: int) -> list[str]:
     """Chats ordered by their message closest in meaning to the query vector."""
     np = _numpy()
-    rows = _session_rows(con)
-    if rows is None or vector is None:
+    if vector is None or np is None or not _has_table(con, "vectors"):
         return []
-    keys_, matrix = rows
+    model_row = con.execute("select model from vectors limit 1").fetchone()
+    if not model_row:
+        return []
+    embedder = configured()
+    model = embedder.model if embedder else model_row[0]
+    q = np.asarray(vector, dtype=np.float32)
+    closest = vectorfile.best(con, model, q, pool * 4)
+    if closest is None:
+        closest = _scan(con, model, q, pool * 4)
     allowed = {
         r[0]
         for r in con.execute(
@@ -191,11 +295,8 @@ def ranking(con, vector, fsql: str, fargs: list, msql: str, margs: list, pool: i
             [*fargs, *margs],
         )
     }
-    scores = matrix @ np.asarray(vector, dtype=np.float32)
-    order = np.argsort(-scores)
     seen: dict[str, None] = {}
-    for i in order[: pool * 4]:
-        sid = keys_[i][0]
+    for sid in closest:
         if sid in allowed and sid not in seen:
             seen[sid] = None
             if len(seen) >= pool:
@@ -203,39 +304,35 @@ def ranking(con, vector, fsql: str, fargs: list, msql: str, margs: list, pool: i
     return list(seen)
 
 
-def _session_rows(con):
-    """Every message vector for the configured model as one matrix, cached between searches
-    while the table is unchanged."""
+def _scan(con, model: str, q, n: int) -> list[str]:
+    """Session ids of the n messages closest to q, best first, reading the vectors table a chunk
+    at a time: for an index with no shared file, such as one in memory."""
     np = _numpy()
-    embedder = configured()
-    model_row = con.execute("select model from vectors limit 1").fetchone() if _has_table(con, "vectors") else None
-    if not model_row:
-        return None
-    model = embedder.model if embedder else model_row[0]
-    stamp = con.execute("select count(*), max(rowid) from vectors where model = ?", (model,)).fetchone()
-    path = con.execute("pragma database_list").fetchone()[2]
-    key = (path, model, tuple(stamp))
-    if path and _matrix.get("key") == key:
-        return _matrix["rows"]
-    keys_, blobs = [], []
-    for r in con.execute(
-        """select v.session_id, v.seq, v.vec from vectors v
+    ids: list[str] = []
+    scores = []
+    cur = con.execute(
+        """select v.session_id, v.vec from vectors v
            join messages m on m.session_id = v.session_id and m.seq = v.seq where v.model = ?""",
         (model,),
-    ):
-        keys_.append((r[0], r[1]))
-        blobs.append(r[2])
-    if not blobs:
-        return None
-    matrix = np.frombuffer(b"".join(blobs), dtype=np.float16).reshape(len(blobs), -1).astype(np.float32)
-    rows = (keys_, matrix)
-    if path:
-        _matrix.update(key=key, rows=rows)
-    return rows
+    )
+    while batch := cur.fetchmany(vectorfile.CHUNK):
+        batch = [r for r in batch if len(r[1]) == 2 * len(q)]
+        if batch:
+            matrix = np.frombuffer(b"".join(r[1] for r in batch), dtype=np.float16).reshape(len(batch), -1)
+            scores.append(matrix.astype(np.float32) @ q)
+            ids += [r[0] for r in batch]
+    if not ids:
+        return []
+    return [ids[i] for i in np.argsort(-np.concatenate(scores))[:n]]
 
 
 def _spawn_backfill(con) -> None:
     import subprocess
+
+    from . import power
+
+    if power.defer():  # on battery the backlog waits for power
+        return
 
     con.execute("create table if not exists meta (k text primary key, v text)")
     row = con.execute("select v from meta where k = 'embed_spawned'").fetchone()
@@ -275,7 +372,7 @@ def note_ranking(con, texts: dict[str, str], query: str) -> list[str]:
     try:
         for start in range(0, len(stale), BATCH):
             ids = stale[start : start + BATCH]
-            for i, v in zip(ids, embedder.embed([texts[i] for i in ids]), strict=True):
+            for i, v in zip(ids, embedder.embed([texts[i] for i in ids], timeout=INLINE_TIMEOUT), strict=True):
                 blob = np.asarray(_unit(v), dtype=np.float16).tobytes()
                 con.execute(
                     "insert or replace into note_vectors values (?,?,?,?)", (i, embedder.model, _hash(texts[i]), blob)
@@ -315,3 +412,14 @@ def _hash(text: str) -> str:
 
 def _has_table(con, name: str) -> bool:
     return bool(con.execute("select 1 from sqlite_master where name = ?", (name,)).fetchone())
+
+
+def _has_trigger(con, name: str) -> bool:
+    return bool(con.execute("select 1 from sqlite_master where type = 'trigger' and name = ?", (name,)).fetchone())
+
+
+def _chunked(con, sql: str, ids: list[str], before: list | None = None):
+    """Rows of `sql ... in (ids)`, a few hundred ids at a time to stay under SQLite's limit on arguments."""
+    for a in range(0, len(ids), 500):
+        part = ids[a : a + 500]
+        yield from con.execute(f"{sql} ({','.join('?' * len(part))})", [*(before or []), *part])

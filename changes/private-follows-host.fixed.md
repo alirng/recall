@@ -1,0 +1,1 @@
+**A model server on another machine is no longer called private.** A local model whose `base_url` is not `localhost` or a loopback address used to be reported as "nothing leaves this machine". `recall dream` no longer says so, and setup names the host the chat excerpts go to.

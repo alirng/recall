@@ -82,7 +82,9 @@ def _in_project(con: sqlite3.Connection, project: str) -> list[str]:
         for sid in (r[0] for r in con.execute("select distinct id from chat_archive")):
             if sid in indexed:
                 continue
-            s = archive.unpack(archive.copies(con, sid)[-1]["data"])
+            s = archive.readable(archive.copies(con, sid)[-1]["data"])
+            if s is None:  # a damaged copy: `recall forget <id>` still removes it
+                continue
             home = folder_project(s.project)
             first = next((m.text for m in s.messages if m.role == "user"), "")[:500]
             rows.append(
@@ -107,7 +109,7 @@ def describe(con: sqlite3.Connection, ids: list[str]) -> list[dict]:
     for sid in ids:
         s = con.execute("select title, agent, source, n_messages from sessions where id = ?", (sid,)).fetchone()
         copies = archive.copies(con, sid) if archive.enabled(con) else []
-        held = archive.unpack(copies[-1]["data"]) if copies and not s else None  # only the archive has it
+        held = archive.readable(copies[-1]["data"]) if copies and not s else None  # only the archive has it
         # A chat Codex has compressed is keyed by its .jsonl path, but the .jsonl.zst is what holds it.
         files = {c["source"] for c in copies} | ({s["source"]} if s else set())
         out.append(
@@ -155,6 +157,14 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub:
         if remember:
             con.execute("insert or replace into forgotten_chats(id, at) values (?, ?)", (sid, time.time()))
     con.commit()
+    if counts["vectors"]:
+        from . import vectorfile
+
+        try:  # the file search reads beside the index holds them too
+            vectorfile.drop_deleted(con)
+        except Exception as e:  # whatever went wrong, the index is still scrubbed below
+            vectorfile.mark_forgotten(con)  # and the next search rebuilds the file without them
+            archive.log(f"deleted chats, but could not rewrite the shared vector file ({e!r}); the next search will")
     if scrub and deleted:
         try:
             scrub_db(con)
@@ -293,7 +303,8 @@ def _text(con, sid: str, have: set[str]) -> str:
         parts += [r[0] for r in con.execute("select text from messages where session_id = ?", (sid,))]
     if "chat_archive" in have:
         for row in archive.copies(con, sid):
-            parts += [m.text for m in archive.unpack(row["data"]).messages]
+            if copy := archive.readable(row["data"]):  # a damaged copy has no words to match
+                parts += [m.text for m in copy.messages]
     return "\n".join(parts)
 
 

@@ -251,10 +251,19 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     msgs = stored
     size = archive.source_size(s.source)
     for row in archive.copies(con, s.id):
-        copy = archive.unpack(row["data"])
+        try:
+            copy = archive.unpack(row["data"])
+            theirs = (
+                archive.messages(row, CHAT_SCHEMA_VERSION)
+                if archive.kind(row["source"]) == archive.kind(s.source)
+                else []
+            )
+        except Exception as e:  # a damaged copy, which nothing can read: this read replaces it if it is this file's
+            archive.log(f"could not read the archived copy of {s.id} from {row['source']}: {error_name(e)}")
+            continue
         if row["source"] != s.source:
             if archive.kind(row["source"]) == archive.kind(s.source):
-                others.append(archive.messages(row, CHAT_SCHEMA_VERSION))
+                others.append(theirs)
                 other_errs.append(copy.tool_errors)
             continue
         # A copy from another parser version may differ for reasons that have nothing to do
@@ -262,7 +271,7 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
         # since: a rewrite.
         shrank = (size or 0) < (row["source_size"] or 0)
         same = row["parser"] == CHAT_SCHEMA_VERSION or shrank
-        msgs = archive.merge(archive.messages(row, CHAT_SCHEMA_VERSION), stored, only_kept=not same)
+        msgs = archive.merge(theirs, stored, only_kept=not same)
         if (n := archive.kept(msgs)) > (row["kept"] or 0):
             archive.log(f"kept {n} messages of {s.id} that a re-read of {s.source} no longer has")
         if same:  # another parser may word a signature differently: keep only this one's
@@ -299,24 +308,65 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         )
     ]
     now = time.time()
+    restored = 0
+    # chat -> its latest copy's archived_at, for chats whose copies could not be read: tried again only when it changes
+    damaged = dict(con.execute("select substr(k, 16), v from meta where k like 'restore_failed:%'"))
     for sid in ids:
         rows = archive.copies(con, sid)
         latest = rows[-1]  # the copy a source yielded most recently
-        s = archive.unpack(latest["data"])
-        same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
-        mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
-        shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
-        shown, chat = _redacted(shown)
-        errs = archive.merge_errors(
-            *[reclean_errors(archive.unpack(r["data"]).tool_errors, chat) for r in same_kind],
-            reclean_errors(s.tool_errors, chat),
-        )  # a copy's failed calls are read again with its messages
-        _write(con, s, shown, shown, errs, chat)
-        con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
+        if damaged.get(sid) == str(latest["archived_at"]):
+            continue
+        try:
+            with atomic(con):
+                s = archive.unpack(latest["data"])
+                same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
+                mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
+                shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
+                shown, chat = _redacted(shown)
+                errs = archive.merge_errors(
+                    *[reclean_errors(archive.unpack(r["data"]).tool_errors, chat) for r in same_kind],
+                    reclean_errors(s.tool_errors, chat),
+                )  # a copy's failed calls are read again with its messages
+                _write(con, s, shown, shown, errs, chat)
+                con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
+        except sqlite3.OperationalError:  # the index itself (locked, full): no copy's fault
+            raise
+        except Exception as e:  # a damaged copy: the others still come back
+            con.execute(
+                "insert or replace into meta values (?,?)", (f"restore_failed:{sid}", str(latest["archived_at"]))
+            )
+            archive.log(f"could not restore {sid} from the archive: {error_name(e)}; tried again if its copy changes")
+            continue
+        restored += 1
     if ids:
         con.commit()
-        archive.log(f"restored {len(ids)} chat(s) from the archive: no source has them any more")
-    return len(ids)
+    if restored:
+        archive.log(f"restored {restored} chat(s) from the archive: no source has them any more")
+    return restored
+
+
+def error_name(e: BaseException) -> str:
+    """What failed, for a log line that must not quote a chat: the exception's type, never its text."""
+    kind = type(e)
+    return kind.__name__ if kind.__module__ == "builtins" else f"{kind.__module__}.{kind.__name__}"
+
+
+@contextlib.contextmanager
+def atomic(con: sqlite3.Connection):
+    """A block's writes as one unit inside the caller's transaction: undone if it raises, and
+    otherwise left for the caller to commit."""
+    if not con.in_transaction:
+        con.execute("begin")  # a savepoint outside a transaction would commit when released
+    con.execute("savepoint atomic")
+    try:
+        yield
+    except BaseException:
+        if con.in_transaction:  # some errors end the whole transaction themselves
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("rollback to atomic")
+                con.execute("release atomic")
+        raise
+    con.execute("release atomic")
 
 
 def _redacted(msgs: list[Message]) -> tuple[list[Message], Chat]:
@@ -395,7 +445,10 @@ def _write(
 
 # --- querying ---------------------------------------------------------------
 
-_SINCE = re.compile(r"^(\d+)\s*([hdwmy])$")
+# A window as agents write it: 12h, 3 days, 2mo, 1 year. A bare "m" is a month, as it always was here.
+_SINCE = re.compile(r"^(\d+)\s*(h|hrs?|hours?|d|days?|w|wks?|weeks?|m|mos?|mons?|months?|y|yrs?|years?)$")
+_UNIT = {"h": 3600, "d": 86400, "w": 604800, "m": 2592000, "y": 31536000}
+WINDOW_FORMS = "a number and a unit (12h, 3d, 2w, 2mo, 1y, or hours, days, weeks, months, years) or a date (2026-10-01)"
 
 
 def parse_since(since: str | None) -> float | None:
@@ -403,9 +456,19 @@ def parse_since(since: str | None) -> float | None:
         return None
     m = _SINCE.match(since.strip().lower())
     if m:
-        unit = {"h": 3600, "d": 86400, "w": 604800, "m": 2592000, "y": 31536000}[m.group(2)]
-        return time.time() - int(m.group(1)) * unit
-    return datetime.fromisoformat(since).timestamp()
+        return time.time() - int(m.group(1)) * _UNIT[m.group(2)[0]]
+    return _date(since).timestamp()
+
+
+class BadWindow(ValueError):
+    """A since or until recall cannot read; the message says which forms it takes."""
+
+
+def _date(text: str) -> datetime:
+    try:
+        return datetime.fromisoformat(text.strip())
+    except ValueError:
+        raise BadWindow(f"not a time window: {text!r}; use {WINDOW_FORMS}") from None
 
 
 # Words that say nothing about which chat is meant. They are dropped from a query once two
@@ -466,7 +529,7 @@ def parse_until(until: str | None) -> float | None:
         return None
     if _SINCE.match(until.strip().lower()):
         return parse_since(until)
-    end = datetime.fromisoformat(until)
+    end = _date(until)
     if len(until.strip()) == 10:  # a date with no time: the end of that day
         end = end.replace(hour=23, minute=59, second=59)
     return end.timestamp()

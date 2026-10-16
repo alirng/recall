@@ -1,6 +1,7 @@
 """Model providers. The person picks one at setup; recall assumes no vendor.
 
-    local       a model on this machine: nothing leaves it (Ollama, LM Studio, llama.cpp)
+    local       a model you serve yourself (Ollama, LM Studio, llama.cpp): nothing leaves this machine
+                when its base_url is localhost or a loopback address
     chatgpt     your ChatGPT plan, through the Codex CLI
     claude      your Claude plan, through the Claude Code CLI
     openai      OpenAI API key
@@ -79,7 +80,7 @@ def _one(settings: dict) -> Provider:
     if kind == "local":
         if settings.get("server") == "ollama":
             return Ollama(name, base_url or LOCAL_SERVERS["Ollama"])
-        return OpenAICompatible(name, base_url or LOCAL_SERVERS["LM Studio"], provider_id="local", private=True)
+        return OpenAICompatible(name, base_url or LOCAL_SERVERS["LM Studio"], provider_id="local", local=True)
     if kind == "chatgpt":
         return ChatGPT(name, settings.get("effort", "medium"))
     if kind == "claude":
