@@ -5,6 +5,44 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-16
+
+The nightly memory run survives an upgrade, and `recall status` says which agents to restart after
+one. Search results are unchanged.
+
+### Upgrading
+
+- **The chat index rebuilds itself once more.** The chat schema is no longer one number every parser
+  change bumps (it was 7): each module that shapes the index declares its own `CHAT_SCHEMA` string,
+  and the schema is a hash of them all, shown as `p-` and ten hex digits. The first index run after
+  upgrading re-reads your chats; chats whose files are gone come back from the archive. Later
+  rebuilds happen only when a release changes one of those strings.
+- **Restart the agents that were open when you upgraded.** Their recall MCP server still runs 0.4.0,
+  which rebuilds the chat index back to schema 7 whenever it is called. `recall status` lists them.
+
+### Added
+
+- **`recall status` names the agents to restart after an upgrade.** An agent's recall MCP server
+  keeps the release it started with until the agent restarts. `recall status` now lists each server
+  that started before recall was last installed into its environment, with the agent that started it
+  (and, for Claude Code, the chat), and `--json` carries them as `outlived`. The menu bar shows them
+  under Needs you.
+
+### Changed
+
+- **Contributors:** a PR adds a `changes/<topic>.<section>.md` fragment instead of editing
+  CHANGELOG.md, and `tools/changelog.py --release` compiles them at release. No change for users.
+
+### Fixed
+
+- **The nightly memory run no longer crashes when an older recall rebuilds the chat index under
+  it.** An agent's MCP server keeps the release it started with until the agent restarts, so after
+  an upgrade it rebuilt the chat tables back to its own schema, and a run reading them stopped with
+  `no such column: s.root`. Now a recall process that an upgrade has outlived leaves the index alone
+  and asks for the agent to be restarted, and a nightly run that finds the chat tables changed under
+  it leaves the chats for the next run and records why. After upgrading, restart agents that were
+  already open.
+
 ## [0.4.0] - 2026-10-15
 
 recall can now tell you which chat wrote a line of code, keeps every chat it has indexed, tells
@@ -433,7 +471,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/alirng/recall/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/alirng/recall/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/alirng/recall/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/alirng/recall/compare/v0.2.0...v0.2.1
