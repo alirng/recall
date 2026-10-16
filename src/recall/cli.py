@@ -52,12 +52,23 @@ def cmd_embed(a) -> None:
             "embeddings are off: add an [embeddings] table to config.toml and install the extra "
             "(uv tool install 'recall-agents[embeddings]'); see embeddings.py"
         )
-    con = store.connect()
-    todo = embeddings.pending(con, embedder)
-    print(f"{len(todo)} messages to embed with {embedder.model}", file=sys.stderr)
-    started = time.time()
-    done = embeddings.index_messages(con, embedder, todo, log=lambda m: print(m, file=sys.stderr))
-    print(f"embedded {done} messages in {time.time() - started:.0f}s")
+    with embeddings.embedding_lock() as mine:
+        if not mine:
+            print("another recall embed is running", file=sys.stderr)
+            return
+        con = store.connect()
+        todo = embeddings.pending(con, embedder)
+        print(f"{len(todo)} messages to embed with {embedder.model}", file=sys.stderr)
+        started = time.time()
+        done = embeddings.index_messages(
+            con,
+            embedder,
+            todo,
+            log=lambda m: print(m, file=sys.stderr),
+            deadline=started + embeddings.EMBED_DEADLINE,
+        )
+    left = f"; stopped at the time limit with {len(todo) - done} left for the next run" if done < len(todo) else ""
+    print(f"embedded {done} messages in {time.time() - started:.0f}s{left}")
 
 
 def cmd_search(a) -> None:

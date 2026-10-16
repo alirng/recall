@@ -155,6 +155,13 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub:
         if remember:
             con.execute("insert or replace into forgotten_chats(id, at) values (?, ?)", (sid, time.time()))
     con.commit()
+    if counts["vectors"]:
+        from . import vectorfile
+
+        try:  # the file search reads beside the index holds them too
+            vectorfile.drop_deleted(con)
+        except (OSError, sqlite3.Error) as e:  # search skips them anyway, and the next rewrite drops them
+            archive.log(f"deleted chats, but could not rewrite the shared vector file ({e})")
     if scrub and deleted:
         try:
             scrub_db(con)

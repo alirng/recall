@@ -104,7 +104,8 @@ name = "nomic-embed-text"
 
 Then run `recall embed` once (about seven minutes per 20,000 messages on a laptop). New chats
 are embedded as they are indexed, and search falls back to words alone whenever the model is
-not running. On LongMemEval it raises the share of questions with every answer session in the
+not running. The vectors sit in one file beside the index (`recall-vectors/`), which every agent's
+recall server reads during a search and none keeps a copy of. On LongMemEval it raises the share of questions with every answer session in the
 top five from 87% to 91%; on my chats it found the intended chat in the top five for 88% of
 100 paraphrased questions, against 83% with words alone (one run each).
 
