@@ -1,6 +1,6 @@
 [project]
 name = "recall-agents"
-version = "0.4.2"
+version = "0.5.0"
 description = "One searchable memory of your Claude Code, Codex and Cursor chats, exposed to every agent over MCP."
 dynamic = ["readme"]
 requires-python = ">=3.11"

@@ -1,1 +1,0 @@
-**The chat index rebuilds itself once more.** The first index run after upgrading re-reads your chats, and Cursor's database in a background run after that. On Linux, Cursor chats that had failed to index because Linux keeps no file creation time come back.
