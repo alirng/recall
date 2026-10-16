@@ -15,32 +15,38 @@ counts come from the runs' transcripts via
   from 47% in 0.2.1, and in its top ten 93% of the time (SWE-ContextBench Lite: 99 real GitHub
   issues searched against all 300 real Claude Code sessions; hybrid search, deterministic, one
   run). The memory products the benchmark's authors tested found it 39–73% of the time, each at
-  its own cutoff, after running an LLM over every session; at each of those cutoffs 0.3.0 is
+  its own cutoff, after running an LLM over every session; at each of those cutoffs 0.4.1 is
   ahead. recall runs no LLM to index.
-- **37% fewer tokens added to an agent's context per question than 0.2.1**: about 9.0k
-  estimated Claude tokens against 14.4k on the 40 held-out SWE-ContextBench issues, counting
-  recall's ~2.5k of tool definitions, with the same share of past fixes found (90%).
-- **Notes hold 62% of the coding conventions you set, in their latest form**, up from 9%, and
-  record 54% of changed conventions correctly, up from 5% (MemoryCode, 40 held-out histories,
-  three runs each, notes written by gpt-6-luna).
-- **The notes reach the agent.** With 0.3.0's notes loaded at session start, Claude Haiku 5.5
-  follows the latest conventions on long MemoryCode histories (20 to 100 sessions) 62% of the
-  time, against 40% with search alone (held-out histories, three runs each). Rereading the
-  whole history gets 80% on the training histories.
+- **About 7.8k tokens added to an agent's context per question**, counting recall's ~3.3k of
+  tool definitions, on the 40 held-out SWE-ContextBench issues, with the past fix named 87% of
+  the time. That is 7% more than 0.3.0 run the same day (7.3k, 84% found): what the tools
+  return is about the same, and the extra is the definitions of the tools 0.4.0 added.
+- **Notes hold 91% of the coding conventions you set, in their latest form**, and record 90% of
+  changed conventions correctly, when Claude Haiku 5.5 writes them (MemoryCode, 40 held-out
+  histories, three runs each). Written by gpt-6-luna they hold 67%, up from 62% in 0.3.0. On
+  my own hand-labelled chats the two models were within noise of each other.
+- **The notes reach the agent.** With those notes loaded at session start, Claude Haiku 5.5
+  follows the latest conventions on long MemoryCode histories (20 to 100 sessions) 75% of the
+  time, against 32% with search alone, and takes in 41% fewer tokens (both on 0.4.1, the same
+  day, three runs each). Rereading the whole history got 80% on long training histories.
 - **No LLM calls to index or to search.** recall indexes on your machine (SQLite, plus an
-  optional local embedding model). On my ~2,800 chats a search takes about 15 ms with
-  keywords, or 50 ms with embeddings, including embedding the query (median of 50 searches, on
-  a laptop busy with other evals, so an upper bound).
+  optional local embedding model). On my ~2,800 chats a search takes about 11 ms with
+  keywords, or 47 ms with embeddings, including embedding the query (0.4.1, median of 50
+  searches, run twice, on a laptop).
   Only the nightly notes need a language model, and you choose which.
 
-Re-checked for 0.4.0: search is unchanged. The model-free runs on 0.4.0's code gave the same
-figures as before (SWE-ContextBench Lite, below; LongMemEval_S and LoCoMo, keywords only: 97.4%
-and 87.2%, 89.6% and 77.2%). The figures labelled 0.3.0 are those releases' runs; the notes
-and agent results were not re-measured for 0.4.0, except where the new section says so.
+Re-checked for 0.4.1: search is unchanged. Every model-free run on 0.4.1's code gave the same
+figures as 0.3.0 and 0.4.0 (SWE-ContextBench Lite in both scopes, LongMemEval_S and _M, LoCoMo,
+and search over my chats' 60 held-out questions), so those figures carry 0.4.1's label. Each
+figure names the release that measured it, and compares with the last release that scored
+differently. 0.4.2 fixes an MCP server bug in 0.4.0 and 0.4.1 that, on a machine with two or
+more Cursor builds, left the index locked and made many of an agent's calls to recall fail; the
+agent figures on my own chats are 0.4.2's. Its re-runs of search, SWE-ContextBench and
+LongMemEval retrieval match 0.4.1.
 
 ## Finding past work
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/swecb-dark.svg"><img src="benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.3.0 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.3.0 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.3.0 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/swecb-dark.svg"><img src="benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.4.1 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.4.1 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.4.1 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
 
 SWE-ContextBench pairs GitHub issues with an earlier issue in the same repo whose fix helps, and
 its Lite set ships the 300 Claude Code sessions in which those earlier fixes were made. recall
@@ -49,8 +55,8 @@ did, with the new issue's full text.
 
 | SWE-ContextBench Lite, all 300 sessions: past fix in the top k | Top 1 | Top 3 | Top 5 | Top 10 | Top 15 | To take in the 300 sessions |
 | --- | --- | --- | --- | --- | --- | --- |
-| **recall 0.3.0** | **58.6%** | **76.8%** | **79.8%** | **92.9%** | **97.0%** | **no LLM calls** |
-| recall 0.3.0, keywords only | 53.5% | 68.7% | 77.8% | 86.9% | 90.9% | no LLM calls |
+| **recall 0.4.1** | **58.6%** | **76.8%** | **79.8%** | **92.9%** | **97.0%** | **no LLM calls** |
+| recall 0.4.1, keywords only | 53.5% | 68.7% | 77.8% | 86.9% | 90.9% | no LLM calls |
 | recall 0.2.1 | 35.4% | 44.4% | 46.5% | 73.7% | 86.9% | no LLM calls |
 | LangMem | | | | 73.3% | | LLM calls: $0.98, 58 minutes |
 | Supermemory | | | | | 59.6% | LLM calls: 370k tokens, under an hour |
@@ -61,11 +67,12 @@ did, with the new issue's full text.
 is deterministic, so each is one run. The products' figures are the benchmark paper's own runs
 ("Overall Matched", its Table 5), each at the cutoff the paper reports. The paper does not define
 that metric, and it describes the query for Mem0 and Supermemory but not for OpenViking and
-LangMem; LangMem's ten results are extracted memories, not sessions. So compare loosely: 0.2.1
-already matched LangMem at top 10 and beat Supermemory at top 15, and 0.3.0 leads at every
-cutoff. Searching only the issue's own repo, as an agent working in that project would, puts
-the past fix in 0.3.0's top five 82.8% of the time (0.2.1: 50.5%). The ranking change behind
-the gain was chosen on 59 of the 99 issues; on the other 40, held out, the repo-scoped top-five
+LangMem; LangMem's ten results are extracted memories, not sessions. So compare loosely: 0.2.1,
+the last release that scored differently, already matched LangMem at top 10 and beat
+Supermemory at top 15, and 0.4.1 leads at every cutoff, as 0.3.0 did. Searching only the
+issue's own repo, as an agent working in that project would, puts the past fix in 0.4.1's top
+five 82.8% of the time (0.2.1: 50.5%). The ranking change behind the gain shipped in 0.3.0 and
+was chosen on 59 of the 99 issues; on the other 40, held out, the repo-scoped top-five
 rate rose from 50.0% to 92.5%. With 99 issues, each figure carries about ±10 points. Method and
 the benchmark's quirks:
 [docs/research/coding-memory-hillclimb.md](research/coding-memory-hillclimb.md) and
@@ -73,22 +80,29 @@ the benchmark's quirks:
 
 ## Tokens per answer
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/agent-tokens-dark.svg"><img src="benchmarks/agent-tokens-light.svg" alt="Bar chart of the context added to an agent per question, in Claude tokens including recall's tool definitions. SWE-ContextBench Lite, 40 held-out issues: recall 0.2.1 14.4k (5 runs), recall 0.3.0 9.0k (1 run). My questions about past work, 47 held out: recall 0.2.1 19.1k, recall 0.3.0 16.0k (3 runs each)" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/agent-tokens-dark.svg"><img src="benchmarks/agent-tokens-light.svg" alt="Bar chart of the context added to an agent per question, in Claude tokens including recall's tool definitions. both releases run on 16 October, 3 runs each. SWE-ContextBench Lite, 40 held-out issues: recall 0.4.1 7.8k, recall 0.3.0 7.3k. My questions about past work, 47 held out: recall 0.4.2 13.6k, recall 0.3.0 13.4k" width="760"></picture></p>
 
 recall does not hand an agent a fixed block of context: the agent searches and reads what it
 needs, and what matters is how much that adds. Claude Haiku 5.5, running in Claude Code with
-only recall's tools, took in about 9.0k Claude tokens per held-out SWE-ContextBench issue with
-0.3.0 (the release run) against 14.4k with 0.2.1 (five runs), and named the past fix for 90% of
-them both times. The 0.2.1 runs used 0.2.1's tools with the first version of the new title fade,
-which almost never touches the short queries agents send (under 1% of the agents' searches in
-these runs were over 12 words), so the difference is what the tools return. On 47 held-out
-questions about my own past work (three runs each), it took in 16.0k tokens a question against
-19.1k, and answered 85.1% correctly both times. The counts are estimates in Claude tokens (word
-pieces of tool output times a factor fitted to Claude's own per-call counts, R² of 0.98 or
-better) and include recall's tool definitions, measured directly (2,591 tokens in 0.2.1, 2,480
-in 0.3.0). Search results now leave out fields that repeat others, one search can try several
-phrasings at once, and `read_chat` clips a long message to its start, the passage that matches,
-and its end.
+only recall's tools, loaded up front, took in about 7.8k Claude tokens per held-out
+SWE-ContextBench issue with 0.4.1 and 7.3k with 0.3.0's code run the same day (three runs each),
+and named the past fix for 87% and 84% of them (within run noise). What the tools returned was
+about the same, 4.6k tokens an issue against 4.8k; the difference is the tool definitions, 3,260
+tokens against 2,480, because 0.4.0 added tools. On 47 held-out questions about my own past work,
+also the same day, 0.4.2 took in 13.6k tokens a question and 0.3.0's code 13.4k, and they
+answered 84.4% and 86.5% correctly (within run noise). 0.4.1 is not shown there: in its run most
+questions hit an MCP server bug, fixed in 0.4.2, that left the index locked, so recall's tools
+returned errors instead of results.
+
+Compare these figures only within a day. On 12 October, 0.3.0's release runs took in 9.0k and
+16.0k tokens; on 16 October the same code took in 7.3k and 13.4k, because the agent called the
+same tools less. Something on the model's side changed in between, as with MemoryCode below.
+
+The counts are estimates in Claude tokens (word pieces of tool output times a factor fitted to
+Claude's own per-call counts, R² of 0.98 or better) and include recall's tool definitions,
+measured directly as the first call's input with recall connected minus without (2,591 tokens in
+0.2.1, 2,480 in 0.3.0, 3,260 in 0.4.1 and 0.4.2). The factor is fitted over the runs compared,
+so the releases in one comparison share it.
 
 Memory products report the context they give their answer model on chat benchmarks: Mem0 6,956
 tokens a query on LoCoMo (its own figure), EverMemOS 2.8k (its paper's token column, which it
@@ -97,76 +111,91 @@ place recall's figure rather than rank it.
 
 ## Notes that keep up
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/notes-dark.svg"><img src="benchmarks/notes-light.svg" alt="Grouped bar chart of note quality, recall 0.2.1 against recall 0.3.0. MemoryCode, 40 held-out histories, 3 runs: conventions in notes in their latest form 9% to 62%, changed conventions recorded 5% to 54%. A fresh holdout of my chats, 6 runs: expected memories found 48% to 61%, memories worth keeping 83% to 88%" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/notes-dark.svg"><img src="benchmarks/notes-light.svg" alt="Grouped bar chart of MemoryCode note quality on 40 held-out histories, 3 runs each. Conventions in notes in their latest form: recall 0.3.0 with gpt-6-luna 61.6%, recall 0.4.1 with gpt-6-luna 66.6%, recall 0.4.1 with Claude Haiku 5.5 90.6%. Changed conventions recorded: 53.6%, 61.7%, 90.0%" width="760"></picture></p>
 
 MemoryCode gives a model long histories in which a mentor sets coding conventions ("start
 function names with `y_`"), changes some of them later, and talks about other things in
 between. After each history, recall's notes are checked against the benchmark's labels: is
 every convention there in its latest form, and is a replaced form still stated as current? On
-40 held-out histories, three runs each, with notes written by gpt-6-luna through a ChatGPT plan:
+40 held-out histories, three fresh runs each:
 
-| MemoryCode: notes after each history | recall 0.2.1 | recall 0.3.0 |
-| --- | --- | --- |
-| Conventions held in their latest form | 9.1% | **61.6%** |
-| Changed conventions recorded correctly | 4.6% | **53.6%** |
-| A replaced form still stated as current (lower is better) | 2.7% | 8.4% |
-| Notes learned only from unrelated talk (lower is better) | 45% | 30% |
-| Model calls, three runs | 780 | 1,927 |
+| MemoryCode: notes after each history | 0.3.0, gpt-6-luna | 0.4.1, gpt-6-luna | **0.4.1, Claude Haiku 5.5** |
+| --- | --- | --- | --- |
+| Conventions held in their latest form | 61.6% | 66.6% | **90.6%** |
+| Changed conventions recorded correctly | 53.6% | 61.7% | **90.0%** |
+| A replaced form still stated as current (lower is better) | 8.4% | 6.0% | **1.7%** |
+| Notes learned only from unrelated talk (lower is better) | 30% | 23% | **15%** |
+| Model calls, three runs | 1,927 | 1,926 | 2,305 |
 
-The extractor now answers chat by chat (handed a dozen chats and one list to fill, a model reads
-the first few), and decides first whether a memory outlasts the task at hand. More notes means
-more to keep current: 8% of replaced forms are still stated as current.
+With the same model, 0.4.1 moves every measure the right way against 0.3.0, history by history.
+Fewer notes come from unrelated talk (-6.2 points, 95% CI -8.8 to -3.3); the other changes are
+within run noise (conventions held: +5.0 points, -0.7 to +10.9). 0.3.0's run is from 12 October
+and 0.4.1's from 16 October, and a model's behaviour can shift between days (see the agent
+results below), so read this comparison loosely.
+Since 0.4.0 a note holds its rules one by one and consolidation changes only the one that
+changed; replaying the same extracted facts through each release's consolidation, facts lost
+when notes merge fell from 12.5% to 8.1% and stale notes from 9.3% to 4.8%. The bigger lever is
+the model: Haiku 5.5 holds 24 points more of the conventions than gpt-6-luna on the same
+histories, and states a replaced one as current a quarter as often
+([which model writes your notes](#which-model-writes-your-notes)). Its three runs read 10.1M
+tokens and wrote 2.5M, about $2.30 at Haiku 5.5's list price, or half that through the batch API
+that recall uses with an API key.
 
-I also checked it on my own chats, labelled by hand. The change was first judged on a test set
-of my chats that by then had informed several decisions, and there it did not help: recall was
-flat (44% to 45%) and precision fell (98% to 92%). So the decision was made once, on a fresh
-holdout of my chats (six runs: expected memories found 48% to 61%, and 88% of what the notes
-store worth keeping, against 83%) together with MemoryCode's held-out histories above.
-
-More candidates also mean more consolidation calls. On MemoryCode, where nearly every session
-sets a rule, the three runs took 1,927 model calls instead of 780 (input 34.0M tokens instead of
-14.3M, output 608k instead of 135k); on my holdout chats, three runs took 40 calls instead of 37,
-with 1.4 times the output. The new extraction prompt (v4) makes the nightly run read past chats
-again with it, newest first, within the nightly call budget (80 by default), so a large history
-takes several nights.
+I also check the notes on my own chats, against memories I labelled by hand: a holdout of 20
+cases that no change has been tuned on. There the order between the models flips. On 0.4.1,
+three runs each, notes written by gpt-6-luna find 69% of the expected memories, and 88% of what
+they store is worth keeping (0.3.0: 61% and 88%, six runs); notes written by Haiku 5.5 find 57%,
+and 83% is worth keeping. With 14 scorable cases that difference is within noise (-12.6 points,
+95% CI -26.0 to 0.0), and Haiku's three runs spread from 43% to 68%, but MemoryCode's lead for
+Haiku does not show on real chats. Neither model stored anything the labels forbid.
 
 **Do the notes reach the agent?** The same benchmark ends each history with coding requests, and
 checks the code against the latest conventions. Claude Haiku 5.5 wrote it in Claude Code with
-recall's search alone, or with 0.3.0's notes loaded at session start the way recall's hook loads
-them, plus search. Claude Code loaded recall's tools as it does by default, through tool search:
+recall's search alone, or with Haiku 5.5's notes loaded at session start the way recall's hook
+loads them, plus search. Claude Code loaded recall's tools as it does by default, through tool
+search. Both arms ran on 0.4.1 on the same day, three runs each, on the 40 held-out histories:
 
-| MemoryCode: code that follows the latest conventions | All histories | 20 to 100 sessions | 1 to 15 sessions |
-| --- | --- | --- | --- |
-| No memory (held out, three runs) | 2.4% | | |
-| Search alone (held out, three runs) | 73.2% | 39.5% | 93.5% |
-| **0.3.0's notes at session start, plus search (held out, three runs)** | **77.5%** | **61.9%** | 86.8% |
-| The whole history in the prompt (training histories, one run) | 90% | 80% | 96% |
+| MemoryCode, 0.4.1: code that follows the latest conventions | All histories | 20 to 100 sessions | 1 to 15 sessions | Input tokens a request |
+| --- | --- | --- | --- | --- |
+| Search alone | 67.0% | 32.3% | 87.8% | 61k |
+| **Notes at session start, plus search** | **83.3%** | **75.0%** | 88.3% | **36k** |
 
-On short histories the notes did worse, 86.8% against 93.5%: with the notes in hand, the agent
-reads fewer chats. The 0.3.0 release run loaded recall's tools up front instead, and gave 79.7%
-(64.8% on long histories, 88.6% on short) with notes, one run, against 75.8% (45.3%, 94.2%)
-with search alone, three runs; with the notes the agent took in about a third fewer input
-tokens. The session-start block has changed since both runs, and 0.2.1's notes at session start
-were not measured.
+With the notes in hand the agent follows the latest conventions on long histories 75% of the
+time against 32% (every one of the 15 long histories improved), holds steady on short ones, and
+makes 2.2 calls to recall a request instead of 7.3, so it takes in 41% fewer tokens. For scale,
+measured on 12 October on the training histories, Haiku 5.5 with no memory got 2.1% right, and
+with the whole history in its prompt 90% (80% on long histories).
+
+Compare these arms only within a day. Search alone scored 73.2% (39.5% on long histories) when
+measured on 13 October; the same code, re-run on 16 October, scores 66.8%, the same as 0.4.1, so
+the model or the service behind it changed in between. On 13 October, 0.3.0's notes written by
+gpt-6-luna lifted long histories from 39.5% to 61.9%.
 
 ## Which model writes your notes
 
-The notes are written by whichever model you pick, and the choice matters. MemoryCode's test
-split (40 histories), through the same extraction and consolidation pipeline, scored by the share
-of facts the notes hold:
+The notes are written by whichever model you pick, and the choice matters. On 0.4.1, the same
+40 held-out MemoryCode histories, three fresh runs each, through the same extraction and
+consolidation pipeline:
 
-| Model that writes the notes | Facts in the notes |
-| --- | --- |
-| gpt-6-luna (Codex) | 59% to 68% across runs |
-| Claude Haiku 4.5 (what `claude:haiku` ran before 0.4.0) | 80.9% |
-| Claude Haiku 5.5, API | 94.6% |
-| Claude Haiku 5.5, Claude subscription CLI (one run) | 97.6% |
+| MemoryCode, 0.4.1: notes after each history | gpt-6-luna (Codex) | **Claude Haiku 5.5 (API)** |
+| --- | --- | --- |
+| Conventions held in their latest form | 66.6% | **90.6%** |
+| Changed conventions recorded correctly | 61.7% | **90.0%** |
+| A replaced form still stated as current (lower is better) | 6.0% | **1.7%** |
+| Notes learned only from unrelated talk (lower is better) | 23.3% | **15.2%** |
+| Model calls, three runs | 1,926 | 2,305 |
+| Tokens in / out, three runs | 34.9M / 628k | 10.1M / 2.5M |
 
-Sonnet 5.5 for consolidation added nothing over Haiku 5.5 alone (-2 points, within run noise),
-and packing 8 chats to a call instead of 12 made no difference. So `claude:haiku` on a Claude
-subscription, or Haiku 5.5 on an API key, is the better start; 0.4.0's Claude provider now runs
-the 5.5 models. These are one benchmark's synthetic coding histories, and the Haiku 5.5 CLI
-figure is a single run.
+Haiku 5.5 is ahead on every measure, history by history (conventions held: +24.0 points, 95% CI
++16.7 to +29.8). Earlier runs on a different set of 40 test histories, before 0.4.0, put the
+same pattern in order: gpt-6-luna 59% to 68%, Claude Haiku 4.5 (what `claude:haiku` ran before
+0.4.0) 80.9%, Haiku 5.5 through the API 94.6%, and through the Claude subscription CLI 97.6%
+(one run). Sonnet 5.5 for consolidation added nothing over Haiku 5.5 alone (-2 points, within
+run noise), and packing 8 chats to a call instead of 12 made no difference. So `claude:haiku` on
+a Claude subscription, or Haiku 5.5 on an API key, is the better start; since 0.4.0 the Claude
+provider runs the 5.5 models. These are one benchmark's synthetic coding histories: on my own
+hand-labelled chats gpt-6-luna leaned ahead (69% of expected memories against 57%, within noise;
+[above](#notes-that-keep-up)), so check the notes your model writes on your own history.
 
 The consolidation change in 0.4.0 (notes hold rules, changed one at a time) was measured on a
 consolidation-only replay of the same extracted facts: facts lost when notes merge fell from
@@ -176,28 +205,30 @@ consolidation-only replay of the same extracted facts: facts lost when notes mer
 
 LongMemEval and LoCoMo are the benchmarks memory products usually report. They are built from
 synthetic personal-assistant chats rather than coding work, so recall runs them as a check that
-its search stays sound, with each benchmark's own metrics and prompts. In the 0.3.0 release run
-their keyword retrieval was identical to 0.2.1's (and 0.4.0's is the same), and the title change cannot reach them: their
-chats have no titles. Retrieval is deterministic (one run); each answer-accuracy figure is one
-run.
+its search stays sound, with each benchmark's own metrics and prompts. Their retrieval on 0.4.1
+is identical to 0.2.0's, where it was first measured, and the title change cannot reach them:
+their chats have no titles. Retrieval is deterministic (one run); each answer-accuracy figure is
+one run.
 
 - **Finds a conversation that answers the question 98.7% of the time, and every one that does
   90.6% of the time** (top five, LongMemEval_S, 470 questions): among the highest session-retrieval
   scores published for the benchmark.
-- **87.4% of answers correct with Claude Haiku 5.5** across all 500 questions; handed exactly
-  the right sessions, the same model scores 92.0%. Reading recall's top 20 chats, it reaches
-  90.5% for under a cent a question, on a 200-question sample where the right sessions alone
-  score 91.0%. Answer accuracy was last measured on 9 October, before 0.3.0.
+- **88.4% of answers correct with Claude Haiku 5.5** across all 500 questions on 0.4.1, reading
+  recall's top 10 chats (about 44k tokens a question; 87.4% when first measured on 0.2.0).
+  Reading only matched windows of the top 5 chats, it scores 84.2% on about 17.5k tokens. Handed
+  exactly the right sessions, the same model scored 92.0% (measured on 9 October; that figure
+  does not depend on recall). On 0.2.0, reading the top 20 chats reached 90.5% for under a cent
+  a question, on a 200-question sample where the right sessions alone scored 91.0%.
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/accuracy-dark.svg"><img src="benchmarks/accuracy-light.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 87.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory (Honcho's run with Haiku 4.5) 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/accuracy-dark.svg"><img src="benchmarks/accuracy-light.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 0.4.1 88.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory (Honcho's run with Haiku 4.5) 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></picture></p>
 
 | Session retrieval | Answer session in top 5 | Every answer session in top 5 |
 | --- | --- | --- |
-| recall, LongMemEval_S (470 questions) | **98.7%** | **90.6%** |
-| recall, LongMemEval_S, keywords only | 97.4% | 87.2% |
-| recall, LongMemEval_M (~475 sessions a question), keywords only | 90.9% | 72.1% |
+| recall 0.4.1, LongMemEval_S (470 questions) | **98.7%** | **90.6%** |
+| recall 0.4.1, LongMemEval_S, keywords only | 97.4% | 87.2% |
+| recall 0.4.1, LongMemEval_M (~475 sessions a question), keywords only | 90.9% | 72.1% |
 | LongMemEval paper's best setup, LongMemEval_M | | 73.2% |
-| recall, LoCoMo (1,536 questions) | **92.1%** | **80.1%** |
+| recall 0.4.1, LoCoMo (1,536 questions) | **92.1%** | **80.1%** |
 | AgentIR, LoCoMo (BM25 / hybrid) | 87.5% / 79.7% | |
 | memini, LongMemEval (BM25 / hybrid) | 97.6% / 98.4% | |
 
@@ -223,7 +254,7 @@ uv run --with pyarrow recall eval memorycode --data DIR --agent --arm hook --not
 uv run recall eval amb --data DIR                                                                 # agent-memory-bench retrieval
 uv run recall eval longmemeval --cases longmemeval_s_cleaned.json --hybrid [--qa claude:claude-haiku-5-5]
 uv run recall eval locomo --cases locomo10.json --hybrid
-python docs/benchmarks/agent_tokens.py DEFS_BEFORE DEFS_AFTER before:RUN_DIR ... after:RUN_DIR ...   # Claude tokens per question
+python docs/benchmarks/agent_tokens.py 0.3.0=2480 RUN_DIR ... 0.4.1=3260 RUN_DIR ...   # Claude tokens per question, one release per group
 ```
 
 Each run writes a folder with every case's transcript, the scores with bootstrap confidence
@@ -249,9 +280,11 @@ what you judge by. recall ships no cases, since they name your chats. Answers an
 graded against checkable claims by Claude Sonnet 5.5, which must differ from the model under
 test.
 
-On my ~2,800 chats with 0.3.0: search finds the intended chat in the top five for 86.7% of 60
-held-out hand-written questions (hybrid, one deterministic run; 92.2% of the 90 training
-questions); Claude Haiku 5.5 with recall's tools answers 85.1% of 47 held-out questions about
-past work correctly (three runs); and notes written by gpt-6-luna find 61% of the memories in a
-fresh hand-labelled holdout, 88% of what they store worth keeping (six runs). Model-based evals
-vary from run to run, so compare averages of several.
+On my ~2,800 chats: on 0.4.1, search finds the intended chat in the top five for 86.7% of 60
+held-out hand-written questions, as 0.3.0 did, and 91.1% of the 90 training questions (0.3.0:
+92.2%; hybrid, one deterministic run each). Claude Haiku 5.5 with recall's tools answers 84.4%
+of 47 held-out questions about past work correctly on 0.4.2 (three runs; 0.3.0's code, run the
+same day, 86.5%). On a fresh hand-labelled holdout, notes written by gpt-6-luna find 69% of the
+memories, 88% of what they store worth keeping, and notes written by Haiku 5.5 57% and 83%
+(three runs each, on 0.4.1). Model-based evals vary from run to run and from day to day, so
+compare averages of several, run on the same day.

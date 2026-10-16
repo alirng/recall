@@ -7,7 +7,7 @@
     "rows": [
       {
         "group": "In the top 3",
-        "name": "recall 0.3.0",
+        "name": "recall 0.4.1",
         "value": 76.8,
         "ours": true,
         "note": "no LLM calls"
@@ -35,7 +35,7 @@
       },
       {
         "group": "In the top 10",
-        "name": "recall 0.3.0",
+        "name": "recall 0.4.1",
         "value": 92.9,
         "ours": true,
         "note": "no LLM calls"
@@ -56,7 +56,7 @@
       },
       {
         "group": "In the top 15",
-        "name": "recall 0.3.0",
+        "name": "recall 0.4.1",
         "value": 97.0,
         "ours": true,
         "note": "no LLM calls"
@@ -79,7 +79,7 @@
   },
   "tokens_per_question": {
     "title": "Context added to an agent per question",
-    "subtitle": "Estimated Claude tokens on held-out cases, with ~2.5k of recall's tool definitions.",
+    "subtitle": "Estimated Claude tokens on held-out cases, both releases run on 16 October, with recall's tool definitions (2.5k in 0.3.0, 3.3k since 0.4.0).",
     "unit": "k",
     "max": 20,
     "ticks": [
@@ -92,31 +92,31 @@
     "rows": [
       {
         "group": "SWE-ContextBench Lite, 40 held-out issues",
-        "name": "recall 0.2.1",
-        "value": 14.4,
-        "cls": "past",
-        "note": "5 runs"
+        "name": "recall 0.4.1",
+        "value": 7.8,
+        "ours": true,
+        "note": "3 runs; past fix found 87%"
       },
       {
         "group": "SWE-ContextBench Lite, 40 held-out issues",
         "name": "recall 0.3.0",
-        "value": 9.0,
-        "ours": true,
-        "note": "1 run; same hit rate"
+        "value": 7.3,
+        "cls": "past",
+        "note": "3 runs; found 84%"
       },
       {
         "group": "My questions about past work, 47 held out",
-        "name": "recall 0.2.1",
-        "value": 19.1,
-        "cls": "past",
-        "note": "3 runs"
+        "name": "recall 0.4.2",
+        "value": 13.6,
+        "ours": true,
+        "note": "3 runs; 84% correct"
       },
       {
         "group": "My questions about past work, 47 held out",
         "name": "recall 0.3.0",
-        "value": 16.0,
-        "ours": true,
-        "note": "3 runs; same accuracy"
+        "value": 13.4,
+        "cls": "past",
+        "note": "3 runs; 87% correct"
       }
     ],
     "reported_elsewhere": [
@@ -146,34 +146,36 @@
   },
   "notes_quality": {
     "title": "Notes that keep up with your conventions",
-    "subtitle": "MemoryCode: 40 held-out histories, 3 runs each. Mine: a fresh holdout of my chats, 6 runs. Notes by gpt-6-luna.",
+    "subtitle": "MemoryCode: 40 held-out histories, 3 fresh runs each, the same histories in every series.",
     "labels": true,
     "bar_width": 34,
     "categories": [
-      "Conventions in notes,\nlatest form (MemoryCode)",
-      "Changed conventions\nrecorded (MemoryCode)",
-      "Expected memories\nfound (my chats)",
-      "Memories worth\nkeeping (my chats)"
+      "Conventions in notes,\nlatest form",
+      "Changed conventions\nrecorded"
     ],
     "series": [
       {
-        "name": "recall 0.2.1",
+        "name": "recall 0.3.0, gpt-6-luna",
         "cls": "past",
         "values": [
-          9.1,
-          4.6,
-          48.2,
-          83.2
+          61.6,
+          53.6
         ]
       },
       {
-        "name": "recall 0.3.0",
+        "name": "recall 0.4.1, gpt-6-luna",
+        "cls": "past",
+        "values": [
+          66.6,
+          61.7
+        ]
+      },
+      {
+        "name": "recall 0.4.1, Claude Haiku 5.5",
         "cls": "ours",
         "values": [
-          61.6,
-          53.6,
-          61.0,
-          88.1
+          90.6,
+          90.0
         ]
       }
     ]
@@ -225,7 +227,7 @@
         "mrr": 0.346
       },
       {
-        "release": "0.3.0",
+        "release": "0.4.1",
         "scope": "repo",
         "search": "hybrid",
         "hit@1": 0.586,
@@ -233,10 +235,11 @@
         "hit@5": 0.828,
         "hit@10": 0.939,
         "hit@15": 0.98,
-        "mrr": 0.698
+        "mrr": 0.701,
+        "first_measured": "0.3.0"
       },
       {
-        "release": "0.3.0",
+        "release": "0.4.1",
         "scope": "repo",
         "search": "keyword",
         "hit@1": 0.515,
@@ -244,10 +247,11 @@
         "hit@5": 0.768,
         "hit@10": 0.889,
         "hit@15": 0.939,
-        "mrr": 0.63
+        "mrr": 0.634,
+        "first_measured": "0.3.0"
       },
       {
-        "release": "0.3.0",
+        "release": "0.4.1",
         "scope": "all",
         "search": "hybrid",
         "hit@1": 0.586,
@@ -255,10 +259,11 @@
         "hit@5": 0.798,
         "hit@10": 0.929,
         "hit@15": 0.97,
-        "mrr": 0.693
+        "mrr": 0.696,
+        "first_measured": "0.3.0"
       },
       {
-        "release": "0.3.0",
+        "release": "0.4.1",
         "scope": "all",
         "search": "keyword",
         "hit@1": 0.535,
@@ -266,7 +271,8 @@
         "hit@5": 0.778,
         "hit@10": 0.869,
         "hit@15": 0.909,
-        "mrr": 0.637
+        "mrr": 0.64,
+        "first_measured": "0.3.0"
       }
     ],
     "by_split": {
@@ -325,13 +331,14 @@
   },
   "agent_tokens": {
     "title": "Tokens of recall output an agent takes in per question, held-out cases (docs/benchmarks/agent_tokens.py)",
-    "about": "Estimated Claude tokens: tool-result text from each run's transcripts, converted with a factor fitted on the same transcripts, plus recall's tool definitions measured directly (2,591 tokens in 0.2.1, 2,480 in 0.3.0); means per question. Claude Code with Claude Haiku 5.5 and only recall's MCP tools. SWE-ContextBench 0.2.1: five runs of 0.2.1's tools, measured with 0.3.0's search ranking, which does not change the short queries agents send; 0.3.0: the release run.",
+    "about": "Estimated Claude tokens: tool-result text from each run's transcripts, converted with one factor fitted over the runs compared, plus recall's tool definitions measured directly with tools loaded up front (2,591 tokens in 0.2.1, 2,480 in 0.3.0, 3,260 in 0.4.1 and 0.4.2); means per question. Claude Code with Claude Haiku 5.5 and only recall's MCP tools, loaded up front (0.4.1 and 0.4.2: snapshots of their src with the harness's --tools set to \"\", as 0.3.0's own harness). Compare within a day: the model's behaviour shifted between 12 and 16 October, and 0.3.0's code took in 9.0k and 16.0k tokens on 12 October against 7.3k and 13.4k on 16 October. 16 October fits: SWE-ContextBench 0.3.0 x3 and 0.4.1 x3 (240 transcripts, 1.283 tokens per word piece): 7,283 and 7,812, per run 7,301/7,278/7,271 and 7,712/7,786/7,938; hit 0.842 and 0.867, paired +0.025 [-0.042, +0.100]. My questions 0.3.0 x3 and 0.4.2 x3 (282 transcripts, 1.454): 13,410 and 13,594; accuracy 0.865 and 0.844, paired -0.021 [-0.078, +0.035]. 0.4.1's run of my questions is left out: 125 of 141 answers hit recall tool errors from an MCP server bug that left the index write lock open (fixed in 0.4.2).",
     "rows": [
       {
         "eval": "SWE-ContextBench Lite agent",
         "split": "test",
         "n": 40,
         "release": "0.2.1",
+        "date": "2026-10-12",
         "runs": 5,
         "tokens": 14400,
         "hit": 0.9
@@ -341,16 +348,54 @@
         "split": "test",
         "n": 40,
         "release": "0.3.0",
+        "date": "2026-10-12",
         "runs": 1,
         "tokens": 9000,
         "hit": 0.9,
         "change": -0.37
       },
       {
+        "eval": "SWE-ContextBench Lite agent",
+        "split": "test",
+        "n": 40,
+        "release": "0.3.0",
+        "date": "2026-10-16",
+        "runs": 3,
+        "tokens": 7300,
+        "tokens_by_run": [
+          7301,
+          7278,
+          7271
+        ],
+        "hit": 0.842
+      },
+      {
+        "eval": "SWE-ContextBench Lite agent",
+        "split": "test",
+        "n": 40,
+        "release": "0.4.1",
+        "date": "2026-10-16",
+        "runs": 3,
+        "tokens": 7800,
+        "tokens_by_run": [
+          7712,
+          7786,
+          7938
+        ],
+        "hit": 0.867,
+        "hit_by_run": [
+          0.9,
+          0.825,
+          0.875
+        ],
+        "change": 0.07
+      },
+      {
         "eval": "my questions about past work (private cases)",
         "split": "test",
         "n": 47,
         "release": "0.2.1",
+        "date": "2026-10-12",
         "runs": 3,
         "tokens": 19100,
         "accuracy": 0.851
@@ -360,16 +405,38 @@
         "split": "test",
         "n": 47,
         "release": "0.3.0",
+        "date": "2026-10-12",
         "runs": 3,
         "tokens": 16000,
         "accuracy": 0.851,
         "change": -0.17
+      },
+      {
+        "eval": "my questions about past work (private cases)",
+        "split": "test",
+        "n": 47,
+        "release": "0.3.0",
+        "date": "2026-10-16",
+        "runs": 3,
+        "tokens": 13400,
+        "accuracy": 0.865
+      },
+      {
+        "eval": "my questions about past work (private cases)",
+        "split": "test",
+        "n": 47,
+        "release": "0.4.2",
+        "date": "2026-10-16",
+        "runs": 3,
+        "tokens": 13600,
+        "accuracy": 0.844,
+        "change": 0.01
       }
     ]
   },
   "memorycode_notes": {
     "title": "MemoryCode, notes after each history (recall eval memorycode)",
-    "about": "40 held-out histories (25 short, 15 long), 3 fresh runs each, notes written by chatgpt:gpt-6-luna, judged by Claude Sonnet 5.5 where a convention has no exact token. recall: each convention in its latest form is stated by an active note. updates: a changed convention has its latest form and no replaced form. stale: a replaced form still stated as current. filler: notes learned only from filler sessions. calls and tokens: all three runs.",
+    "about": "40 held-out histories (25 short, 15 long), 3 fresh runs each, notes written by chatgpt:gpt-6-luna unless the row names another model, judged by Claude Sonnet 5.5 where a convention has no exact token. recall: each convention in its latest form is stated by an active note. updates: a changed convention has its latest form and no replaced form. stale: a replaced form still stated as current. filler: notes learned only from filler sessions. calls and tokens: all three runs.",
     "source": "https://arxiv.org/html/2502.13791v2",
     "rows": [
       {
@@ -391,12 +458,46 @@
         "model_calls": 1927,
         "input_tokens": 34000000,
         "output_tokens": 608000
+      },
+      {
+        "release": "0.4.1",
+        "model": "chatgpt:gpt-6-luna@medium",
+        "recall": 0.666,
+        "updates": 0.617,
+        "stale": 0.06,
+        "filler_notes": 0.233,
+        "model_calls": 1926,
+        "input_tokens": 34900000,
+        "output_tokens": 628000,
+        "paired_vs_0_3_0": {
+          "recall": "+0.050 [-0.007, +0.109]",
+          "updates": "+0.080 [+0.000, +0.155]",
+          "stale": "-0.024 [-0.056, +0.015]",
+          "verdict": "within noise"
+        }
+      },
+      {
+        "release": "0.4.1",
+        "model": "anthropic:claude-haiku-5-5",
+        "recall": 0.906,
+        "updates": 0.9,
+        "stale": 0.017,
+        "filler_notes": 0.152,
+        "model_calls": 2305,
+        "input_tokens": 10100000,
+        "output_tokens": 2510000,
+        "paired_vs_gpt_6_luna_0_4_1": {
+          "recall": "+0.240 [+0.167, +0.298]",
+          "updates": "+0.284 [+0.152, +0.401]",
+          "stale": "-0.043 [-0.068, -0.010]",
+          "verdict": "better"
+        }
       }
     ]
   },
   "memorycode_agent": {
     "title": "MemoryCode, an agent writing code that follows the latest conventions (recall eval memorycode --agent)",
-    "about": "Claude Haiku 5.5 in Claude Code, 3 requests per history, graded by the benchmark's own checks. long = 20 to 100 sessions, short = 1 to 15. The recall arms run on the 40 held-out histories; 0.2.1 with its notes at session start was not measured. 'notes at session start' (--arm hook): 0.3.0's notes in the session-start block, plus recall's tools. The no-memory and whole-history rows without a harness are training histories, for reference. harness 'tool search': Claude Code loads recall's tools as it does by default (the figures docs/benchmarks.md and the README quote, 2026-10-13); rows without a harness are the 0.3.0 release run, which loaded the tools up front.",
+    "about": "Claude Haiku 5.5 in Claude Code, 3 requests per history, graded by the benchmark's own checks. long = 20 to 100 sessions, short = 1 to 15. The recall arms run on the 40 held-out histories; 0.2.1 with its notes at session start was not measured. 'notes at session start' (--arm hook): 0.3.0's notes in the session-start block, plus recall's tools. The no-memory and whole-history rows without a harness are training histories, for reference. harness 'tool search': Claude Code loads recall's tools as it does by default (rows dated 2026-10-16 are the figures docs/benchmarks.md and the README quote; the undated tool-search rows are 2026-10-13); rows without a harness are the 0.3.0 release run, which loaded the tools up front. 2026-10-16 rows: both arms on 0.4.1 the same day, toolsearch harness, 40 held-out histories, 3 runs each; 'notes at session start' uses the notes Claude Haiku 5.5 wrote in the 0.4.1 notes run. Compare arms only within a day: the 13 Oct code re-run on 16 Oct scores 0.668 on search alone against its 0.732 on 13 Oct, a change on the model or service side.",
     "rows": [
       {
         "arm": "no memory",
@@ -456,6 +557,45 @@
         "overall": 0.898,
         "long": 0.802,
         "short": 0.956
+      },
+      {
+        "arm": "search alone",
+        "release": "0.4.1",
+        "date": "2026-10-16",
+        "split": "test",
+        "runs": 3,
+        "harness": "tool search",
+        "overall": 0.67,
+        "long": 0.323,
+        "short": 0.878,
+        "input_tokens_mean": 60906,
+        "recall_calls_mean": 7.27
+      },
+      {
+        "arm": "Haiku 5.5 notes at session start + tools",
+        "release": "0.4.1",
+        "date": "2026-10-16",
+        "split": "test",
+        "runs": 3,
+        "harness": "tool search",
+        "overall": 0.833,
+        "long": 0.75,
+        "short": 0.883,
+        "input_tokens_mean": 36041,
+        "recall_calls_mean": 2.23,
+        "paired_vs_search_alone": {
+          "overall": "+0.164 [+0.072, +0.250]",
+          "long": "+0.427 [+0.362, +0.491]",
+          "short": "+0.006 [-0.096, +0.074]"
+        }
+      },
+      {
+        "arm": "13 Oct code, search alone, re-run",
+        "date": "2026-10-16",
+        "split": "test",
+        "runs": 3,
+        "harness": "tool search",
+        "overall": 0.668
       }
     ]
   },
@@ -534,8 +674,8 @@
         "source": "https://honcho.dev/evals/"
       },
       {
-        "name": "recall",
-        "value": 87.4,
+        "name": "recall 0.4.1",
+        "value": 88.4,
         "ours": true,
         "note": "Claude Haiku 5.5"
       },
@@ -569,7 +709,8 @@
         "note": "Claude Haiku 4.5",
         "source": "https://honcho.dev/evals/"
       }
-    ]
+    ],
+    "about": "recall: 0.4.1, all 500 questions, one run (2026-10-16); 87.4% when first measured on 0.2.0, which retrieves with the same scores. Top 10 chats in full, about 44.4k measured prompt tokens a question; matched windows of the top 5 chats: 84.2% at 17.5k."
   },
   "tokens_vs_accuracy": {
     "title": "Accuracy against context read per question",
@@ -577,14 +718,14 @@
     "points": [
       {
         "name": "recall, top 10 chats",
-        "tokens": 44100,
-        "value": 87.4,
+        "tokens": 44400,
+        "value": 88.4,
         "ours": true
       },
       {
         "name": "recall, matched windows",
-        "tokens": 17300,
-        "value": 82.4,
+        "tokens": 17500,
+        "value": 84.2,
         "ours": true
       },
       {
@@ -633,7 +774,7 @@
   },
   "cost_curve": {
     "title": "LongMemEval_S: accuracy against cost",
-    "subtitle": "recall retrieves; the model answers. 200-question stratified sample, judged by Claude Haiku 5.5.",
+    "subtitle": "recall retrieves; the model answers. 200-question stratified sample, judged by Claude Haiku 5.5. Measured on 0.2.0.",
     "x_min": 0.001,
     "x_max": 0.5,
     "x_ticks": [
@@ -710,7 +851,7 @@
   },
   "by_type": {
     "title": "LongMemEval_S by question type",
-    "subtitle": "All 500 questions; Claude Haiku 5.5 answers and judges.",
+    "subtitle": "All 500 questions; Claude Haiku 5.5 answers and judges. recall 0.4.1; answer sessions only measured on 9 October.",
     "categories": [
       "Single session,\nuser",
       "Single session,\nassistant",
@@ -724,25 +865,25 @@
       {
         "name": "recall, matched windows",
         "values": [
-          90.6,
-          96.4,
-          66.7,
-          67.8,
-          91.7,
-          83.5,
+          93.8,
+          98.2,
+          70.0,
+          69.4,
+          93.1,
+          85.0,
           86.7
         ]
       },
       {
         "name": "recall, top 10 chats",
         "values": [
-          93.8,
+          96.9,
           98.2,
-          60.0,
-          80.2,
-          95.8,
+          73.3,
+          77.7,
+          94.4,
           90.6,
-          76.7
+          86.7
         ]
       },
       {
@@ -779,25 +920,35 @@
   },
   "memorycode_notes_by_model": {
     "title": "MemoryCode, facts recalled in the notes by the model that writes them (recall eval memorycode)",
-    "about": "Test split, 40 held-out histories, the same extraction and consolidation pipeline. recall: share of facts found in the notes, paired by history. Chats per call: 8 (Anthropic API) or 12 (Codex).",
+    "about": "Test split, the same extraction and consolidation pipeline. recall: share of facts found in the notes. The 0.4.1 rows use the first 40 test histories (as memorycode_notes); the earlier rows used another 40-history subset, with no history in common, on code before 0.4.0. Chats per call: 8 (Anthropic API) or 12 (Codex).",
     "rows": [
       {
-        "model": "gpt-6-luna (Codex)",
+        "model": "gpt-6-luna (Codex), 0.4.1",
+        "recall": 0.666,
+        "runs": 3
+      },
+      {
+        "model": "Claude Haiku 5.5 (API), 0.4.1",
+        "recall": 0.906,
+        "runs": 3
+      },
+      {
+        "model": "gpt-6-luna (Codex), before 0.4.0, other subset",
         "recall": "0.59 to 0.68",
         "runs": "several"
       },
       {
-        "model": "Claude Haiku 4.5 (Claude subscription CLI, old alias)",
+        "model": "Claude Haiku 4.5 (Claude subscription CLI, old alias), before 0.4.0, other subset",
         "recall": 0.809,
         "runs": 3
       },
       {
-        "model": "Claude Haiku 5.5 (API)",
+        "model": "Claude Haiku 5.5 (API), before 0.4.0, other subset",
         "recall": 0.946,
         "runs": 3
       },
       {
-        "model": "Claude Haiku 5.5 (Claude subscription CLI)",
+        "model": "Claude Haiku 5.5 (Claude subscription CLI), before 0.4.0, other subset",
         "recall": 0.976,
         "runs": 1
       },
@@ -822,5 +973,129 @@
         0.048
       ]
     }
+  },
+  "rechecked_0_4_1": {
+    "about": "Model-free runs of 0.4.1's code (2026-10-16), the same as 0.3.0 and 0.4.0 at every cutoff. SWE-ContextBench Lite, 99 issues, both scopes, hybrid and keywords; LongMemEval_S (470 questions) and LoCoMo (1,536, categories 1-4), keywords and hybrid; LongMemEval_M keywords; search over my chats (60 held-out questions, identical; the 90 training questions give 0.911 against 0.3.0's 0.922). MRR is up to 0.004 above the 0.3.0 release runs, as in 0.4.0's runs; every SWE-ContextBench hit rate is identical.",
+    "swecb_lite_all_hybrid": {
+      "hit@1": 0.586,
+      "hit@3": 0.768,
+      "hit@5": 0.798,
+      "hit@10": 0.929,
+      "hit@15": 0.97
+    },
+    "swecb_lite_all_keyword": {
+      "hit@1": 0.535,
+      "hit@3": 0.687,
+      "hit@5": 0.778,
+      "hit@10": 0.869,
+      "hit@15": 0.909
+    },
+    "swecb_lite_repo_hybrid": {
+      "hit@1": 0.586,
+      "hit@3": 0.758,
+      "hit@5": 0.828,
+      "hit@10": 0.939,
+      "hit@15": 0.98
+    },
+    "swecb_lite_repo_keyword": {
+      "hit@1": 0.515,
+      "hit@3": 0.697,
+      "hit@5": 0.768,
+      "hit@10": 0.889,
+      "hit@15": 0.939
+    },
+    "longmemeval_s_keyword": {
+      "recall_any@5": 0.974,
+      "recall_all@5": 0.872
+    },
+    "longmemeval_s_hybrid": {
+      "recall_any@5": 0.987,
+      "recall_all@5": 0.906
+    },
+    "longmemeval_m_keyword": {
+      "recall_any@5": 0.909,
+      "recall_all@5": 0.721
+    },
+    "locomo_keyword": {
+      "recall_any@5": 0.896,
+      "recall_all@5": 0.772
+    },
+    "locomo_hybrid": {
+      "recall_any@5": 0.921,
+      "recall_all@5": 0.801
+    },
+    "my_chats_search_test": {
+      "hybrid_hit@5": 0.867,
+      "keyword_hit@5": 0.8,
+      "n": 60
+    },
+    "my_chats_search_train": {
+      "hybrid_hit@5": 0.911,
+      "n": 90,
+      "note": "0.3.0: 0.922"
+    },
+    "search_latency_my_chats": {
+      "about": "50 known-item queries (the first 50 of recall eval search's sample, seed 7), store.search limit 10, after 5 warm-ups, run twice, on a copy of the eval index (2,798 chats); hybrid includes embedding the query with nomic-embed-text through Ollama. Load average about 2.5. The earlier 15 ms / 50 ms were a 12 October baseline under load 9-11.",
+      "keyword_p50_ms": 10.8,
+      "keyword_p95_ms": [
+        20.1,
+        20.6
+      ],
+      "hybrid_p50_ms": [
+        46.3,
+        47.4
+      ],
+      "hybrid_p95_ms": [
+        57.4,
+        53.3
+      ]
+    }
+  },
+  "notes_on_my_holdout": {
+    "about": "memory --v2 --split holdout: 20 hand-labelled cases from my chats, never tuned on; 14 scorable for recall, 16 for precision. recall: expected memories found; precision: stored memories worth keeping. Three fresh runs each on 0.4.1; 0.3.0's row is its release figure (six runs).",
+    "rows": [
+      {
+        "release": "0.3.0",
+        "model": "chatgpt:gpt-6-luna@medium",
+        "runs": 6,
+        "recall": 0.61,
+        "precision": 0.881
+      },
+      {
+        "release": "0.4.1",
+        "model": "chatgpt:gpt-6-luna@medium",
+        "runs": 3,
+        "recall": 0.692,
+        "precision": 0.877,
+        "updates": 0.867,
+        "leaks": 0,
+        "recall_by_repeat": [
+          0.698,
+          0.679,
+          0.698
+        ],
+        "model_calls": 41
+      },
+      {
+        "release": "0.4.1",
+        "model": "anthropic:claude-haiku-5-5",
+        "runs": 3,
+        "recall": 0.566,
+        "precision": 0.829,
+        "updates": 0.733,
+        "leaks": 0,
+        "recall_by_repeat": [
+          0.585,
+          0.434,
+          0.679
+        ],
+        "model_calls": 46,
+        "paired_vs_gpt_6_luna": {
+          "recall": "-0.126 [-0.260, +0.000]",
+          "precision": "-0.051 [-0.139, +0.080]",
+          "verdict": "within noise"
+        }
+      }
+    ]
   }
 }

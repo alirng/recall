@@ -5,11 +5,12 @@ the text of every tool result and Claude Code's per-call usage. Tool-result text
 word pieces (runs of letters and digits, and single symbols), then converted to Claude tokens
 with a factor fitted on the same transcripts: across a question's API calls the context grows
 by its tool results plus the agent's own turns, so growth = a x pieces + c x tool calls, fitted
-without an intercept. recall's tool definitions are added once; they are measured directly as
-the first call's input with recall's MCP server connected minus without (2,591 tokens in 0.2.1,
-2,480 in 0.3.0).
+without an intercept, over every run given, so the releases compared share one factor. recall's
+tool definitions are added once; they are measured directly as the first call's input with
+recall's MCP server connected minus without, tools loaded up front (2,591 tokens in 0.2.1, 2,480
+in 0.3.0, 3,260 in 0.4.1).
 
-usage: python docs/benchmarks/agent_tokens.py DEFS_BEFORE DEFS_AFTER before:RUN_DIR ... after:RUN_DIR ...
+usage: python docs/benchmarks/agent_tokens.py RELEASE=DEFS RUN_DIR ... [RELEASE=DEFS RUN_DIR ...] ...
 """
 
 import glob
@@ -46,14 +47,18 @@ def measure(t: dict) -> tuple[int | None, int, int]:
 
 
 def main(argv: list[str]) -> None:
-    defs = {"before": int(argv[0]), "after": int(argv[1])}
-    pieces: dict[str, list[int]] = {"before": [], "after": []}
+    defs: dict[str, int] = {}
+    pieces: dict[str, list[int]] = {}
     fit = []
-    for arg in argv[2:]:
-        side, run = arg.split(":", 1)
-        for t in transcripts(run):
+    release = ""
+    for arg in argv:
+        if "=" in arg:
+            release, n = arg.split("=", 1)
+            defs[release], pieces[release] = int(n), []
+            continue
+        for t in transcripts(arg):
             growth, p, calls = measure(t)
-            pieces[side].append(p)
+            pieces[release].append(p)
             if growth is not None and p:
                 fit.append((growth, p, calls))
     sxx = sum(p * p for _, p, _ in fit)
@@ -61,13 +66,14 @@ def main(argv: list[str]) -> None:
     sxy = sum(p * k for _, p, k in fit)
     a = (sum(g * p for g, p, _ in fit) * syy - sum(g * k for g, _, k in fit) * sxy) / (sxx * syy - sxy * sxy)
     print(f"{len(fit)} transcripts: {a:.3f} Claude tokens per word piece of tool output")
-    total = {}
-    for side in ("before", "after"):
-        mean = sum(pieces[side]) / len(pieces[side])
-        total[side] = a * mean + defs[side]
-        results = f"{a * mean:,.0f} tokens of results + {defs[side]:,} of tool definitions"
-        print(f"{side}: {len(pieces[side])} questions, {results} = {total[side]:,.0f}")
-    print(f"change: {100 * (total['after'] / total['before'] - 1):+.1f}%")
+    last = None
+    for release, ps in pieces.items():
+        mean = sum(ps) / len(ps)
+        total = a * mean + defs[release]
+        results = f"{a * mean:,.0f} tokens of results + {defs[release]:,} of tool definitions"
+        change = f" ({100 * (total / last - 1):+.1f}%)" if last else ""
+        print(f"{release}: {len(ps)} questions, {results} = {total:,.0f}{change}")
+        last = total
 
 
 if __name__ == "__main__":
