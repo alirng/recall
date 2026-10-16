@@ -61,6 +61,10 @@ TEXT_COLUMNS = {
 # the others are rewritten row by row (see _fts)
 EXTERNAL_FTS = {"messages": "messages_fts", "tool_errors": "tool_errors_fts"}
 META_KEY = "redact_rules"
+# The archive's rewrite, chat by chat, commits at least this often: it can take seconds, and other
+# writers (an agent's tool call writing the notes index or commit links) must not wait that long. Its
+# rows stand alone, and the version is stamped last, so a run stopped half way is finished by the next.
+COMMIT_SECONDS = 0.5
 
 
 def stale(con: sqlite3.Connection) -> bool:
@@ -375,6 +379,7 @@ def _rewrite_json(
     quote the value), which stay as they are, so that one odd row does not stop every index run."""
     n = 0
     skipped: list[tuple[str, str]] = []
+    committed = time.monotonic()
     for row in con.execute(f"select {key}, {column} from {table}").fetchall():
         try:
             new = fix(row[-1])
@@ -385,6 +390,9 @@ def _rewrite_json(
             where = " and ".join(f"{k.strip()} = ?" for k in key.split(","))
             con.execute(f"update {table} set {column} = ? where {where}", [new, *row[:-1]])
             n += 1
+        if con.in_transaction and time.monotonic() - committed > COMMIT_SECONDS:
+            con.commit()
+            committed = time.monotonic()
     return n, skipped
 
 

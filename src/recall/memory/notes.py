@@ -401,12 +401,26 @@ def read_note_file(path: str) -> Note | None:
     return parse_note(text, path)
 
 
+def _frontmatter(text: str) -> dict:
+    """A note's YAML header, read with the safe loader in C (CSafeLoader: libyaml, no Python
+    objects built) when PyYAML has it, the same result eight times faster, which every
+    memory_search pays per note; the pure-Python safe loader has the last word on a header
+    libyaml refuses."""
+    fast = getattr(yaml, "CSafeLoader", None)
+    if fast:
+        try:
+            return yaml.load(text, Loader=fast) or {}
+        except yaml.YAMLError:
+            pass
+    return yaml.safe_load(text) or {}
+
+
 def parse_note(text: str, path: str) -> Note | None:
     m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
     if not m:
         return None
     try:
-        meta = yaml.safe_load(m.group(1)) or {}
+        meta = _frontmatter(m.group(1))
     except yaml.YAMLError:
         return None
     fields = {k: v for k, v in meta.items() if k in Note.__dataclass_fields__ and k not in _NOT_FRONTMATTER}

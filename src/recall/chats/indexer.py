@@ -101,13 +101,14 @@ def _index(con, only, force, max_age, log) -> dict:
 
     forget.sweep(con)  # before reading anything: an older release may have brought forgotten chats back
     selected = config.load()["sources"]
-    result = _scan(con, selected, only, force, max_age, log)
+    found = roots.discover()  # once a run: it reads the shell's rc files, about 20 ms
+    result = _scan(con, selected, only, force, max_age, log, found)
     retention.apply(con)  # before restoring, so nothing past an organisation's period comes back
-    restored = store.restore(con, _read_since_rebuild(con, selected))
+    restored = store.restore(con, _read_since_rebuild(con, selected, found))
     if restored:
         result["archive"] = {"indexed": 0, "unchanged": 0, "restored": restored}
     # After the restore: chats indexed before roots existed, and restored ones, come back without a root.
-    store.backfill_roots(con, roots.discover())
+    store.backfill_roots(con, found)
     return result
 
 
@@ -142,23 +143,22 @@ def _read(con, item, keep) -> bool:
     return indexed
 
 
-def _read_since_rebuild(con, selected) -> list[str]:
+def _read_since_rebuild(con, selected, found) -> list[str]:
     """Agents whose every source has been read in full since the chat tables were last
     rebuilt: their archived chats that are not in the index now came from no source."""
     stamps = {r[0] for r in con.execute("select k from meta where k like 'scanned:%'")}
     return [
         agent
-        for agent, (_, _, sources) in agents().items()
+        for agent, (_, _, sources) in agents(found).items()
         if (not selected or agent in selected) and all(f"scanned:{name}" in stamps for name in sources)
     ]
 
 
-def _scan(con, selected, only, force, max_age, log) -> dict:
+def _scan(con, selected, only, force, max_age, log, found) -> dict:
     from .. import config, roots
 
     result = {}
     cfg = config.load()
-    found = roots.discover()
     wanted = [r for r in found if roots.option(r, "index", cfg)]  # [roots.NAME] index = false skips one
     store.reparse_shared_cursor(con, found)
     for name, items in all_sources(selected, wanted).items():
@@ -190,10 +190,11 @@ def _scan(con, selected, only, force, max_age, log) -> dict:
                 skipped += 1
                 continue
             done += _read(con, item, keep)
-            if done and done % 50 == 0:
-                con.commit()
-                if log:
-                    log(f"{name}: {done} indexed…")
+            # Each chat on its own: the next one's parse, which can take seconds, must not hold the
+            # write lock that a tool call in this server (the notes index, commit links) is waiting for.
+            con.commit()
+            if done and done % 50 == 0 and log:
+                log(f"{name}: {done} indexed…")
         now = str(time.time())
         con.execute("insert or replace into meta values (?,?)", (stamp_key, now))
         con.execute("insert or replace into meta values (?,?)", (f"scanned:{name}", now))
