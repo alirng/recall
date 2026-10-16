@@ -162,13 +162,14 @@ def schema(con) -> str | None:
 
 
 def _installed() -> str | None:
-    """The version of the recall code on disk now, read from the file rather than the loaded module."""
+    """The version of the recall code on disk now, read from the file rather than the loaded module;
+    None when the file is gone. A file without the version line is taken to be this process's code."""
     try:
         with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py"), encoding="utf-8") as f:
             m = re.search(r'^__version__ = "([^"]+)"', f.read(), re.M)
     except OSError:
         return None
-    return m.group(1) if m else None
+    return m.group(1) if m else __version__
 
 
 def add_root_column(con: sqlite3.Connection) -> None:

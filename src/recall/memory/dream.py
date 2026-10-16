@@ -53,7 +53,12 @@ def run(opts: Options, log=print) -> dict:
         con = store.connect()
         ensure_tables(con)
         started = time.time()
-        indexer.index(con, max_age=0)
+        moved = None
+        try:
+            indexer.index(con, max_age=0)
+        except sqlite3.OperationalError:
+            if not (moved := _moved(con)):
+                raise
         _link_commits(con, log)
         settings = config.load()["model"]
         provider = from_spec(opts.model, settings)
@@ -87,8 +92,7 @@ def run(opts: Options, log=print) -> dict:
         stats = Counter()
         # Before reading, so a long backlog of chats cannot spend the calls it needs.
         placed = _place(client, log) if opts.fold and contexts.roots() else 0
-        moved = None
-        if opts.read:
+        if opts.read and not moved:
             if batcher:
                 batcher.deadline = reading
             if budget.max_usd is not None and opts.fold:  # as with time, keep a share for consolidation
