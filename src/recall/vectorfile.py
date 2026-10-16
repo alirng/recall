@@ -17,7 +17,13 @@ from that log, and a missing, corrupt or out-of-step file is rebuilt from the ta
 cannot be followed instead: VACUUM renumbers them, and a replaced last row gets its own back.
 A row a later insert replaced stays in the file until a rebuild, so a search checks each
 candidate against the table; recall forget rebuilds at once, so a forgotten chat's vectors
-leave the file with its rows.
+leave the file with its rows. If that rebuild fails, forget marks the index's meta, and the
+next search rebuilds. The header also carries a random id kept in the index's meta, so a
+recreated recall.db never takes over the files of the one it replaced.
+
+A search waits at most LOCK_WAIT for another process's update, then reads the header it has
+(rows newer than it are found by keywords until the next search) or scans the table. It writes
+to the index only once, to create the log; pruning the log is left to the processes that embed.
 """
 
 import contextlib
@@ -28,10 +34,12 @@ import os
 import re
 import sys
 import time
+import uuid
 
 FORMAT = 1
 CHUNK = 2048  # rows read or scored at a time: 6 MB as float32 at 768 dimensions
 STALE_SHARE = 0.25  # rebuild once this share of the rows are replaced or gone
+LOCK_WAIT = 2.0  # seconds a search waits for another process updating the files
 LOG = (
     "create table if not exists meta (k text primary key, v text)",
     "create table if not exists vector_log (id integer primary key autoincrement, session_id text, seq int)",
@@ -40,6 +48,8 @@ LOG = (
        end""",
 )
 PRUNED = "vector_log_pruned"  # meta: entries up to this id are gone, so a file older than it is rebuilt
+INDEX = "vectorfile_index"  # meta: this index's id, which its files' headers must carry
+FORGOTTEN = "vectorfile_forgotten"  # meta: set when forget could not rewrite the files, which then rebuild
 
 
 def best(con, model: str, vector, n: int) -> list[str] | None:
@@ -89,43 +99,58 @@ def _best(con, model: str, vector, n: int) -> list[str] | None:
 
 def current(con, model: str, writer: bool = False) -> dict | None:
     """The header of the model's file, caught up with the vectors table first. None for an
-    index with no file of its own. writer: also prune the log and other models' files, which
-    only the processes that embed do, so a search never writes to the index."""
+    index with no file of its own, or when a search could not wait for the file and has none
+    of this index's to read. writer: wait for the lock however long, then drop the log entries
+    the file has taken in and every other file in the folder (the processes that embed)."""
     folder = _folder(con)
     if folder is None or _numpy() is None:
         return None
-    _ensure_log(con)
+    state = _ensure_log(con)
     h = _header(folder, model)
-    if h and h["log"] == _top(con) and _intact(folder, h) and not writer:
+    if _current(folder, h, state, _top(con)) and not writer:
         return h
-    with _locked(folder):
+    with _locked(folder, None if writer else LOCK_WAIT) as mine:
+        if not mine:  # another process is updating the files: read what is there, or scan
+            return h if h and _ours(h, state) and _intact(folder, h) else None
         with _snapshot(con):  # one read of the index, so the log's top and the rows it covers agree
-            top = _top(con)
+            state, top = _state(con), _top(con)
             h = _header(folder, model)  # another process may have caught it up while this one waited
-            if not (h and h["log"] == top and _intact(folder, h)):
-                fits = h and h["rows"] and _intact(folder, h) and _pruned(con) <= h["log"] <= top
-                h = (fits and _append(con, folder, model, h, top)) or _rebuild(con, folder, model, top)
+            if not _current(folder, h, state, top):
+                fits = h and h["rows"] and _ours(h, state) and _intact(folder, h)
+                fits = fits and int(state.get(PRUNED, 0)) <= h["log"] <= top
+                h = (fits and _append(con, folder, model, h, top)) or _rebuild(con, folder, model, top, state)
         if writer:
-            _prune(con, folder, model, h)
+            _tidy(folder, [_header_path(folder, model), _data(folder, model, h["gen"])])
+    if writer:
+        _prune(con, h)
     return h
 
 
 def drop_deleted(con) -> None:
     """Rewrite each model's file from the vectors table after rows were deleted from it (recall
-    forget), so their vectors leave the disk now rather than at the next rebuild."""
+    forget), so their vectors leave the disk now rather than at the next rebuild, and delete
+    any file no header names. Raises on failure: the caller then calls mark_forgotten."""
     folder = _folder(con)
     if folder is None or not os.path.isdir(folder):
         return
-    with _locked(folder):
+    with _locked(folder, None):
         models = [h["model"] for h in map(_load, _names(folder, ".json")) if h]
-        if _numpy() is None:  # nothing here can rewrite them, so they go
-            for name in _names(folder, ".json") + _names(folder, ".vec"):
-                os.unlink(name)
-            return
-        _ensure_log(con)
-        for model in models:
-            with _snapshot(con):
-                _rebuild(con, folder, model, _top(con))
+        keep = []
+        if _numpy() is not None:  # without numpy nothing can rewrite them, so they all go
+            state = _ensure_log(con)
+            for model in models:
+                with _snapshot(con):
+                    h = _rebuild(con, folder, model, _top(con), state)
+                keep += [_header_path(folder, model), _data(folder, model, h["gen"])]
+        _tidy(folder, keep)
+
+
+def mark_forgotten(con) -> None:
+    """Note that forget could not rewrite the files, so the next search rebuilds them."""
+    with contextlib.suppress(Exception):
+        con.execute("create table if not exists meta (k text primary key, v text)")
+        con.execute("insert or replace into meta values (?, ?)", (FORGOTTEN, str(time.time_ns())))
+        con.commit()
 
 
 # --- writing -------------------------------------------------------------------------
@@ -162,7 +187,7 @@ def _append(con, folder: str, model: str, h: dict, top: int) -> dict | None:
     return h
 
 
-def _rebuild(con, folder: str, model: str, top: int) -> dict:
+def _rebuild(con, folder: str, model: str, top: int, state: dict) -> dict:
     """Write the model's file afresh from the vectors table, then retire the one it replaces."""
     np = _numpy()
     longest = con.execute(
@@ -179,6 +204,8 @@ def _rebuild(con, folder: str, model: str, top: int) -> dict:
         "dim": size[0] // 2 if size else 0,
         "rows": 0,
         "log": top,
+        "index": state[INDEX],
+        "forgotten": state.get(FORGOTTEN, ""),
     }
     dt = _dtype(np, h)
     path = _data(folder, model, h["gen"])
@@ -217,27 +244,35 @@ def _publish(folder: str, model: str, h: dict) -> None:
     tmp = os.path.join(folder, f"{_slug(model)}.json.{os.getpid()}.tmp")
     with open(tmp, "w") as f:
         json.dump(h, f)
-    os.replace(tmp, os.path.join(folder, _slug(model) + ".json"))
+    os.replace(tmp, _header_path(folder, model))
 
 
-def _prune(con, folder: str, model: str, h: dict) -> None:
-    """Drop the log entries the file has taken in, other models' files, and a header a crash
-    left half-written."""
+def _tidy(folder: str, keep: list[str]) -> None:
+    """Delete every file but these: older generations, other models' files, and what a crash left."""
     for name in _names(folder, ".json") + _names(folder, ".vec") + _names(folder, ".tmp"):
-        base = os.path.basename(name)
-        if base.endswith(".tmp") or not base.startswith(_slug(model) + "."):
-            os.unlink(name)
+        if name not in keep:
+            os.unlink(name)  # a search that mapped a data file keeps reading it until it unmaps
+
+
+def _prune(con, h: dict) -> None:
+    """Drop the log entries the file has taken in. Outside the file lock: it may wait on the index."""
     if con.execute("select 1 from vector_log where id <= ? limit 1", (h["log"],)).fetchone():
         con.execute("delete from vector_log where id <= ?", (h["log"],))
         con.execute("insert or replace into meta values (?, ?)", (PRUNED, str(h["log"])))
         con.commit()
 
 
-def _ensure_log(con) -> None:
-    if not con.execute("select 1 from sqlite_master where type = 'trigger' and name = 'vectors_logged'").fetchone():
+def _ensure_log(con) -> dict:
+    """Create the log, its trigger and this index's id once; returns the meta state."""
+    ready = con.execute("select 1 from sqlite_master where type = 'trigger' and name = 'vectors_logged'").fetchone()
+    state = _state(con) if ready else {}
+    if INDEX not in state:
         for stmt in LOG:
             con.execute(stmt)
+        con.execute("insert or ignore into meta values (?, ?)", (INDEX, uuid.uuid4().hex))
         con.commit()
+        state = _state(con)
+    return state
 
 
 # --- reading -------------------------------------------------------------------------
@@ -266,9 +301,22 @@ def _map(np, folder: str, h: dict):
     return np.memmap(_data(folder, h["model"], h["gen"]), dtype=_dtype(np, h), mode="r", shape=(h["rows"],))
 
 
+def _current(folder: str, h: dict | None, state: dict, top: int) -> bool:
+    return bool(h and _ours(h, state) and h["log"] == top and _intact(folder, h))
+
+
+def _ours(h: dict, state: dict) -> bool:
+    """Built for this index, and since forget last failed to rewrite it."""
+    return h.get("index") == state[INDEX] and h.get("forgotten", "") == state.get(FORGOTTEN, "")
+
+
 def _header(folder: str, model: str) -> dict | None:
-    h = _load(os.path.join(folder, _slug(model) + ".json"))
+    h = _load(_header_path(folder, model))
     return h if h and h["model"] == model else None
+
+
+def _header_path(folder: str, model: str) -> str:
+    return os.path.join(folder, _slug(model) + ".json")
 
 
 def _load(path: str) -> dict | None:
@@ -294,9 +342,8 @@ def _top(con) -> int:
     return row[0] if row else 0
 
 
-def _pruned(con) -> int:
-    row = con.execute("select v from meta where k = ?", (PRUNED,)).fetchone()
-    return int(row[0]) if row else 0
+def _state(con) -> dict:
+    return dict(con.execute("select k, v from meta where k in (?, ?, ?)", (INDEX, FORGOTTEN, PRUNED)).fetchall())
 
 
 # --- helpers -------------------------------------------------------------------------
@@ -327,12 +374,26 @@ def _dtype(np, h: dict):
 
 
 @contextlib.contextmanager
-def _locked(folder: str):
-    """One process at a time changes the files; a search that finds them current never waits."""
+def _locked(folder: str, wait: float | None):
+    """One process at a time changes the files. Yields False after `wait` seconds without the
+    lock; None waits as long as it takes. A search that finds the files current never asks."""
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "lock"), "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        yield
+        if wait is None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            yield True
+            return
+        end = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    yield False
+                    return
+                time.sleep(0.05)
+        yield True
 
 
 @contextlib.contextmanager

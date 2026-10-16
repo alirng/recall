@@ -160,8 +160,9 @@ def purge(con: sqlite3.Connection, ids: list[str], remember: bool = True, scrub:
 
         try:  # the file search reads beside the index holds them too
             vectorfile.drop_deleted(con)
-        except (OSError, sqlite3.Error) as e:  # search skips them anyway, and the next rewrite drops them
-            archive.log(f"deleted chats, but could not rewrite the shared vector file ({e})")
+        except Exception as e:  # whatever went wrong, the index is still scrubbed below
+            vectorfile.mark_forgotten(con)  # and the next search rebuilds the file without them
+            archive.log(f"deleted chats, but could not rewrite the shared vector file ({e!r}); the next search will")
     if scrub and deleted:
         try:
             scrub_db(con)

@@ -261,7 +261,10 @@ def refresh(con, background: bool = False, log=None) -> int:
             return 0
         if todo and not (background and len(todo) > INLINE_LIMIT):
             try:
-                return index_messages(con, embedder, todo, log=log, timeout=INLINE_TIMEOUT if background else None)
+                if background:  # a tool call is waiting, holding the index lock: never longer than this
+                    deadline = time.time() + INLINE_TIMEOUT
+                    return index_messages(con, embedder, todo, log=log, deadline=deadline, timeout=INLINE_TIMEOUT)
+                return index_messages(con, embedder, todo, log=log)
             except Exception as e:
                 print(f"recall: could not embed new messages: {e}", file=sys.stderr)
                 return 0
