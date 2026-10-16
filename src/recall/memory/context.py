@@ -13,7 +13,7 @@ from .notes import Note, NoteStore, audience
 
 # What the notes tables hold, for index_notes: change it when their columns or what goes into them
 # change, so that the next refresh rebuilds them. The meta row NOTES_BUILT records it with a digest
-# of the note files the tables were built from.
+# of the note files the tables were built from and recall.db's schema version once they were built.
 NOTES_SCHEMA = "2026-10-16 refresh_notes"
 NOTES_BUILT = "notes_built"
 
@@ -116,7 +116,11 @@ def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
     once it holds the write lock (another server just did the work) does nothing. A caller with no
     key, such as a run that has just written the notes, leaves it blank and the next refresh
     rebuilds from the files once. An audience also depends on the chat index, which only a rebuild
-    reads, so a refresh that finds the notes and contexts unchanged keeps the audiences it has."""
+    reads, so a refresh that finds the notes and contexts unchanged keeps the audiences it has.
+
+    The tables are emptied and refilled, unless the schema changed since they were built (_schema):
+    then other code, such as an agent's server still running an older release, may have rebuilt
+    them under its own layout, so they are dropped and created again."""
     table, stamp = _contexts()
     if con.in_transaction:
         con.commit()
@@ -126,8 +130,8 @@ def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
         if built and _current(con, built):
             con.rollback()
             return False
-        old = con.execute("select v from meta where k = ?", (NOTES_BUILT,)).fetchone()
-        if not (old and old[0].startswith(f"{NOTES_SCHEMA}|")):  # a layout from before, or none
+        old = (con.execute("select v from meta where k = ?", (NOTES_BUILT,)).fetchone() or [""])[0]
+        if not (old.startswith(f"{NOTES_SCHEMA}|") and old.endswith(f"|{_schema(con)}")):  # see above
             con.execute("drop table if exists notes")
             con.execute("drop table if exists notes_fts")
         # Emptied rather than dropped and recreated: a change to the schema makes every other
@@ -165,7 +169,8 @@ def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
             )
             con.execute("insert into notes_fts values (?,?,?,?)", (n.id, n.title, n.body, n.project_name or ""))
         con.execute("insert or replace into meta values (?, ?)", (contexts.STAMP, stamp))
-        con.execute("insert or replace into meta values (?, ?)", (NOTES_BUILT, built or f"{NOTES_SCHEMA}|"))
+        key = f"{built or f'{NOTES_SCHEMA}|'}|{_schema(con)}"  # after any drop and create above
+        con.execute("insert or replace into meta values (?, ?)", (NOTES_BUILT, key))
         con.commit()
     except BaseException:
         con.rollback()
@@ -181,16 +186,27 @@ def _contexts() -> tuple[dict[str, list[str]], str]:
 
 
 def _current(con, built: str) -> bool:
-    """Whether the index was built from these note files and the contexts configured now. An
-    unreadable config.toml matches an index built while it was unreadable: rebuilding would
-    change nothing. A missing contexts.STAMP is a rebuild an older release stopped half way."""
+    """Whether the index was built from these note files and the contexts configured now, and no
+    table was created or dropped since (_schema). An unreadable config.toml matches an index built
+    while it was unreadable: rebuilding would change nothing. A missing contexts.STAMP is a rebuild
+    an older release stopped half way."""
     try:
         have = {
             r[0]: r[1] for r in con.execute("select k, v from meta where k in (?, ?)", (NOTES_BUILT, contexts.STAMP))
         }
+        schema = _schema(con)
     except sqlite3.Error:
         return False
-    return have.get(NOTES_BUILT) == built and have.get(contexts.STAMP) == _contexts()[1]
+    return have.get(NOTES_BUILT) == f"{built}|{schema}" and have.get(contexts.STAMP) == _contexts()[1]
+
+
+def _schema(con) -> str:
+    """recall.db's schema version, which any process's create or drop moves on. An older
+    release's index_notes drops and recreates the notes tables on every call and leaves
+    NOTES_BUILT as it was, so a moved version is how a refresh can tell those tables may no
+    longer be the ones it built, or have the columns it fills. Refilling the tables in place,
+    as index_notes does, leaves it alone."""
+    return str(con.execute("pragma schema_version").fetchone()[0])
 
 
 def search(con, query: str, project: str | None = None, limit: int = 10) -> list[dict]:
@@ -234,21 +250,20 @@ def search(con, query: str, project: str | None = None, limit: int = 10) -> list
 
 
 def _with_meaning(con, query: str, rows: list, project: str | None, limit: int) -> list:
-    """Fuse keyword matches with notes close in meaning when embeddings are on (RRF, k=60)."""
+    """Fuse keyword matches with notes close in meaning when embeddings are on (RRF, k=60). The
+    notes' words come from the index, which holds the active notes in the order they were read,
+    rather than from a second read of every file."""
     from .. import embeddings
 
     if embeddings.configured() is None:
         return rows[:limit]
-    notes = NoteStore().load()
+    sql, args = "select id, title, body from notes", []
     if project:
-        keep = {
-            r["id"]
-            for r in con.execute(
-                "select id from notes where project_name like ? or project like ?", (f"%{project}%", f"%{project}%")
-            )
-        }
-        notes = {i: n for i, n in notes.items() if i in keep or i in {r["id"] for r in rows}}
-    meaning = embeddings.note_ranking(con, notes, query)[: limit * 3]
+        found = [r["id"] for r in rows]
+        sql += f" where project_name like ? or project like ? or id in ({','.join('?' * len(found))})"
+        args = [f"%{project}%", f"%{project}%", *found]
+    texts = {r["id"]: f"{r['title']}\n{r['body']}" for r in con.execute(f"{sql} order by rowid", args)}
+    meaning = embeddings.note_ranking(con, texts, query)[: limit * 3]
     scores: dict[str, float] = {}
     for ranking in ([r["id"] for r in rows], meaning):
         for rank, i in enumerate(ranking):

@@ -255,9 +255,10 @@ def _spawn_backfill(con) -> None:
 # --- memory notes --------------------------------------------------------------------
 
 
-def note_ranking(con, notes: dict, query: str) -> list[str]:
-    """Note ids ordered by closeness in meaning to the query; embeds new or edited notes first.
-    Empty when embeddings are off."""
+def note_ranking(con, texts: dict[str, str], query: str) -> list[str]:
+    """Note ids ordered by closeness in meaning to the query, from each active note's title and
+    body (texts: id -> "title\nbody"); embeds new or edited notes first. Empty when embeddings
+    are off."""
     np = _numpy()
     embedder = configured()
     if embedder is None:
@@ -270,7 +271,6 @@ def note_ranking(con, notes: dict, query: str) -> list[str]:
         r[0]: (r[1], r[2])
         for r in con.execute("select note_id, hash, vec from note_vectors where model = ?", (embedder.model,))
     }
-    texts = {i: f"{n.title}\n{n.body}" for i, n in notes.items() if n.status == "active"}
     stale = [i for i, t in texts.items() if have.get(i, (None,))[0] != _hash(t)]
     try:
         for start in range(0, len(stale), BATCH):
