@@ -219,10 +219,11 @@ def reparse_shared_cursor(con: sqlite3.Connection, found: list) -> None:
     that has not changed is never parsed again, so forget that it was seen and let this run read it."""
     if sum(1 for r in found if r.agent == "cursor" and r.data) < 2:
         return
-    con.execute(
-        "delete from seen where session_id in (select id from sessions where root is null"
-        " and source like '%/agent-transcripts/%')"
-    )
+    unattributed = "select id from sessions where root is null and source like '%/agent-transcripts/%'"
+    if not con.execute(f"select 1 from seen where session_id in ({unattributed}) limit 1").fetchone():
+        return  # nothing to forget, so no write: an index refresh that reads nothing takes no write lock
+    con.execute(f"delete from seen where session_id in ({unattributed})")
+    con.commit()
 
 
 def upsert(con: sqlite3.Connection, s: Session) -> None:

@@ -7,6 +7,7 @@ Each call is noted in recall's usage log (usage.py) with the agent that made it,
 can tell which of its tools agents actually use.
 """
 
+import contextlib
 import os
 import re
 import time
@@ -60,16 +61,21 @@ mcp = _Server(
 )
 
 
+@contextlib.contextmanager
 def _db():
-    con = store.connect()
-    indexer.index(con, max_age=60)  # cheap incremental refresh; skipped if another agent is indexing
-    return con
+    """The chat index for one tool call, closed when the call is done. CPython frees a sqlite3
+    connection only at a garbage collection (it sits in a cycle with its own statement cache), so an
+    unclosed one keeps any transaction it holds, and with a write the lock, long after the call."""
+    with contextlib.closing(store.connect()) as con:
+        indexer.index(con, max_age=60)  # cheap incremental refresh; skipped if another agent is indexing
+        yield con
 
 
+@contextlib.contextmanager
 def _notes_db():
-    con = store.connect()
-    context.index_notes(con, NoteStore().load())  # picks up hand edits; fast for thousands of notes
-    return con
+    with contextlib.closing(store.connect()) as con:
+        context.index_notes(con, NoteStore().load())  # picks up hand edits; fast for thousands of notes
+        yield con
 
 
 def _client(ctx: Context | None) -> str | None:
@@ -123,9 +129,10 @@ def search_chats(
         args["alternatives"] = queries[1:]
 
     def run():
-        con, n = _db(), max(1, min(limit, 25))
+        n = max(1, min(limit, 25))
         depth = n if len(queries) == 1 else max(n, 20)  # deeper lists fuse into a better top n
-        return _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])[:n]
+        with _db() as con:
+            return _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])[:n]
 
     rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
     # Claude Code and Codex show the model structuredContent when a result has it; Cursor reads
@@ -203,7 +210,8 @@ def read_chat(
     """
 
     def run():
-        result = store.read(_db(), chat_id, query, offset, max(1, min(limit, 80)), max_chars=store.MAX_MESSAGE_CHARS)
+        with _db() as con:
+            result = store.read(con, chat_id, query, offset, max(1, min(limit, 80)), max_chars=store.MAX_MESSAGE_CHARS)
         if not result:
             return {"error": f"no chat with id {chat_id!r}; use search_chats first"}
         budget = store.MAX_MESSAGE_CHARS if limit == 1 else CLIP_CHARS
@@ -268,13 +276,18 @@ def recent_chats(
     if file or commit:
         from . import commits
 
-        return _logged(
-            ctx, "recent_chats", {"file": file, "commit": commit}, lambda: commits.why_rows(_db(), file, commit)
-        )
+        def why():
+            with _db() as con:
+                return commits.why_rows(con, file, commit)
+
+        return _logged(ctx, "recent_chats", {"file": file, "commit": commit}, why)
+
+    def run():
+        with _db() as con:
+            return store.recent(con, agent, project, since, max(1, min(limit, 50)), until)
+
     args = {"agent": agent, "project": project, "since": since, "until": until}
-    return _logged(
-        ctx, "recent_chats", args, lambda: store.recent(_db(), agent, project, since, max(1, min(limit, 50)), until)
-    )
+    return _logged(ctx, "recent_chats", args, run)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -285,12 +298,12 @@ def memory_search(query: str, project: str | None = None, limit: int = 10, ctx: 
     Use before choices the developer may have opinions on (tools, conventions, workflow), or
     when project background would help. project: name or part of the repository.
     """
-    return _logged(
-        ctx,
-        "memory_search",
-        {"query": query, "project": project},
-        lambda: context.search(_notes_db(), query, project, max(1, min(limit, 30))),
-    )
+
+    def run():
+        with _notes_db() as con:
+            return context.search(con, query, project, max(1, min(limit, 30)))
+
+    return _logged(ctx, "memory_search", {"query": query, "project": project}, run)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -371,7 +384,12 @@ def list_projects(months: int = 3, ctx: Context = None) -> list[dict]:
     agents worked on each, chat and note counts, last activity, and chats per month. Use it
     for "what am I working on", to pick up a project where it stopped, or to find the project
     name for search_chats and memory_search. Projects with no chats in `months` are left out."""
-    rows = _logged(ctx, "list_projects", {"months": months}, lambda: projects.overview(_db(), max(1, min(months, 24))))
+
+    def run():
+        with _db() as con:
+            return projects.overview(con, max(1, min(months, 24)))
+
+    rows = _logged(ctx, "list_projects", {"months": months}, run)
     return rows or [{"note": "No projects file yet: the developer can draft one with `recall projects suggest`."}]
 
 

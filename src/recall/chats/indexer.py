@@ -37,6 +37,10 @@ def index(con, only=None, force=False, max_age=None, log=None) -> dict:
             return {}
         scrub.ensure(con, log=log)  # candidates, caches and the archive are not rebuilt: see scrub.py
         result = _index(con, only, force, max_age, log)
+        # _scan commits only the sources it reads. Anything else this run wrote must not stay open:
+        # the caller's connection would hold the write lock until it is closed, and every other
+        # recall process (another agent's server, a hook) would wait on it and fail.
+        con.commit()
         if max_age is None or any(r["indexed"] or r.get("restored") for r in result.values()):
             from .. import embeddings
 
