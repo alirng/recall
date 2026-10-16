@@ -7,7 +7,6 @@ import sys
 import time
 
 from . import __version__, config, paths
-from .chats import indexer, store
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -28,6 +27,8 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def cmd_index(a) -> None:
+    from .chats import indexer, store
+
     started = time.time()
     if a.background:  # started by a tool call's refresh (indexer.py): low priority, and killed at the deadline
         import signal
@@ -52,6 +53,7 @@ def cmd_index(a) -> None:
 
 def cmd_embed(a) -> None:
     from . import embeddings, power
+    from .chats import store
 
     power.lower_priority()  # a backfill, mostly started by a tool call: everything else gets the CPU first
     embedder = embeddings.configured()
@@ -60,16 +62,28 @@ def cmd_embed(a) -> None:
             "embeddings are off: add an [embeddings] table to config.toml and install the extra "
             "(uv tool install 'recall-agents[embeddings]'); see embeddings.py"
         )
-    con = store.connect()
-    todo = embeddings.pending(con, embedder)
-    print(f"{len(todo)} messages to embed with {embedder.model}", file=sys.stderr)
-    started = time.time()
-    done = embeddings.index_messages(con, embedder, todo, log=lambda m: print(m, file=sys.stderr))
-    print(f"embedded {done} messages in {time.time() - started:.0f}s")
+    with embeddings.embedding_lock() as mine:
+        if not mine:
+            print("another recall embed is running", file=sys.stderr)
+            return
+        con = store.connect()
+        todo = embeddings.pending(con, embedder)
+        print(f"{len(todo)} messages to embed with {embedder.model}", file=sys.stderr)
+        started = time.time()
+        done = embeddings.index_messages(
+            con,
+            embedder,
+            todo,
+            log=lambda m: print(m, file=sys.stderr),
+            deadline=started + embeddings.EMBED_DEADLINE,
+        )
+    left = f"; stopped at the time limit with {len(todo) - done} left for the next run" if done < len(todo) else ""
+    print(f"embedded {done} messages in {time.time() - started:.0f}s{left}")
 
 
 def cmd_search(a) -> None:
     from . import usage
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -94,6 +108,7 @@ def cmd_search(a) -> None:
 
 def cmd_show(a) -> None:
     from . import usage
+    from .chats import store
 
     chat = store.read(store.connect(), a.chat_id, a.query, a.offset, a.limit, max_chars=4000)
     usage.record("cli", "show", {"chat_id": a.chat_id, "query": a.query}, chat or {"error": "not found"})
@@ -108,6 +123,7 @@ def cmd_show(a) -> None:
 
 def cmd_forget(a) -> None:
     from . import forget
+    from .chats import indexer, store
 
     if not (a.chat_id or a.project):
         sys.exit("name a chat id, or --project NAME")
@@ -149,11 +165,17 @@ def cmd_forget(a) -> None:
     if notes:
         print(f"\n{len(notes)} memory note(s) cite these chats; recall leaves notes to you:")
         print("\n".join(f"  {n}" for n in notes))
-        print("Edit or delete them. To also remove them from the notes' git history (needs git-filter-repo):")
+        print(
+            "Edit or delete them. Or run this (needs git-filter-repo): it commits the notes folder as it is, then"
+            " deletes these notes from disk and from every commit of its history, with the deletion ledger's past"
+            " versions:"
+        )
         print(f"  {forget.history_command(notes)}")
+        print("filter-repo removes the notes folder's git remote: if you sync it, add the remote back and force-push.")
 
 
 def cmd_stats(a) -> None:
+    from .chats import indexer, store
     from .chats.sources import codex, compressed
 
     out = store.stats(store.connect())
@@ -166,6 +188,7 @@ def cmd_stats(a) -> None:
 
 def cmd_why(a) -> None:
     from . import commits, usage
+    from .chats import indexer, store
 
     if not a.target and not a.commit:
         sys.exit("recall why needs a file (path, path:line or path:start-end) or --commit <sha>")
@@ -180,6 +203,7 @@ def cmd_why(a) -> None:
 
 def cmd_links(a) -> None:
     from . import commits
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -248,6 +272,7 @@ def cmd_dream(a) -> None:
 
 
 def cmd_memory(a) -> None:
+    from .chats import store
     from .memory import context
     from .memory.notes import NoteStore
 
@@ -325,6 +350,7 @@ def cmd_hook(a) -> None:
 
 def cmd_explore(a) -> None:
     from . import explore
+    from .chats import store
 
     con = explore.connect()
     if a.action == "backfill":
@@ -369,6 +395,7 @@ def cmd_explore(a) -> None:
 
 def cmd_projects(a) -> None:
     from . import projects
+    from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
@@ -419,6 +446,7 @@ def cmd_projects(a) -> None:
 
 def cmd_rules(a) -> None:
     from . import projects, rules
+    from .chats import store
 
     con = store.connect()
     target = " ".join(a.target) if a.target else None
@@ -455,6 +483,7 @@ def cmd_rules(a) -> None:
 
 def cmd_usage(a) -> None:
     from . import usage
+    from .chats import store
 
     s = usage.summary(store.parse_since(a.since))
     if a.json:
@@ -497,6 +526,7 @@ def cmd_jit(a) -> None:
     """What jit would hand an agent for a prompt, a file it reads, or a failed command, and
     why. The hooks themselves answer through `recall hook` (integrations/hooks.py)."""
     from . import jit
+    from .chats import store
 
     con = store.connect()
     cwd = os.path.abspath(a.cwd or os.getcwd())
@@ -528,6 +558,7 @@ def cmd_jit(a) -> None:
 
 def cmd_status(a) -> None:
     from . import status
+    from .chats import store
 
     if a.hook:  # the edit hook's first command; `recall hook` answers it now
         return cmd_hook(a)
@@ -576,6 +607,7 @@ def cmd_status(a) -> None:
 
 def cmd_resolve(a) -> None:
     from . import mail
+    from .chats import store
 
     out = mail.resolve(a.repo, a.file, store.parse_since(a.since))
     if a.json:
@@ -683,6 +715,7 @@ def cmd_autopilot(a) -> None:
 
 def cmd_doctor(a) -> None:
     from . import autopilot, power
+    from .chats import indexer
     from .chats.sources import codex
 
     rows = autopilot.report()
@@ -722,6 +755,8 @@ def cmd_doctor(a) -> None:
         print(f"{r['root']:15} {where}\n{'':15} {text}; {seen}" + (f"; {r['account']}" if r["account"] else ""))
         if r["hooks_run"]:
             print(f"{'':15} hooks run {', '.join(r['hooks_run'])}, not this recall ({r['this_recall']})")
+        if r["message_chat_unasked"]:
+            print(f"{'':15} Codex runs message_chat without asking you: `recall install` makes it ask")
     on = autopilot.enabled()
     print(
         f"\nautopilot: {'on' if on else 'off'}"
@@ -788,6 +823,7 @@ COMMA_SAFE_CASES = ("memorycode", "swe-contextbench")
 
 def cmd_eval(a) -> None:
     from . import evals
+    from .chats import store
 
     if a.case and a.kind in COMMA_SAFE_CASES:  # ID,ID,... as well as repeated --case
         a.case = [i for c in a.case for i in c.split(",") if i]

@@ -51,7 +51,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from . import paths
+from . import inject, paths
 
 if TYPE_CHECKING:
     from .integrations.hooks import Event, Reply
@@ -63,7 +63,15 @@ WINDOW_CHARS = 6000  # per context window, all events together
 WINDOW_FIRES = 10
 MIN_WORDS = 3  # content words a prompt needs before it is matched at all
 DENSE = ("cos_first", "cos_best", "has_vec")  # features that need the prompt's embedding
-EMBED_WAIT = 0.25  # seconds a hook waits for the prompt's embedding before going without
+# Seconds a hook waits for the prompt's embedding before going without. A loaded model answers in
+# 10-20 ms; a model that is not loaded is not waited for at all (_hook_vector).
+EMBED_WAIT = 0.1
+WARMED = os.path.join(paths.HOME, "cache", "embed-warm")  # when a hook last started a background load
+# A hook's last embedding that arrived in time; within WARM_FOR of it (hooks ask Ollama to keep the
+# model 30 minutes) the model is taken to be loaded without asking. A background load starts at most
+# once per WARM_FOR too.
+EMBEDDED = os.path.join(paths.HOME, "cache", "embed-ok")
+WARM_FOR = 25 * 60
 # Matching failures against the index's tool errors (tool-errors branch) stays off for now: in
 # a time-ordered replay on a copy of that index, a judge found 54 of 90 matches relevant (0.60);
 # the same error line often recurs with a different cause. A stricter rule comes with it.
@@ -134,7 +142,6 @@ COMMON_NAMES = {
     "__init__.py", "__main__.py", "main.py", "index.ts", "index.tsx", "index.js", "app.tsx", "app.ts",
     "app.js", "utils.py", "utils.ts", "types.ts", "config.py", "config.ts", ".env", ".gitignore", "uv.lock",
 }  # fmt: skip
-TAG = re.compile(r"</?[A-Za-z][\w-]*(\s[^<>]*)?>")
 NOISE = re.compile(r"(^|/)(node_modules|\.git|\.venv|venv|dist|build|__pycache__|\.next|DerivedData)/")
 
 
@@ -334,8 +341,8 @@ def render(items: list[Item]) -> str:
     every chat parser strips, so memory never re-learns itself."""
     parts = []
     for kind in ("rule", "note", "chat"):
-        # Quoted chat text is data: tag-like text in it must not close or open a block.
-        lines = [TAG.sub("", i.line) for i in items if i.kind == kind]
+        # Quoted chat text is data: nothing in it may close or open a block (inject.py).
+        lines = [inject.line(i.line, LINE_CHARS) for i in items if i.kind == kind]
         if lines:
             parts.append(HEADERS[kind] + "\n" + "\n".join(lines))
     return "<recall-memory>\n" + "\n".join(parts) + "\n</recall-memory>" if parts else ""
@@ -416,10 +423,17 @@ def match_prompt(
         import threading
 
         box: dict = {}
-        worker = threading.Thread(target=lambda: box.update(v=embed_query(query)), daemon=True)
+        worker = threading.Thread(target=lambda: box.update(v=_hook_vector(query)), daemon=True)
         started = time.perf_counter()
         worker.start()
-        vector = lambda: (worker.join(max(0.0, EMBED_WAIT - (time.perf_counter() - started))), box.get("v"))[1]  # noqa: E731
+
+        def vector():
+            worker.join(max(0.0, EMBED_WAIT - (time.perf_counter() - started)))
+            if worker.is_alive():  # too late: the next prompt asks Ollama first whether it is loaded
+                with contextlib.suppress(OSError):
+                    os.remove(EMBEDDED)
+            return box.get("v")
+
     found = candidates(con, query, cwd, own=own, chats=chats, now=now, project=project, vector=vector)
     for c in found:
         # The meaning gate where this item has a stored vector to compare, the keyword gate else.
@@ -481,7 +495,8 @@ def candidates(
     if notes:
         out += _note_candidates(con, query, project, now, words, allowed_notes, cwd)
     named = files_named(query)
-    vector = vector() if callable(vector) else vector
+    if callable(vector):  # the prompt's embedding, waited for only when an item has vectors to compare it with
+        vector = vector() if any(_has_vectors(con, c, until) for c in out) else None
     for c in out:
         c.features |= _meaning(con, c, vector, until) | {"file": float(_names_file(con, c, named, until))}
     return out
@@ -513,6 +528,22 @@ def _names_file(con, c: Item, names: list[str], until: float | None) -> bool:
             [c.id, *([until] if until else []), *names],
         )
     return row.fetchone() is not None
+
+
+def _has_vectors(con, c: Item, until: float | None) -> bool:
+    """Whether _meaning would find stored vectors for this item, without the prompt's own."""
+    model = vector_model()
+    try:
+        if c.kind == "note":
+            sql, args = "select 1 from note_vectors where note_id = ? and model = ? limit 1", [c.id, model]
+        else:
+            when = "and (m.ts is null or m.ts < ?)" if until else ""
+            sql = f"""select 1 from vectors v join messages m on m.session_id = v.session_id and m.seq = v.seq
+                      where v.session_id = ? and v.model = ? {when} limit 1"""
+            args = [c.id, model, *([until] if until else [])]
+        return con.execute(sql, args).fetchone() is not None
+    except Exception:  # no vector tables yet: _meaning finds none either
+        return False
 
 
 def _meaning(con, c: Item, vector, until: float | None) -> dict:
@@ -570,6 +601,86 @@ def vector_model() -> str:
     """The model name stored vectors are keyed by, as embeddings.Embedder.model has it."""
     _, provider, name, _ = _embedding_settings()
     return f"{provider}:{name}"
+
+
+def _hook_vector(text: str) -> list[float] | None:
+    """The prompt's embedding for a hook. Ollama is asked first whether the model is loaded (under a
+    millisecond): loading takes longer than a hook waits, and Ollama drops a load whose request was
+    given up on, so asking a cold model would cost every prompt the whole wait and never warm it.
+    A model that is not loaded is loaded in the background for the next prompts instead, once per
+    WARM_FOR: after that, a model Ollama still does not list (its name there may be another form of
+    the configured one) is asked for as before. While the hooks' embeddings keep arriving in time
+    (EMBEDDED), Ollama is not asked."""
+    _, provider, name, base = _embedding_settings()
+    if provider == "ollama" and not _lately(EMBEDDED) and not _lately(WARMED) and not _ollama_loaded(base, name):
+        _warm_up(base, name)
+        return None
+    vector = embed_query(text)
+    if vector is not None:
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(EMBEDDED), exist_ok=True)
+            with open(EMBEDDED, "w"):
+                pass
+    return vector
+
+
+def _lately(marker: str) -> bool:
+    try:
+        return time.time() - os.path.getmtime(marker) < WARM_FOR
+    except OSError:
+        return False
+
+
+def _ollama_loaded(base: str, name: str) -> bool:
+    """Whether Ollama has the model loaded (/api/ps). False only when Ollama says it has not: when
+    it cannot tell, or is not running, the hook asks for the embedding as before."""
+    import http.client
+    from urllib.parse import urlparse
+
+    url = urlparse(base)
+    try:
+        kind = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        conn = kind(url.hostname, url.port, timeout=EMBED_WAIT)
+        conn.request("GET", url.path + "/api/ps")
+        reply = conn.getresponse()
+        models = json.loads(reply.read())["models"] if reply.status == 200 else None
+    except Exception:
+        return True
+    if not isinstance(models, list):
+        return True
+
+    def plain(n):  # "nomic-embed-text" and "nomic-embed-text:latest" are one model
+        return n.removesuffix(":latest") if isinstance(n, str) else n
+
+    return any(isinstance(m, dict) and plain(name) in {plain(m.get("name")), plain(m.get("model"))} for m in models)
+
+
+def _warm_up(base: str, name: str) -> None:
+    """Load the embedding model for the prompts to come, in a process of its own that waits for it.
+    The hook that starts it does not wait."""
+    import subprocess
+    import sys
+
+    code = (
+        "import http.client, json, sys; from urllib.parse import urlparse; u = urlparse(sys.argv[1]);"
+        " c = (http.client.HTTPSConnection if u.scheme == 'https' else http.client.HTTPConnection)"
+        "(u.hostname, u.port, timeout=120);"
+        " c.request('POST', u.path + '/api/embed', json.dumps({'model': sys.argv[2], 'input': ['warm up'],"
+        " 'keep_alive': '30m'}), {'Content-Type': 'application/json'}); c.getresponse().read()"
+    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "-I", "-c", code, base, name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        os.makedirs(os.path.dirname(WARMED), exist_ok=True)
+        with open(WARMED, "w"):
+            pass
+    except OSError:
+        pass
 
 
 def embed_query(text: str, timeout: float = EMBED_WAIT) -> list[float] | None:
@@ -762,10 +873,10 @@ def _note_candidates(con, query, project, now, words, allowed, cwd=None) -> list
     try:
         where, args = _note_scope(con, project, cwd)
         rows = con.execute(
-            f"""select n.id, n.title, n.body, n.project, n.scope, n.last_seen, n.type,
+            f"""select n.id, n.title, n.brief, n.project, n.scope, n.last_seen, n.type,
                        bm25(notes_fts, 0, 5.0, 1.0, 2.0) s
                 from notes_fts f join notes n on n.id = f.id
-                where notes_fts match ? and ({where})
+                where notes_fts match ? and ({where}) and n.brief != ''
                 order by s limit 30""",
             [q, *args],
         ).fetchall()
@@ -890,7 +1001,8 @@ def _file_rules(agent: str, root: str, rel: str, state: State | None) -> list[It
     for path, globs, what in scoped:
         patterns = [g.strip() for g in re.split(r"[,\s]+", globs) if g.strip()]
         if any(_glob(rel, g) for g in patterns):
-            line = f"- {_clip(what.rstrip('.'), 200)} (`{path}`, for {globs})"
+            where = inject.line(path.replace("`", ""), 120)  # the rule file's own words: capped like them
+            line = f"- {_clip(what.rstrip('.'), 200)} (`{where}`, for {inject.line(globs, 80)})"
             out.append(Item(f"rule:{path}", "rule", line))
     return out
 
@@ -907,8 +1019,8 @@ def _file_notes(con, names: list[str], project: dict | None, cwd: str | None) ->
     try:
         scope, args = _note_scope(con, project, cwd)
         rows = con.execute(
-            f"""select n.id, n.title, n.body, n.last_seen from notes n
-                where ({scope}) and ({match}) order by n.last_seen desc limit 2""",
+            f"""select n.id, n.title, n.brief, n.last_seen from notes n
+                where ({scope}) and ({match}) and n.brief != '' order by n.last_seen desc limit 2""",
             [*args, *[x for name in names for x in (name, name)]],
         ).fetchall()
     except Exception:
@@ -1211,9 +1323,14 @@ def _chat_line(con, row: dict, meta) -> str:
 
 def _note_line(nid: str, title: str, body: str, last_seen: str | None) -> str:
     """The note's title and the gist of its body, cut so the id at the end always fits."""
+    from .memory.said import dangerous
+
     tail = f" (note {nid}{', ' + last_seen[:10] if last_seen else ''})"
     head = f"- {_clip(title, 90)}: "
-    return head + _gist(body, max(40, LINE_CHARS - len(head) - len(tail))) + tail
+    gist = _gist(body, max(40, LINE_CHARS - len(head) - len(tail)))
+    # The rules passed notes.pushed as written; _gist rewrites them (code marks and links out), so
+    # what is delivered is checked again, and only the title goes when it no longer passes.
+    return head.rstrip(": ") + tail if dangerous(gist) else head + gist + tail
 
 
 def _outcome(con, sid: str) -> str:

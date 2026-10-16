@@ -115,6 +115,7 @@ def report(deep: bool = True) -> list[dict]:
         elsewhere = agents.other_runners(r, cmd) if live and cmd else []
         unreadable = codex.unreadable([r]) if live and r.agent == "codex" else 0
         approval = agents.cursor_approval(r) if live and r.agent == "cursor" and have.get("mcp") else None
+        unasked = bool(have.get("mcp")) and agents.codex_unasked(r)
         rows.append(
             {
                 "root": r.name,
@@ -129,6 +130,7 @@ def report(deep: bool = True) -> list[dict]:
                 "needs_trust": r.agent == "codex" and bool(have.get("hook")),
                 "needs_approval": bool(approval) and approval["approved"] == 0,
                 "approval": approval,
+                "message_chat_unasked": unasked,  # Codex runs message_chat without asking: `recall install` fixes it
                 "connect": connect,
                 "mine": roots.option(r, "mine", cfg),
                 "index": roots.option(r, "index", cfg),

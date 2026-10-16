@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from . import inject
+
 AGENTS = ("cursor", "claude", "codex")
 LABELS = {"cursor": "Cursor", "claude": "Claude Code", "codex": "Codex"}
 BLOCK_START = "<!-- recall:rules start"
@@ -173,8 +175,11 @@ def pointers(folder: str | None, agent: str) -> list[str]:
         return []
     out = []
     for s in gaps(scan(root))[agent]:
-        what = s.description or _first_line(s.body) or "always-on rule"
-        out.append(f"- {what.rstrip('.')} (read `{s.path}`)")
+        # The description is the rule file's own text: one line, capped, with nothing in it that
+        # could close the block it is shown in or the code span around the path.
+        what = inject.line((s.description or _first_line(s.body)).replace("`", ""), 160)
+        path = inject.line(s.path.replace("`", ""), 160)
+        out.append(f"- {what.rstrip('.') or 'always-on rule'} (read `{path}`)")
     return out
 
 
