@@ -330,7 +330,16 @@ def _start_first_run(dream: dict) -> None:
     log = os.path.join(paths.LOGS, "dream.log")
     with open(log, "a") as f:
         subprocess.Popen(
-            [sys.argv[0], "dream", "--max-minutes", str(dream["max_minutes"]), "--max-calls", str(dream["max_calls"])],
+            [
+                sys.argv[0],
+                "dream",
+                "--max-minutes",
+                str(dream["max_minutes"]),
+                "--max-calls",
+                str(dream["max_calls"]),
+                "--on-battery",  # the person just asked for this run: on battery too
+                "run",
+            ],
             stdout=f,
             stderr=f,
             start_new_session=True,

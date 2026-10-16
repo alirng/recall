@@ -2,6 +2,8 @@
 
 A run missed while the machine sleeps fires when it wakes. Each run is capped in
 time and model calls, so a long backfill spreads over several nights, newest first.
+A run that starts on battery defers itself, and the first tool call or session start on power
+runs it (power.py). Not systemd's ConditionACPower: a run it skips leaves no record to catch up.
 """
 
 import os

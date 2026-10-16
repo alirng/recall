@@ -329,6 +329,11 @@ def _scan(con, model: str, q, n: int) -> list[str]:
 def _spawn_backfill(con) -> None:
     import subprocess
 
+    from . import power
+
+    if power.defer():  # on battery the backlog waits for power
+        return
+
     con.execute("create table if not exists meta (k text primary key, v text)")
     row = con.execute("select v from meta where k = 'embed_spawned'").fetchone()
     if row and time.time() - float(row[0]) < 600:

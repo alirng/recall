@@ -15,6 +15,11 @@ from . import compressed
 CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
 
 
+class Incomplete(Exception):
+    """Raised by a source after its items when it could not list them all: what it yielded was not
+    a full read, so the indexer does not record one."""
+
+
 @dataclass
 class Item:
     key: str

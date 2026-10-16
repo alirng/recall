@@ -1,0 +1,1 @@
+**Time windows as agents write them.** `since` and `until` accept `2mo`, `3 months`, `2wk`, `5 days`, `4 hours`, `1yr` and the like, not just `12h`, `3d`, `2w`, `1m` or `1y`. A window recall cannot read now says which forms it takes, instead of failing with a bare date error.

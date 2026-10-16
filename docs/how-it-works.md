@@ -19,7 +19,9 @@ How recall reads chats, writes notes, and hands them to agents.
    indexed. Clones and worktrees of one repo share a
    project, keyed on the git remote. recall keeps its own compressed copy of every chat it
    indexes, so a chat stays searchable after its agent deletes or rewrites the file (see
-   [Retention and forgetting](reference.md#retention-and-forgetting)).
+   [Retention and forgetting](reference.md#retention-and-forgetting)). Tool calls read the chats
+   that changed since the last call; Cursor's database is read in full only now and then (see
+   [When chats are read](reference.md#when-chats-are-read)).
 2. **Digest.** Each chat shrinks to your words plus the start and end of each agent reply,
    which is where agents say what they will do and what they did.
 3. **Extract.** The model reads each chat on its own and proposes candidate memories

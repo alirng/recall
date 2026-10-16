@@ -63,7 +63,11 @@ EDIT_TOOLS = {
 
 # Handlers per kind, as "module:function"; each gets the Event and returns a Reply or None.
 HANDLERS: dict[str, list[str]] = {
-    "session_start": ["recall.memory.context:on_session_start", "recall.autopilot:on_session_start"],
+    "session_start": [
+        "recall.memory.context:on_session_start",
+        "recall.autopilot:on_session_start",
+        "recall.power:on_session_start",
+    ],
     "compact": ["recall.memory.context:on_session_start", "recall.jit:on_compact"],
     "edit": ["recall.status:on_edit", "recall.mail:on_edit"],
     # mail first: a message sent to this chat comes before what recall remembers

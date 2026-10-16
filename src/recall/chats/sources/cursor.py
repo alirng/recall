@@ -19,9 +19,9 @@ from urllib.parse import unquote
 
 from ..errors import Calls, ToolError, position, signature
 from ..transcript import Session, clean_user_text
-from . import Item, append, iso_ts, read_jsonl, text_blocks
+from . import Incomplete, Item, append, iso_ts, read_jsonl, text_blocks
 
-CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+CHAT_SCHEMA = "2026-10-16 a transcript without a creation time starts at its file's mtime where there is no birth time"
 
 PROJECTS = os.path.expanduser("~/.cursor/projects")  # one folder for every Cursor build (roots.py)
 USER_DIR = os.path.expanduser("~/Library/Application Support/Cursor/User")  # the default build's
@@ -218,7 +218,7 @@ def load_transcript(path: str, builds: list[tuple[str, str]] | None = None, erro
     if _spawned(header):
         s.origin = "subagent"
     st = os.stat(path)
-    s.started_at = iso_ts(header.get("createdAt")) or st.st_birthtime
+    s.started_at = iso_ts(header.get("createdAt")) or getattr(st, "st_birthtime", st.st_mtime)  # Linux has none
     s.updated_at = iso_ts(header.get("lastUpdatedAt")) or st.st_mtime
     for d in read_jsonl(path):
         role = d.get("role")
@@ -235,27 +235,41 @@ def load_transcript(path: str, builds: list[tuple[str, str]] | None = None, erro
     return s
 
 
+def database_files(roots=None) -> list[str]:
+    """Each build's chat database and its write-ahead log: what legacy_items reads."""
+    return [f for _, state_db in _builds(roots) for f in (state_db, f"{state_db}-wal")]
+
+
 def legacy_items(roots=None):
     _fresh()
     have_transcript = {os.path.basename(p)[:-6] for p in _transcript_paths()}
+    unlisted = []
     for name, state_db in _builds(roots):
         con = _db(state_db)
         if con is None:
             continue
         # SQLite reads the few fields a fingerprint needs, so an unchanged chat never becomes
-        # Python objects. Parsing every header in Python took seconds and over 100 MB.
-        rows = con.execute(
-            "select key, coalesce(nullif(json_extract(value, '$.lastUpdatedAt'), 0),"
-            " nullif(json_extract(value, '$.createdAt'), 0), length(value))"
-            " from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'"
-            " and case when json_valid(value) then json_type(value) = 'object'"
-            " and (json_array_length(value, '$.conversation') > 0"
-            " or json_array_length(value, '$.fullConversationHeadersOnly') > 0) end"
-        )
+        # Python objects. Parsing every header in Python took seconds and over 100 MB. All rows are
+        # fetched first: a query left open while chats load holds a read on Cursor's database the
+        # whole time, and its write-ahead log cannot be folded back meanwhile.
+        try:
+            rows = con.execute(
+                "select key, coalesce(nullif(json_extract(value, '$.lastUpdatedAt'), 0),"
+                " nullif(json_extract(value, '$.createdAt'), 0), length(value))"
+                " from cursorDiskKV where key >= 'composerData:' and key < 'composerData;'"
+                " and case when json_valid(value) then json_type(value) = 'object'"
+                " and (json_array_length(value, '$.conversation') > 0"
+                " or json_array_length(value, '$.fullConversationHeadersOnly') > 0) end"
+            ).fetchall()
+        except sqlite3.Error as e:  # a damaged or busy database: the other builds are still read
+            unlisted.append(f"{state_db} ({e})")
+            continue
         for key, fp in rows:
             cid = key.split(":", 1)[1]
             if cid not in have_transcript:
                 yield Item(f"{state_db}#{key}", str(fp), lambda c=cid, d=state_db, n=name: load_legacy(c, d, n))
+    if unlisted:
+        raise Incomplete(f"could not list the chats in {', '.join(unlisted)}")
 
 
 def load_legacy(cid: str, state_db: str = STATE_DB, root: str | None = None) -> Session | None:
