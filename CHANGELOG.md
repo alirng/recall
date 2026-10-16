@@ -15,6 +15,17 @@ unchanged.
 - **Restart the agents that were open when you upgraded.** Their recall MCP server still runs the
   release it started with, and keeps failing until the agent restarts. `recall status` lists them.
 
+### Changed
+
+- **Benchmarks re-measured for 0.4.1 and 0.4.2.** Search scores on every public benchmark are
+  unchanged. Notes written by Claude Haiku 5.5 hold 90.6% of MemoryCode's conventions in their
+  latest form, and loaded at session start they lift an agent on long histories from 32% to 75%.
+  Agents take in about as many tokens per question as with 0.3.0 run the same day, plus the
+  definitions of the tools 0.4.0 added. LongMemEval accuracy is 88.4%. On my own chats, gpt-6-luna's
+  notes leaned ahead of Haiku's, within noise. Agent results are compared within a day, because the
+  model's behaviour shifted between 12 and 16 October. `docs/benchmarks/agent_tokens.py` now fits
+  one factor over any number of releases.
+
 ### Fixed
 
 - **recall's tools no longer fail with `database is locked`.** Since 0.4.0, on a machine with more
