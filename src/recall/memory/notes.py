@@ -261,26 +261,43 @@ class NoteStore:
 
     # --- deletions --------------------------------------------------------------
     # A note the person deletes must stay deleted; the next run would otherwise
-    # learn it again from the same chats.
+    # learn it again from the same chats. The ledger (.recall/notes.json, committed with
+    # the notes) keeps only what that takes: each note's title, scope and project. Its
+    # words go once the person deletes it, so they are neither kept nor sent to a model.
 
     def rejected(self) -> list[dict]:
-        return list(_read_json(self._ledger).get("rejected", {}).values())
+        return list(self._read_ledger().get("rejected", {}).values())
 
     def reconcile(self, notes: dict[str, Note]) -> int:
-        """Record notes deleted by hand as rejected; remember the rest as known.
-        Returns how many deletions were found."""
-        ledger = _read_json(self._ledger)
+        """Record notes deleted by hand as rejected; remember the rest as known. A rejected
+        note back on disk (a git revert) is no longer rejected. Returns how many deletions
+        were found."""
+        ledger = self._read_ledger()
         known, rejected = ledger.get("known", {}), ledger.get("rejected", {})
         on_disk = set(notes) | set(self.load(include_archived=True))
         gone = [k for k in known if k not in on_disk]
         for k in gone:
             rejected[k] = known[k]
-        known = {
-            n.id: {"title": n.title, "body": n.body[:300], "scope": n.scope, "project": n.project}
-            for n in notes.values()
-        }
+        rejected = {k: v for k, v in rejected.items() if k not in on_disk}
+        known = {n.id: _ledger_entry(n.title, n.scope, n.project) for n in notes.values()}
         _write_json(self._ledger, {"known": known, "rejected": rejected})
         return len(gone)
+
+    def _read_ledger(self) -> dict:
+        """The ledger, rewritten without the note bodies that earlier releases kept in it."""
+        ledger = _read_json(self._ledger)
+        parts = {p: ledger.get(p) or {} for p in ("known", "rejected")}
+        if any(isinstance(v, dict) and v.get("body") for part in parts.values() for v in part.values()):
+            ledger = {
+                p: {
+                    k: _ledger_entry(v.get("title"), v.get("scope"), v.get("project"))
+                    for k, v in part.items()
+                    if isinstance(v, dict)
+                }
+                for p, part in parts.items()
+            }
+            _write_json(self._ledger, ledger)
+        return ledger
 
     @property
     def _ledger(self) -> str:
@@ -317,9 +334,10 @@ class NoteStore:
         out = ["# Memory\n", header]
         for heading, items in _by_context(prefs):
             out.append(f"\n## {heading}\n")
-            out += [_index_line(n, f"global/{n.id}.md") for n in items[:GLOBAL_INDEX_LINES]] or ["- (nothing yet)"]
-            if len(items) > GLOBAL_INDEX_LINES:
-                out.append(f"- …and {len(items) - GLOBAL_INDEX_LINES} more in global/")
+            lines, more = _listed(items, GLOBAL_INDEX_LINES, lambda n: f"global/{n.id}.md")
+            out += lines or ([] if items else ["- (nothing yet)"])
+            if more:
+                out.append(f"- …and {more} more in global/")
         out += ["\n## Projects\n", *(project_lines or ["- (nothing yet)"])]
         _write_text(os.path.join(self.root, "MEMORY.md"), "\n".join(out) + "\n")
 
@@ -332,14 +350,15 @@ class NoteStore:
             ranked = sorted((n for n in items if n.type == t), key=lambda n: -n.score(now))
             if not ranked:
                 continue
-            limit = PROJECT_INDEX_LINES[t]
             out.append(f"\n## {SECTIONS[t]}\n")
-            out += [
-                _index_line(n, f"{n.id}.md" if n.scope == "project" else f"../../global/{n.id}.md")
-                for n in ranked[:limit]
-            ]
-            if len(ranked) > limit:
-                out.append(f"- …and {len(ranked) - limit} more in this folder")
+            lines, more = _listed(
+                ranked,
+                PROJECT_INDEX_LINES[t],
+                lambda n: f"{n.id}.md" if n.scope == "project" else f"../../global/{n.id}.md",
+            )
+            out += lines
+            if more:
+                out.append(f"- …and {more} more in this folder")
         _write_text(os.path.join(self.root, "projects", folder, "MEMORY.md"), "\n".join(out) + "\n")
         return f"- **{name}**: {len(items)} notes ([index](projects/{folder}/MEMORY.md)) · `{repo}`"
 
@@ -711,18 +730,50 @@ def audience(n: Note, table: dict[str, list[str]]) -> str | None:
     return json.dumps([f"ctx:{c}" for c in sorted(contexts.of_chats(n.sources, table))])
 
 
+def pushed(note: Note) -> list[Rule] | None:
+    """What of a note may reach an agent that did not ask for it, at session start (the
+    indexes) and mid-session (jit.py): None when nothing may, an empty list when only its title
+    may, else the rules whose words may. A rule that asks for a command, a URL, or a network,
+    destructive or exfiltrating action, or for switching off a check (said.risky) never does,
+    nor does a note whose title is such a rule. A rule only the agent stated is how a page the
+    agent read becomes a note, so its words stay out and the title alone points to it. A rule
+    no one verified (said_by unset, as for every rule written before 2026-10-15) is shown, and
+    session start frames all of it as background. memory_search and read_note find everything."""
+    if note.status != "active" or risky(note.title):
+        return None
+    live = [r for r in note.active_rules if not risky(r.text)]
+    return [r for r in live if r.said_by != "agent"] if live else None
+
+
 def _index_line(note: Note, href: str) -> str:
-    live = [r for r in note.rules if r.active]
-    if len(live) > 1:  # each rule's first sentence; past the cap below, the later rules are cut
-        first = "; ".join(_first_sentence(r.text).rstrip(".") for r in live) + "."
+    """The note's title and the first sentence of each rule pushed() shows; the title alone
+    when it shows none. Notes pushed() leaves out are not listed."""
+    shown = pushed(note) or []
+    if not shown:
+        return f"- **{note.title}** ([note]({href}))"
+    if len(shown) > 1:  # each rule's first sentence; past the cap below, the later rules are cut
+        first = "; ".join(_first_sentence(r.text).rstrip(".") for r in shown) + "."
     else:
-        first = _first_sentence(note.body)
+        first = _first_sentence(shown[0].text)
     hook = first if len(first) <= HOOK_CHARS else first[: HOOK_CHARS - 3] + "…"
     return f"- **{note.title}**: {hook} ([note]({href}))"
 
 
+def _listed(items: list[Note], limit: int, href) -> tuple[list[str], int]:
+    """Index lines for the first `limit` notes pushed() lets through, and how many of the
+    items are left out of the index, for its "…and N more" line."""
+    lines = [_index_line(n, href(n)) for n in items if pushed(n) is not None][:limit]
+    return lines, len(items) - len(lines)
+
+
 def _first_sentence(text: str) -> str:
     return re.split(r"(?<=[.!?])\s", " ".join(text.split()), maxsplit=1)[0]
+
+
+def _ledger_entry(title: str | None, scope: str | None, project: str | None) -> dict:
+    """What the deletion ledger keeps of a note. The body stays empty: earlier releases read
+    one, and nothing writes a note's words there any more."""
+    return {"title": title or "", "body": "", "scope": scope, "project": project}
 
 
 def _read_json(path: str) -> dict:

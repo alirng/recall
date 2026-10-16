@@ -762,10 +762,10 @@ def _note_candidates(con, query, project, now, words, allowed, cwd=None) -> list
     try:
         where, args = _note_scope(con, project, cwd)
         rows = con.execute(
-            f"""select n.id, n.title, n.body, n.project, n.scope, n.last_seen, n.type,
+            f"""select n.id, n.title, n.brief, n.project, n.scope, n.last_seen, n.type,
                        bm25(notes_fts, 0, 5.0, 1.0, 2.0) s
                 from notes_fts f join notes n on n.id = f.id
-                where notes_fts match ? and ({where})
+                where notes_fts match ? and ({where}) and n.brief != ''
                 order by s limit 30""",
             [q, *args],
         ).fetchall()
@@ -907,8 +907,8 @@ def _file_notes(con, names: list[str], project: dict | None, cwd: str | None) ->
     try:
         scope, args = _note_scope(con, project, cwd)
         rows = con.execute(
-            f"""select n.id, n.title, n.body, n.last_seen from notes n
-                where ({scope}) and ({match}) order by n.last_seen desc limit 2""",
+            f"""select n.id, n.title, n.brief, n.last_seen from notes n
+                where ({scope}) and ({match}) and n.brief != '' order by n.last_seen desc limit 2""",
             [*args, *[x for name in names for x in (name, name)]],
         ).fetchall()
     except Exception:

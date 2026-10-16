@@ -557,8 +557,10 @@ def _same(a: str, b: str) -> bool:
 def _render(scope: Scope, existing: list[Note], batch, rejected) -> str:
     lines = [f"Scope: {scope.label}", ""]
     if rejected:
+        # A deleted note is named by its title alone (notes.py keeps no more of it); a rule
+        # removed from a note by hand is still in that note's file, retired, and is quoted.
         lines.append("Deleted by the developer (never recreate these; discard candidates that restate them):")
-        lines += [f"- {r['title']}: {r['body'][:200]}" for r in rejected]
+        lines += [f"- {r['title']}" + (f": {r['body'][:200]}" if r.get("body") else "") for r in rejected]
         lines.append("")
     lines.append("Existing notes, each with its rules: [rule id] (first stated to last stated) text")
     for n in existing:

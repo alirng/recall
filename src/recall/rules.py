@@ -35,6 +35,7 @@ BLOCK_NOTE = (
     "them; edit those files, then run `recall rules --write` again -->"
 )
 IMPORT_LINE = "@AGENTS.md"
+_TAG = re.compile(r"</?[A-Za-z][\w-]*(\s[^<>]*)?>")  # as jit.TAG
 
 
 @dataclass
@@ -173,8 +174,12 @@ def pointers(folder: str | None, agent: str) -> list[str]:
         return []
     out = []
     for s in gaps(scan(root))[agent]:
-        what = s.description or _first_line(s.body) or "always-on rule"
-        out.append(f"- {what.rstrip('.')} (read `{s.path}`)")
+        # The description is the rule file's own text: one line, capped, with nothing in it that
+        # could close the block it is shown in or the code span around the path.
+        what = " ".join(_TAG.sub("", s.description or _first_line(s.body)).replace("`", "").split())
+        what = what if len(what) <= 160 else what[:159].rstrip() + "…"
+        path = s.path.replace("`", "")
+        out.append(f"- {what.rstrip('.') or 'always-on rule'} (read `{path}`)")
     return out
 
 

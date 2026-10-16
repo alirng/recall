@@ -143,6 +143,7 @@ def cmd_forget(a) -> None:
         print("\n".join(f"  {n}" for n in notes))
         print("Edit or delete them. To also remove them from the notes' git history (needs git-filter-repo):")
         print(f"  {forget.history_command(notes)}")
+        print("filter-repo removes the notes folder's git remote: if you sync it, add the remote back and force-push.")
 
 
 def cmd_stats(a) -> None:

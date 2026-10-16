@@ -10,8 +10,8 @@ deletes.
 
 What it does not remove:
 * Notes. They are the person's own files, so forget does not edit them. It lists the notes
-  that cite a forgotten chat, and the git command that removes them from the notes folder's
-  history.
+  that cite a forgotten chat, and the git command that removes them, and the deletion
+  ledger's past versions, from the notes folder's history.
 * Cached model answers that only paraphrase a chat. Nothing ties those to it; forget finds
   the ones whose evidence is found in the chat's text and the ones that repeat one of its
   candidate memories word for word.
@@ -254,11 +254,24 @@ def notes_citing(ids: list[str]) -> list[str]:
     return sorted(n.path for n in NoteStore().load(include_archived=True).values() if wanted & set(n.sources))
 
 
+LEDGER = os.path.join(".recall", "notes.json")  # the notes repo's deletion ledger (memory/notes.py)
+
+
 def history_command(note_paths: list[str]) -> str:
-    """The command that removes these notes from every commit of the notes repository."""
+    """The command that removes these notes from every commit of the notes repository, and
+    the deletion ledger's history with them: earlier releases kept the start of every note's
+    body there. filter-repo also takes what it removes out of the working tree, and without
+    its ledger the next memory run would learn deleted notes again, so the ledger as it is
+    now is copied aside first and put back after. --force: the notes folder is never the
+    fresh clone filter-repo otherwise insists on."""
     rel = [os.path.relpath(p, paths.MEMORY) for p in note_paths]
-    args = " ".join(f"--path {shlex.quote(r)}" for r in rel)
-    return f"git -C {shlex.quote(paths.MEMORY)} filter-repo --invert-paths {args}"
+    args = " ".join(f"--path {shlex.quote(r)}" for r in [*rel, LEDGER])
+    ledger = shlex.quote(os.path.join(paths.MEMORY, LEDGER))
+    aside = shlex.quote(os.path.join(paths.HOME, "notes-ledger.json"))
+    return (
+        f"cp {ledger} {aside} && git -C {shlex.quote(paths.MEMORY)} filter-repo --force --invert-paths {args} && "
+        f"mkdir -p {shlex.quote(os.path.join(paths.MEMORY, '.recall'))} && mv {aside} {ledger}"
+    )
 
 
 def _text(con, sid: str, have: set[str]) -> str:
