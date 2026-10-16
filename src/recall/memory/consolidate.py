@@ -30,7 +30,7 @@ from datetime import datetime
 from ..chats.redact import redact
 from ..llm import Client
 from . import prompts, said
-from .notes import CONFIDENCE, REMOVED_BY_HAND, Note, NoteStore, Rule, new_id, rule_id, sync, today
+from .notes import CONFIDENCE, REMOVED_BY_HAND, Note, NoteStore, Rule, clean_title, new_id, rule_id, sync, today
 
 SYSTEM, _ = prompts.load("consolidate")
 BATCH = 20
@@ -367,10 +367,9 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
             if kind == "confirm" or (kind == "refine" and not texts):
                 _support(b, rule, candidates)
             elif kind == "refine":
-                if not _same(rule.text, texts[0]):
-                    rule.said_by, rule.evidence = None, ""  # new words: the old ones' speaker says nothing of them
+                fresh = not _same(rule.text, texts[0])  # new words: the old ones' speaker says nothing of them
                 rule.text = texts[0]
-                _support(b, rule, candidates)
+                _support(b, rule, candidates, fresh)
                 _insert(note, rule, _new_rules(b, note, texts[1:], candidates))
             else:  # retire
                 new = _new_rules(b, note, texts, candidates)
@@ -398,8 +397,8 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
                 for c in candidates:
                     b.discarded.setdefault(c["id"], f"older than rule {refused.id}, retired {refused.retired}")
                 continue
-        if kind != "create" and op["title"].strip():
-            note.title = op["title"].strip()
+        if kind != "create" and clean_title(op["title"]):
+            note.title = clean_title(op["title"])
         note.confidence = max(note.confidence, op["confidence"], key=lambda c: CONFIDENCE.get(c, 0))
         stats[
             {"confirm": "confirmed", "refine": "refined", "retire": "retired", "add": "added"}.get(kind, "created")
@@ -481,7 +480,7 @@ def _state(note: Note) -> tuple:
 
 def _create(b: _Batch, op: dict, texts: list[str], candidates) -> Note:
     first = _date(min(c["chat_ts"] or 0 for c in candidates))
-    title = op["title"].strip() or candidates[0]["title"]
+    title = clean_title(op["title"]) or clean_title(candidates[0]["title"])
     note = Note(
         id=new_id(title, salt=f"{b.scope.key}{first}"),
         type=op["type"],
@@ -508,30 +507,39 @@ def _new_rules(b: _Batch, note: Note, texts: list[str], candidates) -> list[Rule
     for text in texts:
         rule = Rule(rule_id(note.id, text, taken), text, first_seen=_date(min(c["chat_ts"] or 0 for c in candidates)))
         taken.add(rule.id)
-        _support(b, rule, candidates)
+        _support(b, rule, candidates, fresh=True)
         out.append(rule)
     return out
 
 
-def _support(b: _Batch, rule: Rule, candidates) -> None:
+def _support(b: _Batch, rule: Rule, candidates, fresh: bool = False) -> None:
     """Record that these candidates state the rule: dates, source chats, who said it, a quote.
-    The rule counts as the developer's when a candidate attributed to the user has a quote that
-    the developer typed and that supports this rule's text (said.py), and the rule asks for no
-    command, URL, network, destructive or exfiltrating action. Each rule is judged on its own:
-    one quote does not vouch for the other rules written beside it. A rule nothing vouches for
-    keeps no mark, except one that only the agent stated, which is marked so."""
-    new = not rule.sources and not rule.edited
+    `fresh`: the rule's words are new (a new rule, or a refine that rewrote it). Who said it:
+    - developer: a candidate attributed to the user has a quote that the developer typed and
+      that supports this rule's text (said.py), and the rule asks for no command, URL, network,
+      destructive or exfiltrating action (said.risky). Each rule is judged on its own: one
+      quote does not vouch for the other rules written beside it.
+    - agent: no typed quote supports it, and only the agent stated it: every candidate behind
+      new words is the agent's, or the rule was the agent's before it was reworded. It keeps
+      the mark until a typed quote supports it, since an untyped user turn may be a paste.
+    - unverified: new words stated in a user turn that no typed quote supports.
+    Unset is left only on rules written before speakers were recorded (notes.pushed shows those
+    as background), and confirming one changes nothing but a typed quote."""
     rule.last_seen = max(rule.last_seen, _date(max(c["chat_ts"] or 0 for c in candidates)))
     rule.sources = sorted(set(rule.sources) | {c["session_id"] for c in candidates})
-    if said.risky(rule.text):
-        rule.said_by = None
-        return
-    typed = next((c for c in candidates if b.typed(c) and said.supports(c["evidence"], rule.text)), None)
-    if typed and rule.said_by != "developer":
-        rule.said_by, rule.evidence = "developer", said.clean_rule(typed["evidence"] or "")[:200]
-    elif new and not typed and all(c["speaker"] == "assistant" for c in candidates):
-        rule.said_by = "agent"
+    risky = said.risky(rule.text)
+    typed = (
+        None if risky else next((c for c in candidates if b.typed(c) and said.supports(c["evidence"], rule.text)), None)
+    )
+    if typed:
+        if rule.said_by != "developer":
+            rule.said_by, rule.evidence = "developer", said.clean_rule(typed["evidence"] or "")[:200]
+    elif fresh:
+        agent = rule.said_by == "agent" or all(c["speaker"] == "assistant" for c in candidates)
+        rule.said_by = "agent" if agent else "unverified"
         rule.evidence = said.clean_rule(next((c["evidence"] for c in candidates if c["evidence"]), ""))[:200]
+    elif risky and rule.said_by == "developer":  # a risky rule never keeps the developer's mark
+        rule.said_by = "unverified"
 
 
 def _insert(note: Note, after: Rule, new: list[Rule]) -> None:
@@ -557,8 +565,10 @@ def _same(a: str, b: str) -> bool:
 def _render(scope: Scope, existing: list[Note], batch, rejected) -> str:
     lines = [f"Scope: {scope.label}", ""]
     if rejected:
+        # A deleted note is named by its title alone (notes.py keeps no more of it); a rule
+        # removed from a note by hand is still in that note's file, retired, and is quoted.
         lines.append("Deleted by the developer (never recreate these; discard candidates that restate them):")
-        lines += [f"- {r['title']}: {r['body'][:200]}" for r in rejected]
+        lines += [f"- {r['title']}" + (f": {r['body'][:200]}" if r.get("body") else "") for r in rejected]
         lines.append("")
     lines.append("Existing notes, each with its rules: [rule id] (first stated to last stated) text")
     for n in existing:

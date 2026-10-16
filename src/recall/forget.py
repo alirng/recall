@@ -10,8 +10,8 @@ deletes.
 
 What it does not remove:
 * Notes. They are the person's own files, so forget does not edit them. It lists the notes
-  that cite a forgotten chat, and the git command that removes them from the notes folder's
-  history.
+  that cite a forgotten chat, and a command that commits the notes folder and then deletes
+  them from disk and from its git history, with the deletion ledger's past versions.
 * Cached model answers that only paraphrase a chat. Nothing ties those to it; forget finds
   the ones whose evidence is found in the chat's text and the ones that repeat one of its
   candidate memories word for word.
@@ -254,11 +254,36 @@ def notes_citing(ids: list[str]) -> list[str]:
     return sorted(n.path for n in NoteStore().load(include_archived=True).values() if wanted & set(n.sources))
 
 
+LEDGER = os.path.join(".recall", "notes.json")  # the notes repo's deletion ledger (memory/notes.py)
+
+
 def history_command(note_paths: list[str]) -> str:
-    """The command that removes these notes from every commit of the notes repository."""
+    """The command that deletes these notes from disk and from every commit of the notes
+    repository, and the deletion ledger's past versions with them: earlier releases kept the
+    start of every note's body there. In order:
+    1. commit everything in the notes folder, since filter-repo ends with a reset that would
+       discard uncommitted hand edits (--force skips the fresh-clone check that would stop it,
+       and the notes folder is never a fresh clone);
+    2. copy the ledger aside, if there is one: filter-repo also takes what it removes out of
+       the working tree, and without its ledger the next memory run would learn deleted notes
+       again;
+    3. rewrite the history;
+    4. put the ledger back."""
+    memory = shlex.quote(paths.MEMORY)
     rel = [os.path.relpath(p, paths.MEMORY) for p in note_paths]
-    args = " ".join(f"--path {shlex.quote(r)}" for r in rel)
-    return f"git -C {shlex.quote(paths.MEMORY)} filter-repo --invert-paths {args}"
+    args = " ".join(f"--path {shlex.quote(r)}" for r in [*rel, LEDGER])
+    ledger = shlex.quote(os.path.join(paths.MEMORY, LEDGER))
+    aside = shlex.quote(os.path.join(paths.HOME, "notes-ledger.json"))
+    git = f"git -C {memory}"
+    restore = f"mkdir -p {shlex.quote(os.path.join(paths.MEMORY, '.recall'))} && mv {aside} {ledger}"
+    return (
+        f"rm -f {aside} && {git} add -A && "
+        f"{git} -c user.name=recall -c user.email=recall@localhost commit -q --allow-empty "
+        f"-m 'Before recall forget rewrites history' && "
+        f"{{ [ ! -f {ledger} ] || cp {ledger} {aside}; }} && "
+        f"{git} filter-repo --force --invert-paths {args} && "
+        f"{{ [ ! -f {aside} ] || {{ {restore}; }}; }}"
+    )
 
 
 def _text(con, sid: str, have: set[str]) -> str:

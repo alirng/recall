@@ -36,7 +36,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
-from . import paths
+from . import inject, paths
 
 SCHEMA = """
 create table if not exists explorations (
@@ -422,9 +422,7 @@ def findings(report: str, roots: list[str], budget: int = FINDINGS_CHARS) -> str
         )
         if not keep or _ORDERS.search(line):
             continue
-        if len(line) > 260:
-            line = line[:257].rstrip() + "…"
-        lines.append(line)
+        lines.append(inject.line(line, 260))  # a report's text must not open or close the block
     more = "- … (more in the full report)"
     out, used = [], 0
     for i, line in enumerate(lines):
@@ -541,7 +539,7 @@ def block(row, here: Checkout, now: float | None = None, to: str | None = None) 
         + (" estimated from the time" if estimated else "")
         + (f", branch {row['branch']}" if row["branch"] else "")
         + "), for a similar question:\n> "
-        + " ".join(_BLOCK.sub(" ", row["prompt"]).split())[:300]
+        + inject.line(_BLOCK.sub(" ", row["prompt"]), 300)
     )
     ch = changes_since(here.top, sha, to=to)
     cited = {_relative(p, roots) for p in cited_files(row["report"])}
@@ -568,7 +566,7 @@ def block(row, here: Checkout, now: float | None = None, to: str | None = None) 
         lines = ["Its commit is not in this checkout, so recall cannot tell what changed: verify before relying on it."]
     if dirty_then & cited:
         lines.append(_names("Uncommitted when they were written: ", sorted(dirty_then & cited)))
-    tail = "\n".join(lines)
+    tail = inject.defang("\n".join(lines))  # file names from git
     frame = f"{head}\n\nWhat it found (pointers):\n\n\n{tail}\n\n{INSTRUCTION}"
     body = findings(row["report"], roots, min(FINDINGS_CHARS, max(0, MAX_CHARS - len(frame) - 2)))
     text = f"{head}\n\nWhat it found (pointers):\n{body}\n\n{tail}\n\n{INSTRUCTION}"
