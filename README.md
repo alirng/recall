@@ -100,8 +100,9 @@ session that answers the question in its top five 98.7% of the time.
 - **Mid-session**, the same hook can hand over memory at the moment it applies: when your
   prompt closely matches an earlier chat, or when the agent reads a file that scoped rules,
   notes or an earlier chat cover. It stays quiet unless it is sure.
-- **On demand**, read-only MCP tools let the agent search and read past chats, and look up
-  notes and projects.
+- **On demand**, MCP tools let the agent search and read past chats, and look up notes and
+  projects. Eight only read; the ninth, `message_chat`, leaves a message for another chat.
+  [What the tools and hooks can do](SECURITY.md#what-the-mcp-tools-can-do).
 - **When you ask**, `/recall what did we decide about auth` works in any agent with skills.
 
 Agents treat notes and transcripts as background, not instructions: the current request and
@@ -228,7 +229,7 @@ in [docs/reference.md](docs/reference.md).
 **Does recall send my chats anywhere?**
 Only to the models you choose, and only after secrets are redacted: digests of chats to the
 model that writes notes, and message text to a hosted embedding service if you use one. With
-local models nothing leaves your machine. recall has no telemetry. See [SECURITY.md](SECURITY.md).
+a local model on this machine nothing leaves it. recall has no telemetry. See [SECURITY.md](SECURITY.md).
 
 **What does it cost?**
 With a local model, nothing but electricity. With a subscription it uses your plan's

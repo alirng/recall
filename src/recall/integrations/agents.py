@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 from . import hooks as edit_hooks
 
@@ -34,7 +35,12 @@ CURSOR_MCP = os.path.expanduser("~/.cursor/mcp.json")
 GEMINI_SETTINGS = os.path.expanduser("~/.gemini/settings.json")
 OPENCODE_PLUGIN = os.path.expanduser("~/.config/opencode/plugins/recall.js")
 OPENCODE_SOURCE = os.path.join(os.path.dirname(__file__), "opencode", "recall.js")
-_CODEX_BLOCK = re.compile(rf"\n?\[mcp_servers\.{NAME}\]\n(?:(?!\[).*\n?)*")
+# recall's table in Codex's config.toml, and any table nested under it (Codex may add its own)
+_CODEX_BLOCK = re.compile(rf"\n?\[mcp_servers\.{NAME}(?:\.[^\]\n]*)?\]\n(?:(?!\[).*\n?)*")
+# Codex's `auto` approval runs a tool without asking when it is marked read-only, or marked neither
+# destructive nor open-world, which message_chat is. So message_chat is set to prompt on its own. The
+# dotted key sits inside recall's table, so uninstalling removes it with the table.
+_CODEX_ASK = 'tools.message_chat.approval_mode = "prompt"'
 
 
 def install(
@@ -251,15 +257,45 @@ def _mcp_codex(cmd: str, dry_run: bool = False, remove: bool = False, root=None)
             _write(config, _CODEX_BLOCK.sub("\n", text))
         return "removed" if registered else "not registered"
     if registered:
-        return "already registered"
+        return _codex_ask_first(config, text, dry_run)
     if not dry_run:
-        # The tools only read, so Codex may call them without asking each time.
         block = (
             f'\n[mcp_servers.{NAME}]\ncommand = {json.dumps(cmd)}\nargs = ["serve"]\n'
-            'default_tools_approval_mode = "auto"\n'
+            f'default_tools_approval_mode = "auto"\n{_CODEX_ASK}\n'
         )
         _write(config, text + block)
-    return f"added to {config}"
+    return f"added to {config}; Codex asks before message_chat runs"
+
+
+def _codex_ask_first(config: str, text: str, dry_run: bool) -> str:
+    """An entry an earlier release wrote lets Codex run message_chat without asking: add the approval
+    to it. An entry that already says how message_chat is approved, or whose server-wide mode the
+    person changed, is the person's choice and stays as it is."""
+    try:
+        server = tomllib.loads(text).get("mcp_servers", {}).get(NAME)
+    except tomllib.TOMLDecodeError:
+        return f"already registered ({config} is not valid TOML, so message_chat's approval was not checked)"
+    if not isinstance(server, dict):
+        return "already registered"
+    tools = server.get("tools")
+    tool = tools.get("message_chat") if isinstance(tools, dict) else None
+    chosen = isinstance(tool, dict) and "approval_mode" in tool
+    if chosen or server.get("default_tools_approval_mode") not in (None, "auto"):
+        return "already registered"
+    block = re.search(rf"^\[mcp_servers\.{NAME}\][^\n]*\n(?:(?!\[).*\n?)*", text, re.M)
+    fixed = text
+    if block:  # after the block's last line, before any blank lines that follow it
+        body = block[0].rstrip("\n")
+        fixed = text[: block.start()] + f"{body}\n{_CODEX_ASK}" + (block[0][len(body) :] or "\n") + text[block.end() :]
+    try:
+        ok = fixed != text and "message_chat" in tomllib.loads(fixed)["mcp_servers"][NAME]["tools"]
+    except tomllib.TOMLDecodeError:
+        ok = False
+    if not ok:
+        return f"already registered; add `{_CODEX_ASK}` under [mcp_servers.{NAME}] in {config} so Codex asks first"
+    if not dry_run:
+        _write(config, fixed)
+    return f"{'would update' if dry_run else 'updated'} {config}: Codex now asks before message_chat runs"
 
 
 def _mcp_cursor(cmd: str, dry_run: bool = False, remove: bool = False, root=None) -> str:

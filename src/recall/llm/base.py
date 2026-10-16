@@ -1,9 +1,11 @@
 """The contract every model provider implements."""
 
+import ipaddress
 import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from . import prices
 
@@ -181,6 +183,22 @@ def parse_json(text: str) -> dict:
         return json.loads(text[start : end + 1])
     except json.JSONDecodeError as e:
         raise LLMError(f"reply is not valid JSON: {e}") from e
+
+
+def on_this_machine(url: str) -> bool:
+    """Whether a server at this URL runs on this machine: localhost, a loopback address
+    (127.0.0.1, ::1) or a unix socket. Any other host is another machine, whatever the kind of
+    server."""
+    parts = urlparse(url)
+    if parts.scheme in ("unix", "http+unix", "https+unix"):
+        return True
+    host = (parts.hostname or "").lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def http_json(url: str, payload: dict | None = None, headers: dict | None = None, timeout: float = 600) -> dict:
