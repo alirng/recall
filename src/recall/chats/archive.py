@@ -107,6 +107,14 @@ def unpack(blob: bytes) -> Session:
     return Session(**fields_, messages=messages, tool_errors=errors)
 
 
+def readable(blob: bytes) -> Session | None:
+    """unpack, or None for a copy that cannot be read: damaged, so nothing can read it."""
+    try:
+        return unpack(blob)
+    except Exception:
+        return None
+
+
 def messages(row: sqlite3.Row, parser: str) -> list[Message]:
     """A copy's messages. A copy made by another parser version has its user turns put
     through today's cleaning, so a cleaning change reaches chats whose files are gone too.
@@ -336,8 +344,10 @@ def snapshot(con: sqlite3.Connection, parser: str) -> int:
         )
         errors = _table_errors(con, r["id"], msgs) if "tool_errors" in have else []
         mine = con.execute("select data from chat_archive where id = ? and source = ?", (s.id, s.source)).fetchone()
-        if mine:
-            copy = unpack(mine["data"])
+        # A damaged copy is replaced by the index's: run inside a schema change, an error here would stop every
+        # recall process from opening the index.
+        copy = readable(mine["data"]) if mine else None
+        if copy:
             msgs = merge(copy.messages, msgs, only_kept=True)
             errors = merge_errors(errors, copy.tool_errors)  # the copy was anchored when parsed: it wins
         save(con, s, msgs, parser, sizes.get((r["id"], r["source"])), errors)

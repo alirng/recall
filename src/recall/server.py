@@ -14,6 +14,7 @@ import time
 from typing import Annotated
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 
 from . import __version__, projects, usage
@@ -91,6 +92,8 @@ def _logged(ctx: Context | None, tool: str, args: dict, run, **extra):
         result = run()
     except Exception as e:
         usage.record("mcp", tool, args, {"error": repr(e)}, client=_client(ctx), session=os.getpid())
+        if isinstance(e, store.BadWindow):  # the agent's own mistake: it reads the forms recall takes
+            raise ToolError(str(e)) from e
         raise
     usage.record("mcp", tool, args, result, client=_client(ctx), session=os.getpid(), ms=usage.ms_since(start), **extra)
     return result

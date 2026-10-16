@@ -1,8 +1,9 @@
 """Whether this machine runs on battery, so recall's background work can wait for power.
 
-On battery the nightly memory run defers itself, and a tool call starts no background job (the
-`recall index` that reads Cursor's database on a first index, the `recall embed` that works off
-a backlog). `[power] on_battery = "run"` in config.toml lets them run anyway. When the OS does
+On battery `recall dream` defers itself (unless a person runs it at a terminal), and a tool call
+starts no background job (the `recall index` that reads Cursor's database, the `recall embed` that
+works off a backlog). The first tool call or session start on power then starts the deferred run
+(catch_up). `[power] on_battery = "run"` in config.toml lets everything run anyway. When the OS does
 not say, the machine counts as plugged in.
 """
 
@@ -12,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 from . import config, paths
@@ -19,6 +21,8 @@ from . import config, paths
 CACHE_SECONDS = 60  # a server runs for hours: it asks the OS again after this
 NICE = 10  # a background job's priority: below the agents and the person's own work
 DEFERRED = os.path.join(paths.HOME, "deferred.json")  # job -> when it last waited for power
+CATCH_UP = os.path.join(paths.HOME, "catch-up.stamp")  # touched when a deferred run is started again
+CATCH_UP_EVERY = 3 * 3600
 
 _cached: tuple[float, bool] | None = None
 
@@ -101,14 +105,52 @@ def note(job: str, waited: bool) -> None:
             json.dump(found, f)
 
 
+def catch_up() -> bool:
+    """Start the memory run that waited for power, now that there is power: in the background, at low
+    priority, within [dream] max_minutes, at most once every CATCH_UP_EVERY. True when it started it.
+    A session start and every tool call ask; without a deferred run that costs one missing file."""
+    if "dream" not in deferred() or defer():
+        return False
+    try:
+        if time.time() - os.path.getmtime(CATCH_UP) < CATCH_UP_EVERY:
+            return False
+    except OSError:
+        pass
+    try:
+        os.makedirs(paths.LOGS, exist_ok=True)
+        with open(CATCH_UP, "w"):
+            pass
+        budget = config.load()["dream"]
+        with open(os.path.join(paths.LOGS, "dream.log"), "a") as log:
+            child = subprocess.Popen(
+                [
+                    *(sys.executable, "-m", "recall", "dream", "--background"),
+                    *("--max-minutes", str(budget["max_minutes"]), "--max-calls", str(budget["max_calls"])),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+    except OSError:
+        return False
+    threading.Thread(target=child.wait, daemon=True).start()  # a server reaps it, so no zombie lingers
+    return True
+
+
+def on_session_start(e) -> None:
+    """Session-start handler (hooks.HANDLERS): catch up a memory run that waited for power."""
+    catch_up()
+
+
 def summary() -> list[str]:
     """What waits for power now, in a line each; empty when nothing does."""
     lines = []
     if at := deferred().get("dream"):
         when = time.strftime("%b %d %H:%M", time.localtime(at))
         lines.append(
-            f"Nightly memory run deferred: on battery ({when}). It runs at its next time on power,"
-            " or now with `recall dream --on-battery run`."
+            f"Nightly memory run deferred: on battery ({when}). The first tool call or session start on power"
+            " runs it, or run it now with `recall dream --on-battery run`."
         )
     if defer():
         lines.append(

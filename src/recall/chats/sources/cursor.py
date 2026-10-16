@@ -14,15 +14,14 @@ import json
 import os
 import re
 import sqlite3
-import sys
 from functools import cache, lru_cache
 from urllib.parse import unquote
 
 from ..errors import Calls, ToolError, position, signature
 from ..transcript import Session, clean_user_text
-from . import Item, append, iso_ts, read_jsonl, text_blocks
+from . import Incomplete, Item, append, iso_ts, read_jsonl, text_blocks
 
-CHAT_SCHEMA = "2026-10-15 parts replace schema 7"
+CHAT_SCHEMA = "2026-10-16 a transcript without a creation time starts at its file's mtime where there is no birth time"
 
 PROJECTS = os.path.expanduser("~/.cursor/projects")  # one folder for every Cursor build (roots.py)
 USER_DIR = os.path.expanduser("~/Library/Application Support/Cursor/User")  # the default build's
@@ -244,6 +243,7 @@ def database_files(roots=None) -> list[str]:
 def legacy_items(roots=None):
     _fresh()
     have_transcript = {os.path.basename(p)[:-6] for p in _transcript_paths()}
+    unlisted = []
     for name, state_db in _builds(roots):
         con = _db(state_db)
         if con is None:
@@ -262,12 +262,14 @@ def legacy_items(roots=None):
                 " or json_array_length(value, '$.fullConversationHeadersOnly') > 0) end"
             ).fetchall()
         except sqlite3.Error as e:  # a damaged or busy database: the other builds are still read
-            print(f"recall: could not list the chats in {state_db}: {e!r}", file=sys.stderr)
+            unlisted.append(f"{state_db} ({e})")
             continue
         for key, fp in rows:
             cid = key.split(":", 1)[1]
             if cid not in have_transcript:
                 yield Item(f"{state_db}#{key}", str(fp), lambda c=cid, d=state_db, n=name: load_legacy(c, d, n))
+    if unlisted:
+        raise Incomplete(f"could not list the chats in {', '.join(unlisted)}")
 
 
 def load_legacy(cid: str, state_db: str = STATE_DB, root: str | None = None) -> Session | None:

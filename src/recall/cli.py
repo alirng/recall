@@ -159,6 +159,8 @@ def cmd_stats(a) -> None:
     out = store.stats(store.connect())
     if n := codex.unreadable():  # zstd-compressed rollouts nothing here can decode: not in the numbers above
         out.setdefault("codex", {})["unreadable"] = {"chats": n, "fix": compressed.fix_hint()}
+    if parked := indexer.parked():  # failed every read: read again when their files change
+        out["not_indexed"] = {"chats": len(parked), "retry": "recall index --force"}
     print(json.dumps(out, indent=2))
 
 
@@ -213,16 +215,19 @@ def cmd_dream(a) -> None:
     from .memory import dream
 
     # First, before anything opens the index: a run launchd starts on waking often finds the machine on battery.
-    waits = power.defer(a.on_battery)
+    # A person at a terminal asked for this run: it goes ahead.
+    waits = power.defer(a.on_battery or ("run" if sys.stdin.isatty() else None))
     power.note("dream", waits)
     if waits:
         print(
             time.strftime("%H:%M:%S"),
-            "deferred: on battery. The next scheduled run on power does the work; `recall dream --on-battery run`"
-            ' runs it now, and [power] on_battery = "run" always.',
+            "deferred: on battery. The first tool call or session start on power runs it;"
+            ' `recall dream --on-battery run` runs it now, and [power] on_battery = "run" always.',
             file=sys.stderr,
         )
         return
+    if a.background:  # a catch-up started by a tool call or a session start (power.catch_up)
+        power.lower_priority()
     autopilot.run("nightly", log=lambda m: print(time.strftime("%H:%M:%S"), "autopilot:", m, file=sys.stderr))
 
     opts = dream.Options(
@@ -735,6 +740,12 @@ def cmd_doctor(a) -> None:
         print(f"  {line}")
     for line in power.summary():
         print(f"\n{line}")
+    if parked := indexer.parked():
+        print(
+            f"\n{len(parked)} chat(s) failed to index {indexer.MAX_ATTEMPTS} times and wait for their files to change;"
+            " `recall index --force` tries them now:"
+        )
+        print("\n".join(f"  {key.replace(home, '~')}" for key in parked[:5]) + ("\n  …" if len(parked) > 5 else ""))
     if note := codex.unreadable_note():
         print(f"\n{note}")
 
@@ -994,6 +1005,7 @@ def _parser() -> argparse.ArgumentParser:
         choices=["defer", "run"],
         help="on battery: wait for power, or run (default: [power] on_battery)",
     )
+    sp.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
     sp = command("memory", cmd_memory, "browse memory notes")
     sp.add_argument("action", nargs="?", choices=["stats", "search", "show", "link"], default="stats")
     sp.add_argument("terms", nargs="*")
