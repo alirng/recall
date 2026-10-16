@@ -190,10 +190,11 @@ def _scan(con, selected, only, force, max_age, log, found) -> dict:
                 skipped += 1
                 continue
             done += _read(con, item, keep)
-            if done and done % 50 == 0:
-                con.commit()
-                if log:
-                    log(f"{name}: {done} indexed…")
+            # Each chat on its own: the next one's parse, which can take seconds, must not hold the
+            # write lock that a tool call in this server (the notes index, commit links) is waiting for.
+            con.commit()
+            if done and done % 50 == 0 and log:
+                log(f"{name}: {done} indexed…")
         now = str(time.time())
         con.execute("insert or replace into meta values (?,?)", (stamp_key, now))
         con.execute("insert or replace into meta values (?,?)", (f"scanned:{name}", now))

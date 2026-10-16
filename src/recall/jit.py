@@ -66,10 +66,10 @@ DENSE = ("cos_first", "cos_best", "has_vec")  # features that need the prompt's 
 # Seconds a hook waits for the prompt's embedding before going without. A loaded model answers in
 # 10-20 ms; a model that is not loaded is not waited for at all (_hook_vector).
 EMBED_WAIT = 0.1
-WARM_EVERY = 120  # seconds between two background loads of a model that is not loaded
-WARMED = os.path.join(paths.HOME, "cache", "embed-warm")
+WARMED = os.path.join(paths.HOME, "cache", "embed-warm")  # when a hook last started a background load
 # A hook's last embedding that arrived in time; within WARM_FOR of it (hooks ask Ollama to keep the
-# model 30 minutes) the model is taken to be loaded without asking.
+# model 30 minutes) the model is taken to be loaded without asking. A background load starts at most
+# once per WARM_FOR too.
 EMBEDDED = os.path.join(paths.HOME, "cache", "embed-ok")
 WARM_FOR = 25 * 60
 # Matching failures against the index's tool errors (tool-errors branch) stays off for now: in
@@ -608,14 +608,12 @@ def _hook_vector(text: str) -> list[float] | None:
     """The prompt's embedding for a hook. Ollama is asked first whether the model is loaded (under a
     millisecond): loading takes longer than a hook waits, and Ollama drops a load whose request was
     given up on, so asking a cold model would cost every prompt the whole wait and never warm it.
-    A model that is not loaded is loaded in the background for the next prompts instead. While
-    the hooks' embeddings keep arriving in time (EMBEDDED), Ollama is not asked."""
+    A model that is not loaded is loaded in the background for the next prompts instead, once per
+    WARM_FOR: after that, a model Ollama still does not list (its name there may be another form of
+    the configured one) is asked for as before. While the hooks' embeddings keep arriving in time
+    (EMBEDDED), Ollama is not asked."""
     _, provider, name, base = _embedding_settings()
-    try:
-        warm = time.time() - os.path.getmtime(EMBEDDED) < WARM_FOR
-    except OSError:
-        warm = False
-    if provider == "ollama" and not warm and not _ollama_loaded(base, name):
+    if provider == "ollama" and not _lately(EMBEDDED) and not _lately(WARMED) and not _ollama_loaded(base, name):
         _warm_up(base, name)
         return None
     vector = embed_query(text)
@@ -625,6 +623,13 @@ def _hook_vector(text: str) -> list[float] | None:
             with open(EMBEDDED, "w"):
                 pass
     return vector
+
+
+def _lately(marker: str) -> bool:
+    try:
+        return time.time() - os.path.getmtime(marker) < WARM_FOR
+    except OSError:
+        return False
 
 
 def _ollama_loaded(base: str, name: str) -> bool:
@@ -644,21 +649,19 @@ def _ollama_loaded(base: str, name: str) -> bool:
         return True
     if not isinstance(models, list):
         return True
-    wanted = {name, name if ":" in name else name + ":latest"}
-    return any(isinstance(m, dict) and wanted & {m.get("name"), m.get("model")} for m in models)
+
+    def plain(n):  # "nomic-embed-text" and "nomic-embed-text:latest" are one model
+        return n.removesuffix(":latest") if isinstance(n, str) else n
+
+    return any(isinstance(m, dict) and plain(name) in {plain(m.get("name")), plain(m.get("model"))} for m in models)
 
 
 def _warm_up(base: str, name: str) -> None:
-    """Load the embedding model for the prompts to come, in a process of its own that waits for it,
-    at most every WARM_EVERY seconds. The hook that starts it does not wait."""
+    """Load the embedding model for the prompts to come, in a process of its own that waits for it.
+    The hook that starts it does not wait."""
     import subprocess
     import sys
 
-    try:
-        if time.time() - os.path.getmtime(WARMED) < WARM_EVERY:
-            return
-    except OSError:
-        pass
     code = (
         "import http.client, json, sys; from urllib.parse import urlparse; u = urlparse(sys.argv[1]);"
         " c = (http.client.HTTPSConnection if u.scheme == 'https' else http.client.HTTPConnection)"

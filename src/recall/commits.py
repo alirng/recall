@@ -844,7 +844,14 @@ def _commit_meta(con, repo: str, sha: str, top: str) -> dict:
     }
 
 
-def why(con, target: str | None = None, commit: str | None = None, cwd: str | None = None, top_n: int = 5) -> dict:
+def why(
+    con,
+    target: str | None = None,
+    commit: str | None = None,
+    cwd: str | None = None,
+    top_n: int = 5,
+    refresh: bool = True,
+) -> dict:
     """The chats behind a file, a line (path:line or path:start-end) or a commit: git blame
     finds the commits, and the links name the chats. Links are brought up to date first."""
     cwd = cwd or os.getcwd()
@@ -861,12 +868,13 @@ def why(con, target: str | None = None, commit: str | None = None, cwd: str | No
         return {"error": f"{top} is a scratch folder: recall links no chats there"}
     if not enabled():
         return {"error": "commit links are off: set [links] enabled = true in recall's config.toml"}
-    with _locked() as mine:
-        if mine:
-            ensure(con)
-            con.execute("insert or ignore into link_checkouts values (?,?)", (project.key, top))
-            con.commit()
-    update(con, project.key)
+    if refresh:  # without it, the links as they stand: for a caller that cannot wait for the index's write lock
+        with _locked() as mine:
+            if mine:
+                ensure(con)
+                con.execute("insert or ignore into link_checkouts values (?,?)", (project.key, top))
+                con.commit()
+        update(con, project.key)
     if not present(con):
         return {"error": "commit links are not built yet: another recall process is building them"}
     out: dict = {"repo": project.key}
@@ -933,13 +941,13 @@ def _line_ask(con, sid: str, rel: str, lines: list[str]) -> dict | None:
     return None
 
 
-def why_rows(con, file: str | None, commit: str | None) -> list[dict]:
+def why_rows(con, file: str | None, commit: str | None, refresh: bool = True) -> list[dict]:
     """`why` for an agent: one row per (commit, chat), or one row with an error or a note."""
     if commit:
         base = os.path.expanduser(re.sub(r":\d+(-\d+)?$", "", file or "")) or os.getcwd()
-        result = why(con, None, commit, cwd=base if os.path.isdir(base) else os.path.dirname(base))
+        result = why(con, None, commit, cwd=base if os.path.isdir(base) else os.path.dirname(base), refresh=refresh)
     else:
-        result = why(con, file)
+        result = why(con, file, refresh=refresh)
     if result.get("error"):
         return [{"error": result["error"]}]
     rows = []

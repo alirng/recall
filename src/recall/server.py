@@ -11,6 +11,7 @@ import contextlib
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 from typing import Annotated
@@ -90,22 +91,44 @@ def _index_run() -> None:
     try:
         with contextlib.closing(store.connect()) as con:
             indexer.index(con, max_age=60)  # cheap incremental refresh; skipped if another agent is indexing
-    except Exception:  # an outlived server, say: the tool call's own connection reports it
-        pass
+    except Exception as e:  # an outlived server, say: the tool call's own connection reports it to the agent
+        _complain("index refresh", e)
+
+
+def _complain(what: str, e: Exception) -> None:
+    """A failure a tool call works around: on stderr (stdout carries the protocol) and in the usage log."""
+    print(f"recall: {what} failed: {e!r}", file=sys.stderr)
+    usage.record("mcp", what, None, {"error": repr(e)}, session=os.getpid())
 
 
 def _incomplete(con) -> str | None:
-    """While a run rebuilding the index is still under way (some source not read in full since the
-    chat tables were rebuilt): a note that results may be missing chats."""
-    if _refreshing is None or not _refreshing.is_alive():
-        return None
+    """While an index run is under way (in this server or another) and some source has not been read
+    in full since the chat tables were rebuilt: a note that results may be missing chats."""
     from . import config
     from .chats.sources import all_sources
 
     stamps = {r[0] for r in con.execute("select k from meta where k like 'scanned:%'")}
     if all(f"scanned:{name}" in stamps for name in all_sources(config.load()["sources"], found=[])):
         return None
+    if not _indexing():
+        return None
     return "recall is still re-reading chat history after an update, so some chats may be missing: ask again soon."
+
+
+def _indexing() -> bool:
+    """Whether an index run holds the index lock now, in any recall process."""
+    import fcntl
+
+    try:
+        with open(os.path.join(paths.HOME, "index.lock"), "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    return False
 
 
 def _rebuild_due() -> bool:
@@ -125,13 +148,25 @@ def _db():
     unclosed one keeps any transaction it holds, and with a write the lock, long after the call."""
     _refresh()
     with contextlib.closing(store.connect()) as con:
+        con.execute(f"pragma busy_timeout = {TOOL_LOCK_WAIT_MS}")
         yield con
+
+
+# How long a tool call's own write (the notes index, commit links) waits for the index's write lock
+# before answering from the tables as they stand. A refresh commits after each chat it reads, and the
+# redaction scrub every half second, so a longer wait means a VACUUM or a rewrite of a large table.
+TOOL_LOCK_WAIT_MS = 3000
 
 
 @contextlib.contextmanager
 def _notes_db():
     with contextlib.closing(store.connect()) as con:
-        context.index_notes(con, NoteStore().load())  # picks up hand edits; fast for thousands of notes
+        con.execute(f"pragma busy_timeout = {TOOL_LOCK_WAIT_MS}")
+        try:
+            context.index_notes(con, NoteStore().load())  # picks up hand edits; fast for thousands of notes
+        except sqlite3.OperationalError as e:  # the index is busy: search the notes as last indexed
+            con.rollback()
+            _complain("notes index", e)
         yield con
 
 
@@ -343,7 +378,12 @@ def recent_chats(
 
         def why():
             with _db() as con:
-                return commits.why_rows(con, file, commit)
+                try:
+                    return commits.why_rows(con, file, commit)
+                except sqlite3.OperationalError as e:  # the index is busy: answer from the links as they stand
+                    con.rollback()
+                    _complain("commit links", e)
+                    return commits.why_rows(con, file, commit, refresh=False)
 
         return _logged(ctx, "recent_chats", {"file": file, "commit": commit}, why)
 

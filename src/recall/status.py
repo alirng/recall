@@ -37,11 +37,12 @@ WARNED = os.path.join(paths.HOME, "cache", "edit-warnings.json")
 # still show up, and an edit counts before the agent's own transcript is written.
 EDITS = os.path.join(paths.HOME, "cache", "edits.jsonl")
 # The edit hook's first look: per recent transcript, how far it has been read and the files its
-# edit tool calls named. The list of recent transcripts comes from globbing every agent's history
-# at most every RELIST_SECONDS, so a chat that starts (or resumes) without recall's hooks, such as
-# Codex before its hooks are trusted, is seen by other chats' edit hooks within that time.
+# edit tool calls named. A chat that starts is listed at the next edit, from the folder its agent
+# writes it to; every RELIST_SECONDS each agent's whole history is globbed again, so a chat without
+# recall's hooks (Codex before they are trusted) resumed in a file older than LIST_HORIZON is seen
+# by other chats' edit hooks within that time.
 EDIT_INDEX = os.path.join(paths.HOME, "cache", "edit-index.json")
-EDIT_INDEX_VERSION = 1
+EDIT_INDEX_VERSION = 2  # 2: files placed as _resolve places them, with the folders new chats appear in
 RELIST_SECONDS = 300
 LIST_HORIZON = 86400  # a relist keeps transcripts changed this recently, or within the hook's window
 AGENTS = {
@@ -227,20 +228,20 @@ def _transcripts() -> dict[str, str]:
     return {path: agent for agent, pattern in patterns.items() for path in glob.glob(pattern, recursive=True)}
 
 
-def _transcript_agent(path: str) -> str | None:
-    """The agent whose transcript `path` is, when it is one _transcripts() would find."""
-    from .chats.sources import claude, codex, cursor
-
+def _transcript_agent(path: str, roots: dict[str, str] | None = None) -> str | None:
+    """The agent whose transcript `path` is, when it is one _transcripts() would find. `roots`, as
+    _roots() gives them (the edit index keeps a copy), saves loading the parsers."""
+    roots = roots or _roots()
     up = [path]
     for _ in range(4):
         up.append(os.path.dirname(up[-1]))
     if not path.endswith(".jsonl"):
         return None
-    if up[2] == claude.ROOT:
+    if up[2] == roots["claude"]:
         return "claude"
-    if path.startswith(os.path.join(codex.ROOT, "sessions") + os.sep):
+    if path.startswith(roots["codex"] + os.sep):
         return "codex"
-    if up[4] == cursor.PROJECTS and os.path.basename(up[2]) == "agent-transcripts":
+    if up[4] == roots["cursor"] and os.path.basename(up[2]) == "agent-transcripts":
         return "cursor"
     return None
 
@@ -256,6 +257,14 @@ def _write_json(path: str, data) -> None:
         os.replace(tmp, path)
 
 
+def _cached_since(path: str, entry, since: float) -> bool:
+    """Whether a status cache entry is still worth keeping: its file is there and moved within the window."""
+    try:
+        return int(str(entry["fp"]).split(":")[0]) / 1e9 >= since and os.path.exists(path)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
     """The chats active since `since`, from every agent's transcripts and the edit log. `only`
     reads just these transcripts (path -> agent) instead of globbing every agent's history."""
@@ -264,7 +273,9 @@ def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
             stored = json.load(f)
     except (OSError, json.JSONDecodeError):
         stored = {}
-    cache = stored.get("chats", {}) if stored.get("version") == CACHE_VERSION else {}
+    stored = stored if isinstance(stored, dict) else {}
+    cache = stored.get("chats") if stored.get("version") == CACHE_VERSION else None
+    cache = cache if isinstance(cache, dict) else {}
     catalog = None
 
     def codex_catalog():
@@ -273,6 +284,16 @@ def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
 
         catalog = catalog if catalog is not None else codex._catalog()
         return catalog
+
+    def live(rec: dict | None, st) -> Live | None:
+        if not rec:
+            return None
+        s = Live(**{k: v for k, v in rec.items() if k != "edits"})
+        # The last message, not the file's mtime: apps rewrite transcripts (titles,
+        # compaction) without anyone working in the chat.
+        s.updated_at = s.updated_at or st.st_mtime
+        s.edits = dict(rec["edits"])
+        return s
 
     found, fresh, changed = [], {}, False
     for path, agent in (_transcripts() if only is None else only).items():
@@ -284,20 +305,22 @@ def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
             continue
         fp = f"{st.st_mtime_ns}:{st.st_size}"
         hit = cache.get(path)
-        if hit and hit["fp"] == fp:
+        try:
+            if not (isinstance(hit, dict) and hit.get("fp") == fp):
+                raise KeyError(path)
             rec = hit["rec"]
-        else:
+            s = live(rec, st)
+        except (KeyError, TypeError, ValueError):  # not cached, or a cached record of another shape: read it
             rec, changed = _read(agent, path, codex_catalog), True
+            s = live(rec, st)
         fresh[path] = {"fp": fp, "rec": rec}
-        if rec:
-            live = Live(**{k: v for k, v in rec.items() if k != "edits"})
-            # The last message, not the file's mtime: apps rewrite transcripts (titles,
-            # compaction) without anyone working in the chat.
-            live.updated_at = live.updated_at or st.st_mtime
-            live.edits = dict(rec["edits"])
-            found.append(live)
+        if s:
+            found.append(s)
     if only is not None:
-        fresh = {**cache, **fresh}  # the chats not read this time keep their entries
+        # The chats not read this time keep their entries, unless their file is gone or older than the window.
+        kept = {p: v for p, v in cache.items() if p not in fresh and _cached_since(p, v, since)}
+        changed = changed or len(kept) + len(fresh) != len(cache)
+        fresh = kept | fresh
     if changed or len(fresh) != len(cache):
         _write_json(CACHE, {"version": CACHE_VERSION, "chats": fresh})
 
@@ -366,10 +389,13 @@ def _logged(since: float) -> dict[str, dict]:
     return out
 
 
-def _edit_index(since: float) -> dict[str, dict]:
+def _edit_index(since: float) -> tuple[dict[str, dict], dict[str, str]]:
     """Every transcript that changed since `since`, path -> {"agent", "files"}: the files its
     edit tool calls named, brought up to date by reading only what was written since the last
-    look (EDIT_INDEX). Which transcripts are recent is relisted at most every RELIST_SECONDS."""
+    look (EDIT_INDEX). A chat that starts is found at the next look through the folder its agent
+    writes it to (_watch); every RELIST_SECONDS each agent's whole history is listed again, for a
+    chat resumed in a file older than LIST_HORIZON. A record of another shape is read again. Also
+    returns the folders each agent's history is under (_roots)."""
     try:
         with open(EDIT_INDEX) as f:
             stored = json.load(f)
@@ -377,18 +403,37 @@ def _edit_index(since: float) -> dict[str, dict]:
         stored = {}
     if not isinstance(stored, dict) or stored.get("version") != EDIT_INDEX_VERSION:
         stored = {}
-    now, changed = time.time(), False
-    chats: dict[str, dict] = stored.get("chats") or {}
-    if now - stored.get("listed_at", 0) > RELIST_SECONDS or since < stored.get("horizon", now):
+    now = time.time()
+    held = stored.get("chats") if isinstance(stored.get("chats"), dict) else {}
+    chats = {p: r for p, r in held.items() if _record_ok(r)}
+    changed = len(chats) != len(held)
+    folders = stored.get("folders") if isinstance(stored.get("folders"), dict) else {}
+    roots = stored.get("roots") if isinstance(stored.get("roots"), dict) else None
+    listed_at, horizon = stored.get("listed_at"), stored.get("horizon")
+    if (
+        roots is None
+        or not isinstance(listed_at, (int, float))
+        or not isinstance(horizon, (int, float))
+        or now - listed_at > RELIST_SECONDS
+        or since < horizon
+    ):
+        roots = _roots()
+        folders = {}
+        _watch(roots, folders, scan=False)  # before the glob: a chat that starts during it is found next time
         horizon = min(since, now - LIST_HORIZON)
         recent = {}
         for path, agent in _transcripts().items():
             with contextlib.suppress(OSError):
                 if os.stat(path).st_mtime >= horizon:
                     recent[path] = agent
-        chats = {p: chats.get(p) or {"agent": agent, "ino": None, "off": 0, "files": []} for p, agent in recent.items()}
+        chats = {p: chats.get(p) or _blank(agent) for p, agent in recent.items()}
         stored |= {"listed_at": now, "horizon": horizon}
         changed = True
+    else:
+        new, moved = _watch(roots, folders, scan=True)
+        for path, agent in new.items():
+            chats.setdefault(path, _blank(agent))
+        changed = changed or moved
     out = {}
     for path, rec in chats.items():
         try:
@@ -398,94 +443,193 @@ def _edit_index(since: float) -> dict[str, dict]:
         if st.st_mtime < since:
             continue
         if rec["ino"] != st.st_ino or st.st_size < rec["off"]:  # replaced or cut short: read it again
-            rec = chats[path] = {**rec, "ino": st.st_ino, "off": 0, "files": []}
+            rec = chats[path] = {**_blank(rec["agent"]), "ino": st.st_ino}
         if st.st_size > rec["off"]:
             with contextlib.suppress(OSError):
                 rec = chats[path] = _read_edits(path, rec)
                 changed = True
         out[path] = rec
     if changed:
-        _write_json(EDIT_INDEX, {**stored, "version": EDIT_INDEX_VERSION, "chats": chats})
+        _write_json(
+            EDIT_INDEX,
+            {**stored, "version": EDIT_INDEX_VERSION, "roots": roots, "folders": folders, "chats": chats},
+        )
+    return out, roots
+
+
+def _blank(agent: str) -> dict:
+    return {"agent": agent, "ino": None, "off": 0, "files": [], "cwd": None}
+
+
+def _record_ok(r) -> bool:
+    """Whether an edit index record has the shape this release writes."""
+    return (
+        isinstance(r, dict)
+        and isinstance(r.get("agent"), str)
+        and (r.get("ino") is None or isinstance(r.get("ino"), int))
+        and isinstance(r.get("off"), int)
+        and isinstance(r.get("files"), list)
+        and all(isinstance(f, str) for f in r["files"])
+        and (r.get("cwd") is None or isinstance(r.get("cwd"), str))
+    )
+
+
+def _roots() -> dict[str, str]:
+    """The folders _transcripts() globs, as the edit index stores them, so a look needs no parser."""
+    from .chats.sources import claude, codex, cursor
+
+    return {"claude": claude.ROOT, "codex": os.path.join(codex.ROOT, "sessions"), "cursor": cursor.PROJECTS}
+
+
+def _watch(roots: dict[str, str], folders: dict[str, int], scan: bool) -> tuple[dict[str, str], bool]:
+    """The folders a new chat's transcript appears in, with the time each last changed (`folders`,
+    updated in place): each Claude Code project's, each Cursor project's agent-transcripts, and
+    Codex's folders for today and yesterday. With `scan`, the transcripts in those that changed
+    since the last look are returned (path -> agent), with whether any folder changed. A stat per
+    project folder, about a millisecond for a few hundred."""
+    seen: dict[str, tuple[str, str]] = {}  # folder -> (agent, what it holds)
+    with contextlib.suppress(OSError):
+        for e in os.scandir(roots["claude"]):
+            if e.is_dir():
+                seen[e.path] = ("claude", "files")
+    with contextlib.suppress(OSError):
+        for e in os.scandir(roots["cursor"]):
+            seen[os.path.join(e.path, "agent-transcripts")] = ("cursor", "chats")
+    for day in (time.time(), time.time() - 86400):
+        seen[os.path.join(roots["codex"], time.strftime("%Y/%m/%d", time.localtime(day)))] = ("codex", "files")
+    found, moved = {}, False
+    for folder, (agent, holds) in seen.items():
+        try:
+            mtime = os.stat(folder).st_mtime_ns
+        except OSError:
+            continue
+        if folders.get(folder) == mtime:
+            continue
+        folders[folder] = mtime
+        moved = True
+        if scan:
+            found |= _chats_in(folder, agent, holds)
+    return found, moved
+
+
+def _chats_in(folder: str, agent: str, holds: str) -> dict[str, str]:
+    """The transcripts in one watched folder: its .jsonl files, or for Cursor's agent-transcripts the
+    .jsonl in each chat's folder changed lately (a new chat's folder may not hold its file yet; the
+    next relist finds it then)."""
+    out, recent = {}, time.time() - LIST_HORIZON
+    with contextlib.suppress(OSError):
+        for e in os.scandir(folder):
+            if holds == "files" and e.name.endswith(".jsonl") and e.is_file():
+                out[e.path] = agent
+            elif holds == "chats" and e.is_dir() and e.stat().st_mtime >= recent:
+                with contextlib.suppress(OSError):
+                    out |= {c.path: agent for c in os.scandir(e.path) if c.name.endswith(".jsonl") and c.is_file()}
     return out
 
 
 def _read_edits(path: str, rec: dict) -> dict:
     """`rec` with the files named by the edit tool calls `path` gained since rec["off"]. Only lines
     that can hold one are decoded. A file that no longer ends a line where the last look stopped was
-    rewritten, and is read again from the start."""
-    agent, off = rec["agent"], rec["off"]
+    rewritten, and is read again from the start. Each file is recorded as _placed has it."""
+    agent, off, folder = rec["agent"], rec["off"], rec.get("cwd")
     files = dict.fromkeys(rec["files"])
     with open(path, "rb") as f:
         if off:
             f.seek(off - 1)
             if f.read(1) != b"\n":
-                off, files = 0, {}
+                off, files, folder = 0, {}, None
                 f.seek(0)
         data = f.read()
     end = data.rfind(b"\n") + 1  # whole lines only: the rest is still being written
+    if agent == "codex" and not off:  # a patch names files relative to where Codex ran
+        with contextlib.suppress(Exception):
+            first = json.loads(data[: data.find(b"\n")])
+            folder = (first.get("payload") or {}).get("cwd") if first.get("type") == "session_meta" else None
     marker = _EDIT_LINE["codex" if agent == "codex" else "other"]
     m = marker.search(data, 0, end)
     while m:
         start, stop = data.rfind(b"\n", 0, m.start()) + 1, data.find(b"\n", m.start(), end)
         with contextlib.suppress(Exception):  # a line _named cannot make sense of names nothing
             d = json.loads(data[start:stop])
-            # Paths as written: a patch's are relative to where Codex ran, which the match allows for.
-            files.update(dict.fromkeys(_named(agent, d, None) if isinstance(d, dict) else []))
+            here = folder if agent == "codex" else d.get("cwd")  # Claude Code writes its folder on every line
+            for named in _named(agent, d, None) if isinstance(d, dict) else []:
+                files.update(dict.fromkeys(_placed(named, here if isinstance(here, str) else None)))
         m = marker.search(data, stop, end)
-    return {**rec, "off": off + end, "files": list(files)}
+    return {**rec, "off": off + end, "files": list(files), "cwd": folder}
+
+
+def _placed(path: str, folder: str | None) -> list[str]:
+    """How the first look records a file an edit named: a full path as the real file it names, as
+    _resolve places it. A relative one also as written, cleaned of leading "..", since the folder
+    _resolve takes it from (the chat's, which Codex's catalogue may give) can differ from the one
+    the transcript says."""
+    if os.path.isabs(path):
+        return [os.path.realpath(path)]
+    parts = os.path.normpath(path).split(os.sep)
+    while parts and parts[0] == "..":
+        parts.pop(0)
+    out = [os.path.realpath(os.path.join(folder, path))] if folder else []
+    return out + ([os.sep.join(parts)] if parts and parts != ["."] else [])
 
 
 def _others_may_edit(
     agent: str, session: str, repo: str, rel: str, since: float, source: str | None, tops: dict[str, str | None]
-) -> tuple[dict[str, str] | None, str | None]:
+) -> tuple[dict[str, str] | None, str | None, dict[str, set[str]]]:
     """The edit hook's first look: the transcripts (path -> agent) of other chats whose edit tool
     calls, or lines in the edit log, may name `rel` (the file being edited, by its path in the
-    repo), or None when no other chat can have edited it; and this chat's own transcript, if seen.
-    It errs towards too many: those chats are then read in full, and git decides. A full path with
-    the file's name is placed as _resolve places it; a relative one (from where the chat ran, not
-    known yet) counts when either ends with the other. This chat's own transcript is the hook's, or
-    the one named for its session id, as Claude Code, Cursor and Codex name them."""
+    repo), or None when no other chat can have edited it; this chat's own transcript, if seen; and
+    for each of those transcripts the checkouts its edits of `rel` were in ("" for one not known).
+    It errs towards too many: those chats are then read in full, and git decides. A full path
+    (placed when it was recorded: _placed; the edit log's are real paths) counts when its checkout
+    is this repo's and its path in it is `rel`; a relative one, from a chat whose folder is not
+    known, when either path ends with the other. This chat's own transcript is the hook's, or the
+    one named for its session id, as Claude Code, Cursor and Codex name them."""
     repos: dict[str, str | None] = {}
 
     @functools.cache
-    def names(p: str) -> bool:
-        p = os.path.normpath(p)
+    def checkout_of(p: str) -> str | None:
+        """The checkout of this repo in which `p` is `rel`; "" when it may be, None when not."""
         if not os.path.isabs(p):
-            return p == rel or rel.endswith(os.sep + p) or p.endswith(os.sep + rel)
-        if os.path.basename(p) != os.path.basename(rel):
-            return False
-        full = os.path.realpath(p)
-        t = _top(full, tops)
-        return bool(t) and os.path.relpath(full, t) == rel and repos.setdefault(t, _repo_dir(t)) == repo
+            return "" if p == rel or rel.endswith(os.sep + p) or p.endswith(os.sep + rel) else None
+        if not p.endswith(os.sep + rel):
+            return None
+        t = _top(p, tops)
+        return t if t and os.path.relpath(p, t) == rel and repos.setdefault(t, _repo_dir(t)) == repo else None
 
-    me, hit, out, logged = f"{agent}:{session}", False, {}, set()
+    me, hit, out, logged = f"{agent}:{session}", False, {}, {}
+    places: dict[str, set[str]] = {}
     for x in _log_lines():
         if x.get("at", 0) < since or not all(k in x for k in ("agent", "session", "file")):
             continue
-        if f"{x['agent']}:{x['session']}" != me and names(x["file"]):
+        if f"{x['agent']}:{x['session']}" != me and (t := checkout_of(x["file"])) is not None:
             hit = True
             if x.get("transcript"):
-                logged.add(x["transcript"])
-    index = _edit_index(since)
+                logged.setdefault(x["transcript"], set()).add(t)
+    index, roots = _edit_index(since)
     own = None
     named = (os.sep + f"{session}.jsonl", f"-{session}.jsonl") if len(session or "") >= 8 else None
     for path, rec in index.items():
         if named and rec["agent"] == agent and path.endswith(named):
             own = path
-        elif any(names(f) for f in rec["files"]):
+        elif where := {t for f in rec["files"] if (t := checkout_of(f)) is not None}:
             if os.path.realpath(path) == source:
                 own = path
             else:
                 hit = True
                 out[path] = rec["agent"]
+                places[path] = where
     if logged:  # read by the path a full scan finds them at; a chat no scan finds is known by its log lines
         listed = {os.path.realpath(p): p for p in index}
-        for real in logged - {source}:
+        for real, where in logged.items():
+            if real == source:
+                continue
             if real in listed:
                 out[listed[real]] = index[listed[real]]["agent"]
-            elif kind := _transcript_agent(real):
+                places.setdefault(listed[real], set()).update(where)
+            elif kind := _transcript_agent(real, roots):
                 out[real] = kind
-    return (out if hit else None), own
+                places.setdefault(real, set()).update(where)
+    return (out if hit else None), own, places
 
 
 WHOLE = [1, 10**9]  # an edit that rewrites the whole file
@@ -1154,32 +1298,41 @@ def check_edit(
 
     # Most edits are to a file no other chat has touched: the first look settles those without
     # reading any chat in full or running git. Otherwise only the chats it names are read.
-    near, own = _others_may_edit(agent, session_id, repo, rel, since, source, tops)
+    near, own, places = _others_may_edit(agent, session_id, repo, rel, since, source, tops)
     if near is None:
         return None
-    sessions = _sessions(since, only=near)
-    others = [(s, theirs) for s in sessions if not is_me(s) and rel in (theirs := in_repo(s))]
-    if not others:
-        return None
-    mine = next((s for s in sessions if s.id == me), None) or next((s for s in sessions if is_me(s)), None)
-    # After an edit (Cursor's postToolUse) the file already holds it; the lines this chat's
-    # hook recorded before the edit stand in.
-    lines = lines or (mine.regions.get(path) if mine else None)
     rank = {name: i for i, name in enumerate(reversed(SITUATIONS))}  # overlap 0 … same_copy 3
     try:
         with open(WARNED) as f:
             warned = json.load(f)
     except (OSError, json.JSONDecodeError):
         warned = {}
-    seen = warned.get(me, {}).get("chats", {})
+    # Anything of another shape counts as never raised, and is rewritten with the next warning.
+    warned = {k: v for k, v in warned.items() if isinstance(v, dict)} if isinstance(warned, dict) else {}
+    held = warned.get(me, {}).get("chats")
+    seen = {k: v for k, v in held.items() if isinstance(v, int)} if isinstance(held, dict) else {}
 
     def worst(t: str) -> int:
         """The worst situation a chat with changes in checkout `t` can still be raised for."""
         could = ("same_copy", "apart", "overlap") if t == top else ("conflict", "overlap")
         return max((rank[sit] for sit in could if want[sit] in acts), default=-1)
 
-    # A chat already raised for the worst it can be needs no git: it is not raised again.
+    # A chat already raised for the worst it can be is not raised again, so it needs no git, and one
+    # whose id is its transcript's name (Claude Code's, Cursor's) need not even be read.
+    for p, kind in list(near.items()):
+        where = places.get(p) or {""}
+        cid = f"{kind}:{os.path.basename(p).removesuffix('.jsonl')}"
+        if kind in ("claude", "cursor") and "" not in where and seen.get(cid, -1) >= max(map(worst, where)):
+            del near[p]
+    sessions = _sessions(since, only=near)
+    others = [(s, theirs) for s in sessions if not is_me(s) and rel in (theirs := in_repo(s))]
     others = [(s, theirs) for s, theirs in others if worst(theirs[rel][0]) > seen.get(s.id, -1)]
+    if not others:
+        return None
+    mine = next((s for s in sessions if s.id == me), None) or next((s for s in sessions if is_me(s)), None)
+    # After an edit (Cursor's postToolUse) the file already holds it; the lines this chat's
+    # hook recorded before the edit stand in.
+    lines = lines or (mine.regions.get(path) if mine else None)
     checkouts: dict[str, Checkout | None] = {}
 
     def checkout(t: str) -> Checkout | None:
@@ -1209,7 +1362,7 @@ def check_edit(
     if not raise_:
         return None
     now = time.time()
-    warned = {k: v for k, v in warned.items() if now - v.get("at", 0) < 2 * 86400}
+    warned = {k: v for k, v in warned.items() if isinstance(v.get("at"), (int, float)) and now - v["at"] < 2 * 86400}
     warned[me] = {"at": now, "chats": {**seen, **{s.id: rank[sit] for sit, s, *_ in raise_}}}
     _write_json(WARNED, warned)
 
