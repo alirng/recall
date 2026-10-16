@@ -19,7 +19,6 @@ from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from . import __version__, projects, usage
 from .chats import indexer, store
 from .memory import context
-from .memory.notes import NoteStore
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 
@@ -74,7 +73,7 @@ def _db():
 @contextlib.contextmanager
 def _notes_db():
     with contextlib.closing(store.connect()) as con:
-        context.index_notes(con, NoteStore().load())  # picks up hand edits; fast for thousands of notes
+        context.refresh_notes(con)  # picks up hand edits; writes only when the notes or contexts changed
         yield con
 
 
