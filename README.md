@@ -74,15 +74,15 @@ the method, the caveats and the commands.
   99 GitHub issues searched against 300 Claude Code sessions). The memory products the
   benchmark's authors tested found it 39–73% of the time, each at its own cutoff, after running
   an LLM over every session. recall is ahead at each of those cutoffs.
-- **Agents follow your latest conventions.** On MemoryCode, with the notes loaded at session
-  start, Claude Haiku 5.5 writes code that follows the latest conventions on histories of 20 to
-  100 sessions 62% of the time, against 40% with search alone. The notes, written by
-  gpt-6-luna, hold about three in five of the conventions in their latest form; written by
-  Claude Haiku 5.5 they hold more than nine in ten of the facts ([which model to pick](docs/benchmarks.md#which-model-writes-your-notes)).
+- **Agents follow your latest conventions.** On MemoryCode, with recall's notes loaded at
+  session start, Claude Haiku 5.5 writes code that follows the latest conventions on histories
+  of 20 to 100 sessions 75% of the time, against 32% with search alone, and takes in 41% fewer
+  tokens. Written by Claude Haiku 5.5, the notes hold nine in ten of the conventions in their
+  latest form; written by gpt-6-luna, two in three ([which model to pick](docs/benchmarks.md#which-model-writes-your-notes)).
 - **No LLM calls to index or to search.** On ~2,800 chats a search takes about 15 ms, or
   50 ms with embeddings (median, on a laptop).
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.3.0 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.3.0 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.3.0 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.4.1 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.4.1 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.4.1 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
 
 On LongMemEval, the chat benchmark memory products usually report, recall's search puts a
 session that answers the question in its top five 98.7% of the time.
