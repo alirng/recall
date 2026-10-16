@@ -13,6 +13,7 @@ dollar budget (max_usd, metered providers only) or its time budget, whichever co
 import fcntl
 import json
 import os
+import sqlite3
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -86,17 +87,23 @@ def run(opts: Options, log=print) -> dict:
         stats = Counter()
         # Before reading, so a long backlog of chats cannot spend the calls it needs.
         placed = _place(client, log) if opts.fold and contexts.roots() else 0
+        moved = None
         if opts.read:
             if batcher:
                 batcher.deadline = reading
             if budget.max_usd is not None and opts.fold:  # as with time, keep a share for consolidation
                 budget.max_usd = opts.max_usd * READING_SHARE
-            stats.update(_read(con, client, opts.max_chats, reading, log, batcher))
+            try:
+                stats.update(_read(con, client, opts.max_chats, reading, log, batcher))
+            except ChatsMoved as e:
+                moved = str(e)
             budget.max_usd = opts.max_usd
-        if opts.fold:
+        if opts.fold and not (moved := moved or _moved(con)):  # routing and said.py read the chat tables
             if batcher:
                 batcher.deadline = deadline
             stats.update(_fold(con, client, log, placed, batcher))
+        if moved:
+            log(moved)
         cost = round(client.usd, 4) if metered and not client.unpriced else None
         record = dict(stats)
         if batcher and batcher.batches:
@@ -118,7 +125,7 @@ def run(opts: Options, log=print) -> dict:
                 client.tokens_in,
                 client.tokens_out,
                 client.calls,
-                None,
+                moved,
             ),
         )
         con.commit()
@@ -144,6 +151,23 @@ def _link_commits(con, log) -> None:
     except Exception as e:  # never costs the night's memory run
         con.rollback()
         log(f"commit links skipped: {e!r}")
+
+
+class ChatsMoved(Exception):
+    """The chat tables stopped being this release's while the run read them."""
+
+
+def _moved(con) -> str | None:
+    """Why this run leaves the chats alone, when the chat tables are no longer this release's: a recall
+    process an upgrade outlived (an agent's MCP server) rebuilt them for its own release. Reading them now
+    would fail or find them half full; the next run carries on."""
+    built_by = store.schema(con)
+    if built_by == store.CHAT_SCHEMA_VERSION:
+        return None
+    return (
+        f"chats left for the next run: an older recall rebuilt the chat index during this run (chat schema"
+        f" {built_by}); restart agents started before recall was last upgraded"
+    )
 
 
 def ensure_tables(con) -> None:
@@ -186,17 +210,22 @@ def pending_chats(con) -> list:
 
 def _read(con, client: Client, max_chats: int | None, deadline: float | None, log, batcher=None) -> Counter:
     batched = batcher is not None and client.provider.for_purpose("extract").supports_batch
-    chats = pending_chats(con)
-    if max_chats:
-        chats = chats[:max_chats]
-    if batched:
-        # Oldest first: chats that arrive before the next run join the last call instead of shifting
-        # every call's chats, so answers a left-running batch gave are still the next run's cache hits.
-        chats = sorted(chats, key=lambda s: s["updated_at"])
-    items = [
-        (s, con.execute("select seq, role, text from messages where session_id=? order by seq", (s["id"],)).fetchall())
-        for s in chats
-    ]
+    try:
+        chats = pending_chats(con)
+        if max_chats:
+            chats = chats[:max_chats]
+        if batched:
+            # Oldest first: chats that arrive before the next run join the last call instead of shifting
+            # every call's chats, so answers a left-running batch gave are still the next run's cache hits.
+            chats = sorted(chats, key=lambda s: s["updated_at"])
+        messages = "select seq, role, text from messages where session_id=? order by seq"
+        items = [(s, con.execute(messages, (s["id"],)).fetchall()) for s in chats]
+    except sqlite3.OperationalError:
+        if not (moved := _moved(con)):
+            raise
+        raise ChatsMoved(moved) from None
+    if moved := _moved(con):  # rebuilt mid-read: chats whose messages came back empty would be marked skipped
+        raise ChatsMoved(moved)
     batches, skipped = extract.plan(items, client.provider.profile)
     label = client.provider.for_purpose("extract").label
     for s in skipped:
