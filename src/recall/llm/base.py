@@ -186,13 +186,9 @@ def parse_json(text: str) -> dict:
 
 
 def on_this_machine(url: str) -> bool:
-    """Whether a server at this URL runs on this machine: localhost, a loopback address
-    (127.0.0.1, ::1) or a unix socket. Any other host is another machine, whatever the kind of
-    server."""
-    parts = urlparse(url)
-    if parts.scheme in ("unix", "http+unix", "https+unix"):
-        return True
-    host = (parts.hostname or "").lower().rstrip(".")
+    """Whether a server at this URL runs on this machine: localhost or a loopback address
+    (127.0.0.1, ::1). Any other host is another machine, whatever the kind of server."""
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
     if host == "localhost":
         return True
     try:

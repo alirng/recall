@@ -1,7 +1,7 @@
 """Model providers. The person picks one at setup; recall assumes no vendor.
 
     local       a model you serve yourself (Ollama, LM Studio, llama.cpp): nothing leaves this machine
-                when its base_url is localhost, a loopback address or a unix socket
+                when its base_url is localhost or a loopback address
     chatgpt     your ChatGPT plan, through the Codex CLI
     claude      your Claude plan, through the Claude Code CLI
     openai      OpenAI API key

@@ -267,20 +267,35 @@ def _mcp_codex(cmd: str, dry_run: bool = False, remove: bool = False, root=None)
     return f"added to {config}; Codex asks before message_chat runs"
 
 
-def _codex_ask_first(config: str, text: str, dry_run: bool) -> str:
-    """An entry an earlier release wrote lets Codex run message_chat without asking: add the approval
-    to it. An entry that already says how message_chat is approved, or whose server-wide mode the
-    person changed, is the person's choice and stays as it is."""
+def _codex_unasked(text: str) -> bool | None:
+    """Whether recall's entry in this Codex config lets message_chat run without asking, and
+    `recall install` would change that. An entry that already says how message_chat is approved, or
+    whose server-wide mode the person changed, is the person's choice. None: the config does not parse."""
     try:
         server = tomllib.loads(text).get("mcp_servers", {}).get(NAME)
     except tomllib.TOMLDecodeError:
-        return f"already registered ({config} is not valid TOML, so message_chat's approval was not checked)"
+        return None
     if not isinstance(server, dict):
-        return "already registered"
+        return False
     tools = server.get("tools")
     tool = tools.get("message_chat") if isinstance(tools, dict) else None
     chosen = isinstance(tool, dict) and "approval_mode" in tool
-    if chosen or server.get("default_tools_approval_mode") not in (None, "auto"):
+    return not chosen and server.get("default_tools_approval_mode") in (None, "auto")
+
+
+def codex_unasked(root) -> bool:
+    """For `recall doctor`: a Codex root whose recall entry, written by an earlier release, lets
+    message_chat run without asking. Reads only."""
+    return root.agent == "codex" and _codex_unasked(_read(root_files(root)["mcp"])) is True
+
+
+def _codex_ask_first(config: str, text: str, dry_run: bool) -> str:
+    """An entry an earlier release wrote lets Codex run message_chat without asking: add the approval
+    to it, and leave an entry that is the person's choice as it is."""
+    unasked = _codex_unasked(text)
+    if unasked is None:
+        return f"already registered ({config} is not valid TOML, so message_chat's approval was not checked)"
+    if not unasked:
         return "already registered"
     block = re.search(rf"^\[mcp_servers\.{NAME}\][^\n]*\n(?:(?!\[).*\n?)*", text, re.M)
     fixed = text

@@ -44,7 +44,9 @@ jobs:
             echo "::error::src/recall/__init__.py says $packaged but pyproject.toml says $version."
             exit 1
           fi
-          if ! git merge-base --is-ancestor HEAD origin/main; then
+          # The full ref, so a tag or branch named origin/main cannot stand in for main. This stops a
+          # mistake; the control against a bad tag is the pypi environment's required reviewer.
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
             echo "::error::Tag $TAG points at $(git rev-parse --short HEAD), which is not on main."
             exit 1
           fi

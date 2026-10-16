@@ -18,11 +18,13 @@ recall reads the chat history that each agent keeps on disk:
 It reads the git repositories your chats worked in, with read-only git commands, for
 `recall status` and for linking commits to chats. It reads your shell's startup files
 (`~/.zshrc` and the like) only to find the `CLAUDE_CONFIG_DIR` and `CODEX_HOME` you set for a
-second account, and keeps just those two values. It reads Claude Code's settings
-(`~/.claude/settings.json`, its cached `remote-settings.json`) and an organisation's managed
-settings (macOS managed preferences, the `managed-settings` folders) for `cleanupPeriodDays`
-only. It also reads its own index and its memory notes. It never writes to an agent's history.
-SQLite databases are opened read-only.
+second account, and keeps just those two values. It reads the settings files of the agents it
+installs into (see "What recall writes") to see which of its own hook and MCP entries are in
+place, and, from Claude Code's settings (`~/.claude/settings.json`, its cached
+`remote-settings.json`) and an organisation's managed settings (macOS managed preferences, the
+`managed-settings` folders), the `cleanupPeriodDays` retention period. It also reads its own
+index and its memory notes. It never writes to an agent's history. SQLite databases are opened
+read-only.
 
 ## What recall writes
 
@@ -72,9 +74,10 @@ keep a finished agent going to answer. The message arrives quoted and marked as 
 An agent can only message chats recall introduced it to in the last day, using the token in
 recall's note, at most ten messages an hour of 600 characters each. A finishing agent is kept
 going at most three times an hour per sender. The token sits in the chat's transcript, so this
-stops a misled agent, not one set on reading files. recall sets Codex to ask you before it
-runs `message_chat`. It does not pre-approve the tool in Claude Code or Cursor, so their own
-approval settings decide there.
+stops a misled agent, not one set on reading files. `recall install` sets Codex to ask you
+before it runs `message_chat`. An entry from an earlier release gets that when you run
+`recall install` again, and `recall doctor` says when one lacks it. recall does not pre-approve
+the tool in Claude Code or Cursor, so their own approval settings decide there.
 
 ## What the hooks can do
 
@@ -155,15 +158,23 @@ provider:
 
 | Provider | Chat excerpts go to |
 | --- | --- |
-| Local model (Ollama, LM Studio, llama.cpp) | nowhere, if the server runs on this machine (`localhost`, a loopback address or a unix socket), which is the default. A `base_url` on another host sends them there, and recall does not call that private. |
+| Local model (Ollama, LM Studio, llama.cpp) | nowhere, if the server runs on this machine (`localhost` or a loopback address), which is the default. A `base_url` on another host sends them there, and recall does not call that private. |
 | ChatGPT, via the Codex CLI | OpenAI, under your plan's data terms |
 | Claude, via Claude Code | Anthropic, under your plan's data terms |
 | API key | the provider whose key you use: OpenAI, Anthropic or OpenRouter |
 | Your server (`custom`) | the endpoint at `base_url` |
 
+Semantic search is a second model, and it is off unless you set up `[embeddings]`:
+
+| Embedding model | Text it receives |
+| --- | --- |
+| Ollama on this machine, the default | nowhere: it stays on this machine |
+| A `base_url` on another host, such as a hosted endpoint | every indexed chat message (up to 2,000 characters each, after redaction), every memory note, and every search query |
+
 The subscription CLIs run with your MCP servers, hooks and plugins turned off, and with
 API-key environment variables removed, so that recall's calls use your plan. recall has no
-telemetry. Its only network traffic is the model calls you configured.
+telemetry. Its only network traffic is the calls to the models you configured: the one that
+writes memory and, if you set it up, the embedding model.
 
 ## Injected memory
 

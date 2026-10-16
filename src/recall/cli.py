@@ -695,6 +695,8 @@ def cmd_doctor(a) -> None:
         print(f"{r['root']:15} {where}\n{'':15} {text}; {seen}" + (f"; {r['account']}" if r["account"] else ""))
         if r["hooks_run"]:
             print(f"{'':15} hooks run {', '.join(r['hooks_run'])}, not this recall ({r['this_recall']})")
+        if r["message_chat_unasked"]:
+            print(f"{'':15} Codex runs message_chat without asking you: `recall install` makes it ask")
     on = autopilot.enabled()
     print(
         f"\nautopilot: {'on' if on else 'off'}"
