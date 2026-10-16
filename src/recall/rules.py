@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from . import inject
+
 AGENTS = ("cursor", "claude", "codex")
 LABELS = {"cursor": "Cursor", "claude": "Claude Code", "codex": "Codex"}
 BLOCK_START = "<!-- recall:rules start"
@@ -35,7 +37,6 @@ BLOCK_NOTE = (
     "them; edit those files, then run `recall rules --write` again -->"
 )
 IMPORT_LINE = "@AGENTS.md"
-_TAG = re.compile(r"</?[A-Za-z][\w-]*(\s[^<>]*)?>")  # as jit.TAG
 
 
 @dataclass
@@ -176,9 +177,8 @@ def pointers(folder: str | None, agent: str) -> list[str]:
     for s in gaps(scan(root))[agent]:
         # The description is the rule file's own text: one line, capped, with nothing in it that
         # could close the block it is shown in or the code span around the path.
-        what = " ".join(_TAG.sub("", s.description or _first_line(s.body)).replace("`", "").split())
-        what = what if len(what) <= 160 else what[:159].rstrip() + "…"
-        path = s.path.replace("`", "")
+        what = inject.line((s.description or _first_line(s.body)).replace("`", ""), 160)
+        path = inject.line(s.path.replace("`", ""), 160)
         out.append(f"- {what.rstrip('.') or 'always-on rule'} (read `{path}`)")
     return out
 

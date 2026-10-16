@@ -40,7 +40,7 @@ import yaml
 
 from .. import contexts, paths
 from ..chats.redact import redact
-from .said import clean_rule, has_marker, risky
+from .said import clean_rule, dangerous, has_marker, risky
 
 TYPES = ("preference", "fact", "decision", "lesson", "open")
 SECTIONS = {
@@ -57,6 +57,7 @@ RELATED_MARK = "<!-- recall: related notes, rewritten on each run -->"
 REMOVED_BY_HAND = "removed by hand"  # the only reason that feeds consolidation's never-recreate list
 MERGED_BY_HAND = "merged by hand"  # the developer folded it into another rule, which replaced it
 HOOK_CHARS = 160
+TITLE_CHARS = 120  # a title is one line: written in the index raw, a newline in it would forge lines
 README = (
     "# Agent memory\n\nMaintained by recall from your coding-agent chats. Start at MEMORY.md. "
     "Every note is plain markdown: edit or delete anything, and recall respects it on its next run. "
@@ -74,7 +75,7 @@ class Rule:
     last_seen: str = ""  # date of the latest chat that stated or confirmed it
     sources: list[str] = field(default_factory=list)  # chat ids
     said_by: str | None = (
-        None  # "developer" | "agent" | unset: a hint about who stated it, not authentication (said.py)
+        None  # "developer" | "agent" | "unverified" | unset (from before speakers were recorded): a hint (said.py)
     )
     evidence: str = ""  # a supporting quote from a chat
     status: str = "active"  # "active" | "retired"
@@ -125,18 +126,15 @@ class Note:
 
     @property
     def said_by(self) -> str | None:
-        """Who stated the rules in force: "developer" when the developer stated every one,
-        "agent" when only the agent did, "mixed" otherwise (a rule with no verified speaker
-        among them included); None when no rule says (notes
-        written before rules recorded it, or a rule's speaker could not be verified: see
-        said.py). A reader that shows this must say that a convention, whoever stated it,
-        never authorizes a network, destructive or exfiltrating action."""
+        """Who stated the rules in force: "developer", "agent" or "unverified" when every rule
+        has that mark, "mixed" otherwise (a rule with no mark among them included); None when no
+        rule has one (notes written before speakers were recorded: see said.py). A reader that
+        shows this must say that a convention, whoever stated it, never authorizes a network,
+        destructive or exfiltrating action."""
         said = [r.said_by for r in self.active_rules]
         if not any(said):
             return None
-        if all(s == "developer" for s in said):
-            return "developer"
-        return "agent" if all(s == "agent" for s in said) else "mixed"
+        return said[0] if len(set(said)) == 1 else "mixed"
 
     def score(self, now: float) -> float:
         """Rank for the indexes: confidence, corroboration across chats, and recency."""
@@ -191,7 +189,7 @@ class NoteStore:
         for r in note.rules:  # the body is rendered from the rules, so a credential is cut from them too
             r.text, r.evidence, r.reason = redact(r.text), redact(r.evidence), redact(r.reason)
         sync(note)
-        note.title, note.body = redact(note.title), redact(note.body)  # a note never keeps a credential
+        note.title, note.body = clean_title(redact(note.title)), redact(note.body)  # no credential, one line
         directory = self._dir_for(note)
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, f"{note.id}.md")
@@ -415,7 +413,7 @@ def parse_note(text: str, path: str) -> Note | None:
     fields.setdefault("id", os.path.basename(path)[:-3])
     fields.setdefault("type", "fact")
     fields.setdefault("scope", "project")
-    fields.setdefault("title", fields["id"])
+    fields["title"] = clean_title(fields.get("title")) or str(fields["id"])  # blank or a number in YAML
     for k in ("created", "updated", "last_seen"):
         if k in fields:
             fields[k] = str(fields[k])  # YAML reads bare dates as date objects
@@ -499,7 +497,7 @@ def _rule_from(entry) -> Rule | None:
     known["text"] = str(known["text"]).strip()
     known["evidence"] = str(known.get("evidence") or "")
     if risky(known["text"]) and known.get("said_by") == "developer":
-        known["said_by"] = None  # edited into a command or a URL: no longer vouched for
+        known["said_by"] = "unverified"  # edited into a command or a URL: no longer vouched for
     known["sources"] = [str(s) for s in known.get("sources") or []]
     known.setdefault("id", rule_id("", known["text"], set()))
     known["id"] = str(known["id"])
@@ -631,7 +629,7 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
                 text=piece,
                 sources=list(r.sources),
                 evidence=r.evidence if k == 0 else "",
-                said_by=None if risky(piece) else r.said_by,
+                said_by="unverified" if r.said_by == "developer" and risky(piece) else r.said_by,
             )
             for k, piece in enumerate(pieces)
         ]
@@ -652,7 +650,10 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
         at = _words(t)
         inside.sort(key=lambda r: f" {at} ".find(f" {_words(r.text)} "))  # the rule the item opens with is the host
         host, others = inside[0], inside[1:]
-        host.said_by = "developer" if all(r.said_by == "developer" for r in inside) and not risky(t) else None
+        marks = {r.said_by for r in inside}  # what the edit kept of them keeps the weakest mark
+        host.said_by = (
+            "developer" if marks == {"developer"} and not risky(t) else "agent" if "agent" in marks else "unverified"
+        )
         host.text, host.edited = t if has_marker(host.text) else clean_rule(t), date
         for r in others:
             retire(r, MERGED_BY_HAND, host)
@@ -670,11 +671,11 @@ def _edits(note: Note, rules: list[Rule], date: str) -> tuple[list[Rule], bool]:
         close = None if i in quoting else max(free, key=lambda r: _close(r.text, t), default=None)
         if close and _close(close.text, t) >= 0.5:  # a changed line: the developer reworded the rule
             close.text, close.edited, close.evidence = t if has_marker(close.text) else clean_rule(t), date, ""
-            close.said_by = None if risky(close.text) else "developer"
+            close.said_by = "unverified" if risky(close.text) else "developer"
             free.remove(close)
             held[i] = close
         elif text := clean_rule(t):
-            said = None if risky(text) else "developer"  # a command or URL keeps no mark, however it got here
+            said = "unverified" if risky(text) else "developer"  # a command or URL is not vouched for
             held[i] = Rule(rule_id(note.id, text, taken), text, date, date, said_by=said, edited=date)
             taken.add(held[i].id)
     for r in free:
@@ -731,38 +732,40 @@ def audience(n: Note, table: dict[str, list[str]]) -> str | None:
 
 
 def pushed(note: Note) -> list[Rule] | None:
-    """What of a note may reach an agent that did not ask for it, at session start (the
-    indexes) and mid-session (jit.py): None when nothing may, an empty list when only its title
-    may, else the rules whose words may. A rule that asks for a command, a URL, or a network,
-    destructive or exfiltrating action, or for switching off a check (said.risky) never does,
-    nor does a note whose title is such a rule. A rule only the agent stated is how a page the
-    agent read becomes a note, so its words stay out and the title alone points to it. A rule
-    no one verified (said_by unset, as for every rule written before 2026-10-15) is shown, and
+    """The rules of a note that may reach an agent that did not ask for them, at session start
+    (the indexes) and mid-session (jit.py). None when none may: the note is then only counted in
+    its index's "…and N more" line. A rule that would give the agent something to act on
+    (said.dangerous: a URL or host, a command, a check switched off, private data sent
+    somewhere) never does, nor does any rule of a note whose title is such a rule. Nor does a
+    rule only the agent stated (said_by agent): that is how a page the agent read becomes a
+    note, and the note's title is the model's summary of the agent's words, so it is not named
+    either. Rules the developer typed, rules stated in their turns that a typed quote does not
+    verify (unverified), and rules from before speakers were recorded (unset) are shown, and
     session start frames all of it as background. memory_search and read_note find everything."""
-    if note.status != "active" or risky(note.title):
+    if note.status != "active" or dangerous(note.title):
         return None
-    live = [r for r in note.active_rules if not risky(r.text)]
-    return [r for r in live if r.said_by != "agent"] if live else None
+    return [r for r in note.active_rules if r.said_by != "agent" and not dangerous(r.text)] or None
 
 
-def _index_line(note: Note, href: str) -> str:
-    """The note's title and the first sentence of each rule pushed() shows; the title alone
-    when it shows none. Notes pushed() leaves out are not listed."""
-    shown = pushed(note) or []
-    if not shown:
-        return f"- **{note.title}** ([note]({href}))"
+def clean_title(title) -> str:
+    """A title on one line, at most TITLE_CHARS long, whatever the model or a hand edit wrote."""
+    return " ".join(str(title if title is not None else "").split())[:TITLE_CHARS].strip()
+
+
+def _index_line(note: Note, href: str, shown: list[Rule]) -> str:
+    """The note's title and the first sentence of each rule pushed() shows."""
     if len(shown) > 1:  # each rule's first sentence; past the cap below, the later rules are cut
         first = "; ".join(_first_sentence(r.text).rstrip(".") for r in shown) + "."
     else:
         first = _first_sentence(shown[0].text)
     hook = first if len(first) <= HOOK_CHARS else first[: HOOK_CHARS - 3] + "…"
-    return f"- **{note.title}**: {hook} ([note]({href}))"
+    return f"- **{clean_title(note.title)}**: {hook} ([note]({href}))"
 
 
 def _listed(items: list[Note], limit: int, href) -> tuple[list[str], int]:
     """Index lines for the first `limit` notes pushed() lets through, and how many of the
     items are left out of the index, for its "…and N more" line."""
-    lines = [_index_line(n, href(n)) for n in items if pushed(n) is not None][:limit]
+    lines = [_index_line(n, href(n), shown) for n in items if (shown := pushed(n))][:limit]
     return lines, len(items) - len(lines)
 
 

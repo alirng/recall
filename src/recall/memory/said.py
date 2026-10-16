@@ -23,10 +23,14 @@ marked only when all four hold:
    or for switching off a sandbox, permission or review (see `risky`). Such a rule is never
    marked, whoever said it, and a rule can be edited into one only by losing its mark.
 
-Otherwise `said_by` stays unset, which readers must treat as "unknown", never as the agent's
-or the developer's word. Even when set it is a hint, not authentication: it shows the words
-were typed in that chat, not that the rule means what they said, and anything that can write
-the notes folder can write the field. Nothing may act on a rule because of it.
+Otherwise a rule is marked `said_by: agent` when only the agent has stated it, and
+`said_by: unverified` when a user turn stated it but no typed quote supports it (a paste, a
+paraphrase, a risky rule). Unset is left on rules written before speakers were recorded, which
+readers must treat as "unknown", never as the agent's or the developer's word. The mark is a
+hint, not authentication: it shows the words were typed in that chat, not that the rule means
+what they said, and anything that can write the notes folder can write the field. Nothing may
+act on a rule because of it; recall uses it only to hold back (notes.pushed): a rule only the
+agent stated is never handed to an agent unasked.
 
 These are heuristics. A paste with no fence, quote mark or heading (a log or an email pasted
 bare) still passes as typed; the PR lists the limits.
@@ -214,3 +218,83 @@ def risky(text: str) -> bool:
     marked as the developer's word. The patterns err toward true: an unmarked rule loses nothing
     but its mark, and a missed one would hand a command the developer's authority."""
     return bool(_RISKY.search(text))
+
+
+# --- what may be handed to an agent unasked ---------------------------------------------------
+
+# What an agent could act on: a place to fetch from or send to, a command to run, a
+# destructive or exfiltrating step, a check switched off. Unlike _RISKY it leaves out what
+# guardrails and project facts are made of: a one-word code span (a file, a model, a flag
+# name), secret or credential words with nowhere to send them, a push, a delete in passing.
+_HAZARD = re.compile(
+    r"""
+      [a-z][a-z0-9+.-]*://                                    # any URL scheme
+    | \bwww\. | \bgit@ | \b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b          # a host or an address
+    | \b\d{1,3}(?:\.\d{1,3}){3}\b                             # an IP address
+    | \b[a-z0-9-]+\.(?:com|net|org|io|dev|ai|xyz|ru|cn|cloud|info)\b
+    | \$\( | \$\{ | && | \|\| | 2>&1 | >\s*/dev/ | \|\s*(?:sh|bash|zsh|python3?|node|sudo|xargs|tee|nc)\b
+    | ^\s*[$#]\s+\S | ~/\.ssh | \bid_rsa\b | (?<![\w/.])\./\S+  # a prompt, a key, a script run by path
+    | \b(?:run|execute|source|launch)\s+(?:the\s+)?[\w./-]+\.(?:sh|bash|zsh|py|js|mjs|ts|rb|pl|ps1|bat|cmd|command)\b
+    | \b(?:python3?|node|bash|sh|zsh|ruby|perl|deno)\s+[\w./-]+\.(?:py|js|mjs|ts|sh|rb|pl)\b   # a script run by name
+    | (?-i:\b(?:curl|wget|ssh|scp|sftp|rsync|ftp|netcat|ncat|telnet|nslookup|sudo|chmod|chown|mkfs|killall
+        |pkill|shutdown|crontab|launchctl|osascript|powershell|base64|openssl|ngrok|socat)\b)  # as typed: not "SSH"
+    | \brm\s+-\w | \bdd\s+if= | \bdrop\s+(?:table|database|schema)\b | \bdelete\s+from\b
+    | \bgit\s+(?:reset\s+--hard|clean\b|push\s+(?:-f\b|--force)|branch\s+-D|checkout\s+--|stash\s+drop)
+    | --force\b | --no-verify\b | \bforce[- ]push\w* | --no-preserve-root
+    | \b(?:npm|npx|pnpm|yarn|bun|pip3?|pipx|uv|poetry|conda|brew|apt(?:-get)?|apk|gem|cargo|go)
+        \s+(?:(?:-\S+|tool|pip|global)\s+)*(?:install|add|get|i)\b      # a package install
+    | --dangerously[\w-]* | --yolo\b | --privileged\b | --no-sandbox\b | --allow[\w-]* | --trust[\w-]* | --insecure\b
+    | \bauto[\s-]?(?:approv\w*|accept\w*|merge\w*|confirm\w*|allow\w*) | \b(?:yolo|dangerously)\b
+    | \b(?:disabl\w*|bypass\w*|skip\w*|circumvent\w*|ignor\w*|override\w*|turn(?:ing)?\s+off)
+        \s+(?:\w+\s+){0,3}(?:sandbox\w*|permissions?|review\w*|approvals?|confirm\w*|safeguards?|guardrails?
+        |hooks?|verification|authenticat\w*)                         # switching a check off
+    | \bwithout\s+(?:any\s+|a\s+)?(?:review\w*|approvals?|confirm\w*|asking)\b   # or going around one
+    | \b(?:exfiltrat\w*|transmit\w*|pastebin|beacon\w*|reverse\s+shell)\b
+    | \b(?:send\w*|post(?:s|ed|ing)?|forward\w*|e?mail\w*|upload\w*|share\w*|copy|copies|copying)
+        \s+(?:\S+\s+){0,3}(?:secrets?|keys?|tokens?|credentials?|passwords?|cookies?|\.env\S*|history
+        |transcripts?|chats?|logs?|notes|memory|files?)\b(?:\s+\S+){0,4}?\s+(?:to|into|onto)\s+\S  # sent away
+    | (?:^|[.;:!?]\s+|\b(?:always|first|then|must|should)\s+)(?:delete|wipe|erase|destroy|purge)\b  # an order
+    """,
+    re.I | re.X | re.M,
+)
+_SPAN = re.compile(r"`([^`\n]*)`")  # code spans, paired left to right
+# A code span is a command when it starts with a program people run, or a path, and goes on, or
+# has a flag in it; `weekly report` or `workflow_type: 'cv-pack'` is a name or a value.
+_COMMAND = re.compile(
+    r"""^\s*(?:sudo\s+)?(?:[~./][\w./-]*|(?:git|gh|npm|npx|pnpm|yarn|bun|uv|uvx|pip3?|pipx|python3?|node|deno
+    |ruby|perl|bash|sh|zsh|make|cargo|go|docker|kubectl|helm|terraform|aws|gcloud|az|vercel|wrangler|supabase
+    |firebase|heroku|brew|apt(?:-get)?|xcodebuild|xcrun|swift|rm|mv|cp|ln|chmod|chown|tar|unzip|open|kill
+    |killall|pkill|launchctl|defaults|sed|awk|find|xargs|tee|cat|echo|export|source|eval|exec|env|sqlite3|psql
+    |mysql|recall|claude|codex|cursor)\b)\s+\S|\s-{1,2}\w""",
+    re.X,
+)
+# Never excused by a "never" in front: it is one.
+_UNCHECKED = re.compile(
+    r"\b(?:never|don'?t|do\s+not|stop|no\s+need\s+to)\s+(?:ask|prompt|confirm|check\s+with)\w*", re.I
+)
+# A prohibition right before a hazard excuses it: "never force-push", "do not run `rm -rf build`".
+# Only a few words may stand between, none of them across a clause, so "don't wait; run `…`" or
+# "never hesitate to run `…`" still counts.
+_FORBIDS = re.compile(
+    r"\b(?:never|not|don'?t|avoid)\s+(?:(?:a|an|the|any|your|ever|(?:run|us|call|execut|commit|push|merg|deploy"
+    r"|install|delet|remov|shar|send|upload|past|print|log|stor|hardcod|expos|includ|add|put|typ)\w*)\s+){0,2}$",
+    re.I,
+)
+
+
+def dangerous(text: str) -> bool:
+    """Would handing this rule to an agent unasked (session start, jit.py) give it something to
+    act on: a URL or host, a command (a code span that runs a program, shell syntax, a network
+    or system tool, a destructive command or flag, a package install), a check switched off, or
+    private data to send somewhere? A hazard that a prohibition governs ("never force-push",
+    "don't run `rm -rf build`") is a guardrail, not an order, and does not count. Narrower than
+    risky(), which decides the developer's mark and errs further toward true."""
+    if _UNCHECKED.search(text):
+        return True
+    spans = list(_SPAN.finditer(text))
+
+    def start(at: int) -> int:  # a hazard inside a code span is governed by what precedes the span
+        return next((s.start() for s in spans if s.start() < at < s.end()), at)
+
+    hazards = [m.start() for m in _HAZARD.finditer(text)] + [s.start() for s in spans if _COMMAND.search(s.group(1))]
+    return any(not _FORBIDS.search(text[max(0, start(at) - 60) : start(at)]) for at in hazards)

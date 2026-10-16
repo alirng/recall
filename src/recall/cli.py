@@ -141,7 +141,11 @@ def cmd_forget(a) -> None:
     if notes:
         print(f"\n{len(notes)} memory note(s) cite these chats; recall leaves notes to you:")
         print("\n".join(f"  {n}" for n in notes))
-        print("Edit or delete them. To also remove them from the notes' git history (needs git-filter-repo):")
+        print(
+            "Edit or delete them. Or run this (needs git-filter-repo): it commits the notes folder as it is, then"
+            " deletes these notes from disk and from every commit of its history, with the deletion ledger's past"
+            " versions:"
+        )
         print(f"  {forget.history_command(notes)}")
         print("filter-repo removes the notes folder's git remote: if you sync it, add the remote back and force-push.")
 
