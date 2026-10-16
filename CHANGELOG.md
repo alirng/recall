@@ -5,6 +5,123 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-16
+
+### Upgrading
+
+- **Codex now asks before `message_chat` runs.** `message_chat` writes a message to another chat's
+  mailbox, and Codex's default `auto` approval let it through without asking, because the tool is
+  marked neither destructive nor open-world. Run `recall install` to add the approval to your
+  existing Codex entry (`recall doctor` says when an entry lacks it); an approval you set yourself
+  is left alone, and `recall uninstall` removes it with the entry.
+- **The chat index rebuilds itself once more.** The first index run after upgrading re-reads your
+  chats, and Cursor's database in a background run after that. On Linux, Cursor chats that had
+  failed to index because Linux keeps no file creation time come back.
+- **The notes folder's git history still holds the start of every note's body.** Earlier releases
+  kept it in the deletion ledger, `.recall/notes.json`, which each memory run commits. The first
+  memory run on this release rewrites the ledger without bodies; once it has (no note text left in
+  that file), this removes the old versions from every commit, needs git-filter-repo, and removes
+  the folder's git remote, so add it back if you sync the notes: `cd ~/.agents/memory && git add -A
+  && git commit -q --allow-empty -m "Before purging the ledger's history" && cp .recall/notes.json
+  ../recall/notes-ledger.json && git filter-repo --force --invert-paths --path .recall/notes.json &&
+  mkdir -p .recall && mv ../recall/notes-ledger.json .recall/notes.json && git add -A && git commit
+  -qm "Deletion ledger without note bodies"`.
+
+### Changed
+
+- **recall waits for power on battery.** `recall dream` defers itself when it starts on battery
+  outside a terminal, the nightly run included (launchd runs a missed night when the Mac wakes), and
+  the first tool call or session start on power runs it in the background. Tool calls start no
+  background indexing or embedding on battery, and the jobs recall starts in the background run at
+  low priority. `recall status` and `recall doctor` say when a run was deferred. `recall dream
+  --on-battery run` runs one anyway, and `on_battery = "run"` under `[power]` in config.toml lets
+  everything run on battery.
+- **recall's hooks and tools answer faster.** On a history of 1,200 chats, the edit hook took 80 ms,
+  175 ms while other chats were working, and about 0.8 s with its cache gone, because before every
+  edit it listed every agent's transcripts and read again in full each chat that had moved in the
+  last 12 hours. Now it reads only what each recent transcript gained since its last look, and reads
+  chats in full and asks git only when another chat touched the same file: 40 ms, and 150 ms cold. A
+  chat that starts without recall's hooks (Codex before you trust them) is still seen at the next
+  edit, from the folder its agent writes it to. One resumed in a transcript older than a day is seen
+  within five minutes. When another chat has the file open, the git calls run side by side and skip
+  macOS's `/usr/bin/git` stub (380 ms down to 150 ms). A prompt no longer waits on an Ollama model
+  that is not loaded. Asking one started a load that Ollama dropped when the hook gave up, so every
+  prompt waited a quarter of a second and the model never loaded. Now a background process loads it,
+  at most once every 25 minutes, and a loaded model is waited for at most 100 ms rather than 250.
+  Hooks that do not read the index load 15 ms less code. The MCP server reads the shell's rc files
+  once per index refresh rather than three times, memory notes load eight times faster, and a tool
+  call waits for an index refresh only until it is a second old. A longer one, such as the rebuild
+  after an update, carries on in the background. Until it is done, `search_chats`, `recent_chats`
+  and `read_chat` say that chats may be missing. Refreshes commit after each chat they read, and the
+  redaction scrub every half second, so a tool call that writes no longer waits tens of seconds for
+  the index. One that would wait over 3 s answers from the notes or commit links as they stand.
+- **Semantic search keeps one copy of the vectors, not one per agent.** Each agent session runs its
+  own recall MCP server, and with embeddings on, each built a matrix of every message vector on its
+  first search and kept it: over 100 MB a server for 23k messages, more than 1 GB with ten agents
+  open. The vectors now sit in one file beside the index (`recall-vectors/`) that a server maps only
+  while it searches, so the operating system holds one copy for all of them. Five servers after two
+  searches each take 428 MB instead of 830 MB, and search ranks as before: search_v2 and SWE-CB were
+  identical on a same-day paired run. `recall forget` rewrites the file without the forgotten chats.
+  `recall embed` no longer runs twice at once and stops after 20 minutes (the next run carries on),
+  finding the messages to embed reads only the chats that changed, and a search waits at most 10
+  seconds for the embedding model before going by words.
+
+### Fixed
+
+- **One chat recall cannot index no longer breaks its tools.** A chat that failed to index made
+  every tool call fail and kept the chats after it out of the index, and a damaged archive copy did
+  the same. Such a chat is now logged by its path, never its words, and tried again after a minute,
+  ten minutes and an hour, then left until its file changes, while the others index as usual.
+  `recall doctor` lists these chats and `recall stats` counts them. A damaged archive copy is
+  replaced by the next read of its file, and can no longer stop recall from opening the index after
+  an update.
+- **Tool calls no longer rescan Cursor's database every 30 minutes.** Cursor's older chats, and its
+  subagent and side chats, sit in a database of several GB. recall now reads it in full in the
+  nightly run and on `recall index`, and from a tool call only on the first index or a day after the
+  last full read (in the background, at low priority, stopped after 15 minutes), and skips it while
+  the database is unchanged. Other chats are still read as soon as they change. A new Cursor side
+  chat becomes searchable after the next nightly run or `recall index`.
+- **Memory that reaches an agent unasked no longer carries commands, links or other chats'
+  prompts.** A README or web page an agent read could become a note that session start injected into
+  every later session. Now a rule that gives an agent something to act on (a URL or host, a command
+  to run, a check switched off, private data sent somewhere) never loads at session start or
+  mid-session, and neither does a note with such a title; a prohibition such as "never force-push
+  main" still loads, and memory_search and read_note still find everything. A note whose rules only
+  the agent stated is counted, not named, and rules a user turn stated without a typed quote are now
+  marked `unverified`, so an unmarked rule means one from before speakers were recorded. Injected
+  text keeps no `<` or `>` (each becomes ‹ or ›), so no note, rule, past chat or exploration report
+  can open or close the block, and titles are one line of at most 120 characters. On my chats,
+  session start loads 0.574 of the notes it must (was 0.576), 0.482 on held-out folders (was 0.488),
+  holding back 13 of 733 rules. `recall status` redacts a chat's title and latest request before
+  caching them or quoting them to other chats, and its cache rebuilds once. The deletion ledger
+  (`.recall/notes.json`) kept the start of every note's body, and consolidation sent 200 characters
+  of each deleted note to the model: it now keeps the title, scope and project, existing ledgers are
+  rewritten without bodies, and a deleted note restored on disk leaves it. The history rewrite
+  `recall forget` prints now commits the notes folder first (filter-repo's reset would discard
+  uncommitted hand edits), deletes the listed notes from disk and history, also removes the ledger's
+  past versions and puts the current one back, and passes `--force`, without which filter-repo
+  refused to run.
+- **memory_search no longer rebuilds the notes index on every call.** It used to drop and rebuild
+  the notes tables and load every note twice per search, which took the index's write lock while
+  other agents' servers were reading, so a search elsewhere could fail with a transient `vtable
+  constructor failed` error. It now rebuilds only when a note file, the `[contexts]` in config.toml,
+  or the tables' layout differs from what the index was built from, so a hand edit still shows up on
+  the next search, and a rebuild is one transaction. With 733 notes and embeddings on, a search
+  takes about 35 ms through the MCP server, against about 530 ms in 0.4.2. Servers still running an
+  older release keep rebuilding the tables until their agent restarts.
+- **A model server on another machine is no longer called private.** A local model whose `base_url`
+  is not `localhost` or a loopback address used to be reported as "nothing leaves this machine".
+  `recall dream` no longer says so, and setup names the host the chat excerpts go to.
+- **SECURITY.md and the README say what recall does.** They said all six MCP tools only read. There
+  are nine, and `message_chat` writes to recall's mailbox. SECURITY.md now also lists every file
+  `recall install` writes, what the hooks can do (refuse an edit once, keep an agent going, and
+  rewrite a subagent's prompt if you turn that on), what a hosted embedding endpoint receives, and
+  that recall keeps its copy of a chat after an agent deletes it, even past a short
+  `cleanupPeriodDays` you set yourself.
+- **Time windows as agents write them.** `since` and `until` accept `2mo`, `3 months`, `2wk`, `5
+  days`, `4 hours`, `1yr` and the like, not just `12h`, `3d`, `2w`, `1m` or `1y`. A window recall
+  cannot read now says which forms it takes, instead of failing with a bare date error.
+
 ## [0.4.2] - 2026-10-16
 
 recall's tools stop failing with `database is locked`. Search results and the chat index are
@@ -502,7 +619,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/alirng/recall/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/alirng/recall/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/alirng/recall/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/alirng/recall/compare/v0.3.0...v0.4.0

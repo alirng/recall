@@ -1,3 +1,3 @@
 """recall: one memory for all your coding agents."""
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
