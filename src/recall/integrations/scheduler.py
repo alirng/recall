@@ -2,6 +2,7 @@
 
 A run missed while the machine sleeps fires when it wakes. Each run is capped in
 time and model calls, so a long backfill spreads over several nights, newest first.
+A run that starts on battery waits for the next one on power (power.py).
 """
 
 import os
@@ -81,10 +82,15 @@ def _launchd(args: list[str], hour: int, minute: int) -> str:
 
 
 def _systemd(args: list[str], hour: int, minute: int) -> str:
+    from .. import config
+
+    # On battery systemd skips the run (recall dream also checks, on every OS); "run" lets it go.
+    power = "" if config.load()["power"].get("on_battery") == "run" else "ConditionACPower=true\n"
     os.makedirs(SYSTEMD, exist_ok=True)
     with open(os.path.join(SYSTEMD, "recall-dream.service"), "w") as f:
         f.write(
-            f"[Unit]\nDescription=recall memory run\n\n[Service]\nType=oneshot\nExecStart={' '.join(args)}\nNice=10\n"
+            f"[Unit]\nDescription=recall memory run\n{power}\n[Service]\nType=oneshot\n"
+            f"ExecStart={' '.join(args)}\nNice=10\n"
         )
     with open(os.path.join(SYSTEMD, "recall-dream.timer"), "w") as f:
         f.write(

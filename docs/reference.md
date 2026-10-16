@@ -115,6 +115,31 @@ Python 3.14's built-in zstd, else the `zstd` extra (`uv tool install 'recall-age
 else the `zstd` command (`brew install zstd`). With none of them, `recall index`,
 `recall stats` and `recall status` say how many Codex chats they cannot read.
 
+## When chats are read
+
+A tool call first reads the chat files that changed since the last one, so a chat from a few
+minutes ago is already searchable. Cursor keeps its older chats, and the subagent and side chats it
+runs today, in `state.vscdb`, a database of several GB that cannot say which chats changed. recall
+reads it in full on the first index (in the background, at low priority, for at most 15 minutes at a
+time), in the nightly run and on `recall index`, and skips it while the database's files are
+unchanged. A new Cursor side chat is therefore searchable after the next nightly run or
+`recall index`.
+
+A chat that fails to index is logged by its path, not its words, and tried again at the next two
+runs; then it waits until its file changes. Chats that index fine are not held up by it.
+
+## Battery
+
+On battery, recall's background work waits for power. `recall dream` defers itself, the nightly run
+(launchd runs a missed night when the Mac wakes, often on battery) and one typed at a terminal alike,
+and a tool call starts no background job. `recall status` and `recall doctor` say when `recall dream`
+deferred. `recall dream --on-battery run` runs one now, and `on_battery = "run"` under `[power]` in
+config.toml lets everything run on battery. Background jobs always run at low priority.
+
+On Linux the systemd service also carries `ConditionACPower=true`, so systemd skips the run on battery
+and nothing records it. `recall schedule enable` writes that line: run it again after changing
+`on_battery`, or to add it to a timer an older release set up.
+
 ## Commands
 
 | Command | Does |
@@ -124,7 +149,7 @@ else the `zstd` command (`brew install zstd`). With none of them, `recall index`
 | `recall search <words>` · `show <id>` · `recent` | chat history |
 | `recall forget <id> \| --project NAME [--yes]` | remove chats from the index, archive, vectors, exploration reports and the cached answers that quote them; lists the notes that cite them |
 | `recall embed` | embed messages for semantic search (needs `[embeddings]` in config.toml) |
-| `recall dream [--max-minutes N] [--max-calls N] [--max-usd X] [--no-batch]` | update memory now; unlike the nightly run, it has no budget unless you give one |
+| `recall dream [--max-minutes N] [--max-calls N] [--max-usd X] [--no-batch] [--on-battery run]` | update memory now; unlike the nightly run, it has no budget unless you give one; on battery it waits for power unless told to run |
 | `recall memory [search <words> \| show <id> \| link]` | browse notes; `link` recomputes links now |
 | `recall projects [suggest \| show <name>] [--months N] [--all]` | your projects as lanes; `suggest` drafts projects.yaml |
 | `recall rules [project \| folder] [--write]` | which agent reads which instructions; `--write` closes the gaps |

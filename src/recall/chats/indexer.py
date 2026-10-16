@@ -2,22 +2,30 @@
 
 import contextlib
 import fcntl
+import json
 import os
+import re
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import traceback
 
 from .. import paths
 from . import scrub, store
 from .sources import agents, all_sources
 
-# File-based sources are cheap to re-scan; Cursor's legacy store means reading a
-# multi-GB database, so it refreshes less often.
 STALE_AFTER = {"claude": 60, "codex": 60, "cursor": 60, "cursor-legacy": 1800}
-# Scanning these leaves hundreds of MB with the allocator after the work is done, so a
-# long-running server hands them to a short-lived `recall index` instead.
+# Cursor's older chats are rows in its state.vscdb, a database of several GB that cannot say which chats
+# changed: finding out means reading every chat's header. A tool call never pays for that. These sources
+# are read on the first index (by a short-lived `recall index`, as the scan leaves hundreds of MB with the
+# allocator), by the nightly run and by `recall index`, and skipped while the database's files are as they
+# were at the last full read.
 OUT_OF_PROCESS = {"cursor-legacy"}
+CHILD_DEADLINE = 15 * 60  # that background `recall index` stops here; the next one carries on
+MAX_ATTEMPTS = 3  # reads of a chat that fails before it waits for its file to change
+PACKAGE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def index(con, only=None, force=False, max_age=None, log=None) -> dict:
@@ -126,20 +134,48 @@ def _keeper(con):
 
 
 def _read(con, item, keep) -> bool:
-    """Parse one chat and index it. False when there was nothing to index."""
+    """Parse one chat and index it. False when there was nothing to index. One bad chat must not
+    stop the run, nor every run after it: a chat that fails is logged by its key and read again
+    at the next run, up to MAX_ATTEMPTS times while its file stays the same (Codex may have been
+    compressing it), and is then left until the file changes."""
     try:
         session = item.load()
-    except Exception as e:  # one unreadable chat must not stop the run
-        print(f"recall: skipped {item.key}: {e!r}", file=sys.stderr)
-        session = None
-    indexed = bool(session and session.messages and keep(session))
+        indexed = bool(session and session.messages and keep(session))
+    except Exception as e:
+        return _failed(con, item, e)
     if indexed:
-        store.upsert(con, session)
+        try:
+            with store.atomic(con):  # a chat half written is undone, not committed with the next batch
+                store.upsert(con, session)
+        except sqlite3.OperationalError:  # the index itself (locked, full): no chat's fault
+            raise
+        except Exception as e:
+            return _failed(con, item, e)
     con.execute(
         "insert or replace into seen values (?,?,?)",
         (item.key, item.fingerprint, session.id if session else None),
     )
     return indexed
+
+
+def _failed(con, item, e: Exception) -> bool:
+    """Count a failed read in `seen`: until MAX_ATTEMPTS its fingerprint is stored as
+    "!<attempts>:<fingerprint>", which matches no file, so the next run reads the chat again."""
+    row = con.execute("select fingerprint, session_id from seen where key = ?", (item.key,)).fetchone()
+    tried = re.fullmatch(r"!(\d+):(.*)", row[0] or "", re.S) if row else None
+    attempts = int(tried[1]) + 1 if tried and tried[2] == item.fingerprint else 1
+    left = attempts < MAX_ATTEMPTS
+    con.execute(
+        "insert or replace into seen values (?,?,?)",
+        (item.key, f"!{attempts}:{item.fingerprint}" if left else item.fingerprint, row[1] if row else None),
+    )
+    frames = traceback.extract_tb(e.__traceback__)
+    at = ([f for f in frames if f.filename.startswith(PACKAGE)] or frames or [None])[-1]  # recall's own line first
+    where = f" at {os.path.relpath(at.filename, PACKAGE)}:{at.lineno}" if at else ""
+    then = f"tries again at the next run ({attempts} of {MAX_ATTEMPTS})" if left else "waits for it to change"
+    # the key and where it failed, never the exception's text: that can quote the chat
+    print(f"recall: could not index {item.key}: {store.error_name(e)}{where}; {then}", file=sys.stderr)
+    return False
 
 
 def _read_since_rebuild(con, selected) -> list[str]:
@@ -169,12 +205,21 @@ def _scan(con, selected, only, force, max_age, log) -> dict:
             row = con.execute("select v from meta where k=?", (stamp_key,)).fetchone()
             if row and time.time() - float(row[0]) < max(max_age, STALE_AFTER[name]):
                 continue
-        if max_age and name in OUT_OF_PROCESS:
+        files = _database_files(wanted) if name in OUT_OF_PROCESS else None
+        if files is not None and not _whole_read_due(con, name, max_age, force, files):
+            if log and not max_age:
+                log(f"{name}: unchanged since it was last read")
+            continue
+        if max_age and name in OUT_OF_PROCESS:  # the first index, from a tool call
+            from .. import power
+
+            if power.defer():  # on battery: a later call on power starts it
+                continue
             # Stamped now so no other server starts one too; the child waits for this lock.
             con.execute("insert or replace into meta values (?,?)", (stamp_key, str(time.time())))
             con.commit()
             child = subprocess.Popen(
-                [sys.executable, "-m", "recall", "index", "--source", name],
+                [sys.executable, "-m", "recall", "index", "--source", name, "--background"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -197,9 +242,39 @@ def _scan(con, selected, only, force, max_age, log) -> dict:
         now = str(time.time())
         con.execute("insert or replace into meta values (?,?)", (stamp_key, now))
         con.execute("insert or replace into meta values (?,?)", (f"scanned:{name}", now))
+        if files is not None:  # as they were before the read: a write during it means another read
+            con.execute("insert or replace into meta values (?,?)", (f"files_at_read:{name}", files))
         for r in wanted:  # when each root was last read, for `recall doctor`
             if r.agent == name.split("-")[0]:
                 con.execute("insert or replace into meta values (?,?)", (f"indexed_at_root:{r.name}", now))
         con.commit()
         result[name] = {"indexed": done, "unchanged": skipped}
     return result
+
+
+def _whole_read_due(con, name: str, max_age, force: bool, files: str) -> bool:
+    """Whether to read an OUT_OF_PROCESS source in full now. A tool call's refresh (a positive
+    max_age) reads it only when it has not been read in full since the chat tables were built:
+    the first index, and the one after an update rebuilds them. Every other run reads it unless
+    its files are as they were at the last full read."""
+    read = con.execute("select 1 from meta where k = ?", (f"scanned:{name}",)).fetchone()
+    if max_age:
+        return not read
+    if force or not read:
+        return True
+    last = con.execute("select v from meta where k = ?", (f"files_at_read:{name}",)).fetchone()
+    return not last or last[0] != files
+
+
+def _database_files(wanted) -> str:
+    """The size and modification time of each Cursor chat database and its write-ahead log."""
+    from .sources import cursor
+
+    state = []
+    for path in cursor.database_files([r for r in wanted if r.agent == "cursor"]):
+        try:
+            st = os.stat(path)
+            state.append([path, st.st_size, st.st_mtime_ns])
+        except OSError:
+            state.append([path, None, None])
+    return json.dumps(state)

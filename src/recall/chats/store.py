@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 from datetime import datetime
 
@@ -250,11 +251,22 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
     others, other_errs = [], []
     msgs = stored
     size = archive.source_size(s.source)
+    replace = True
     for row in archive.copies(con, s.id):
-        copy = archive.unpack(row["data"])
+        try:
+            copy = archive.unpack(row["data"])
+            theirs = (
+                archive.messages(row, CHAT_SCHEMA_VERSION)
+                if archive.kind(row["source"]) == archive.kind(s.source)
+                else []
+            )
+        except Exception as e:  # a damaged copy: the chat is indexed without it, and the copy is left as it is
+            archive.log(f"could not read the archived copy of {s.id} from {row['source']}: {error_name(e)}")
+            replace = replace and row["source"] != s.source
+            continue
         if row["source"] != s.source:
             if archive.kind(row["source"]) == archive.kind(s.source):
-                others.append(archive.messages(row, CHAT_SCHEMA_VERSION))
+                others.append(theirs)
                 other_errs.append(copy.tool_errors)
             continue
         # A copy from another parser version may differ for reasons that have nothing to do
@@ -262,13 +274,14 @@ def upsert(con: sqlite3.Connection, s: Session) -> None:
         # since: a rewrite.
         shrank = (size or 0) < (row["source_size"] or 0)
         same = row["parser"] == CHAT_SCHEMA_VERSION or shrank
-        msgs = archive.merge(archive.messages(row, CHAT_SCHEMA_VERSION), stored, only_kept=not same)
+        msgs = archive.merge(theirs, stored, only_kept=not same)
         if (n := archive.kept(msgs)) > (row["kept"] or 0):
             archive.log(f"kept {n} messages of {s.id} that a re-read of {s.source} no longer has")
         if same:  # another parser may word a signature differently: keep only this one's
             # read again, as the messages of the copy are: the copy may predate a rule, or this chat's values
             errs = archive.merge_errors(reclean_errors(copy.tool_errors, chat), errs)
-    archive.save(con, s, msgs, CHAT_SCHEMA_VERSION, size, errs)
+    if replace:
+        archive.save(con, s, msgs, CHAT_SCHEMA_VERSION, size, errs)
     shown = archive.union(msgs, others)
     if shown is stored:
         shown_chat = chat
@@ -299,24 +312,58 @@ def restore(con: sqlite3.Connection, agents: list[str]) -> int:
         )
     ]
     now = time.time()
+    restored = 0
     for sid in ids:
-        rows = archive.copies(con, sid)
-        latest = rows[-1]  # the copy a source yielded most recently
-        s = archive.unpack(latest["data"])
-        same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
-        mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
-        shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
-        shown, chat = _redacted(shown)
-        errs = archive.merge_errors(
-            *[reclean_errors(archive.unpack(r["data"]).tool_errors, chat) for r in same_kind],
-            reclean_errors(s.tool_errors, chat),
-        )  # a copy's failed calls are read again with its messages
-        _write(con, s, shown, shown, errs, chat)
-        con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
+        try:
+            with atomic(con):
+                rows = archive.copies(con, sid)
+                latest = rows[-1]  # the copy a source yielded most recently
+                s = archive.unpack(latest["data"])
+                same_kind = [r for r in rows[:-1] if archive.kind(r["source"]) == archive.kind(latest["source"])]
+                mine = archive.messages(latest, CHAT_SCHEMA_VERSION)
+                shown = archive.union(mine, [archive.messages(r, CHAT_SCHEMA_VERSION) for r in same_kind])
+                shown, chat = _redacted(shown)
+                errs = archive.merge_errors(
+                    *[reclean_errors(archive.unpack(r["data"]).tool_errors, chat) for r in same_kind],
+                    reclean_errors(s.tool_errors, chat),
+                )  # a copy's failed calls are read again with its messages
+                _write(con, s, shown, shown, errs, chat)
+                con.execute("update chat_archive set restored_at = coalesce(restored_at, ?) where id = ?", (now, sid))
+        except sqlite3.OperationalError:  # the index itself (locked, full): no copy's fault
+            raise
+        except Exception as e:  # a damaged copy: the others still come back. Not in archive.log: every run retries it
+            print(f"recall: could not restore {sid} from the archive: {error_name(e)}", file=sys.stderr)
+            continue
+        restored += 1
     if ids:
         con.commit()
-        archive.log(f"restored {len(ids)} chat(s) from the archive: no source has them any more")
-    return len(ids)
+    if restored:
+        archive.log(f"restored {restored} chat(s) from the archive: no source has them any more")
+    return restored
+
+
+def error_name(e: BaseException) -> str:
+    """What failed, for a log line that must not quote a chat: the exception's type, never its text."""
+    kind = type(e)
+    return kind.__name__ if kind.__module__ == "builtins" else f"{kind.__module__}.{kind.__name__}"
+
+
+@contextlib.contextmanager
+def atomic(con: sqlite3.Connection):
+    """A block's writes as one unit inside the caller's transaction: undone if it raises, and
+    otherwise left for the caller to commit."""
+    if not con.in_transaction:
+        con.execute("begin")  # a savepoint outside a transaction would commit when released
+    con.execute("savepoint atomic")
+    try:
+        yield
+    except BaseException:
+        if con.in_transaction:  # some errors end the whole transaction themselves
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("rollback to atomic")
+                con.execute("release atomic")
+        raise
+    con.execute("release atomic")
 
 
 def _redacted(msgs: list[Message]) -> tuple[list[Message], Chat]:
