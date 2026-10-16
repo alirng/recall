@@ -2,6 +2,7 @@
 
 import os
 import re
+import sqlite3
 from itertools import zip_longest
 
 from .. import contexts, inject, rules
@@ -9,6 +10,30 @@ from ..chats import store
 from ..chats.projects import resolve
 from . import links, said
 from .notes import SECTIONS, Note, NoteStore, audience, pushed, render
+
+# What the notes tables hold, for index_notes: change it when their columns or what goes into them
+# change, so that the next refresh rebuilds them. The meta row NOTES_BUILT records it with a digest
+# of the note files the tables were built from and recall.db's schema version once they were built.
+NOTES_SCHEMA = "2026-10-16 refresh_notes, brief"
+NOTES_BUILT = "notes_built"
+# The tables' columns. index_notes compares them with what recall.db holds before it refills the
+# tables in place, so a column added here rebuilds them even if NOTES_SCHEMA was not changed.
+NOTES_COLUMNS = (
+    "id",
+    "path",
+    "type",
+    "scope",
+    "project",
+    "project_name",
+    "title",
+    "body",
+    "confidence",
+    "last_seen",
+    "n_sources",
+    "audience",
+    "brief",
+)
+NOTES_FTS_COLUMNS = ("id", "title", "body", "project_name")
 
 # Well inside Claude Code's 10k hook limit and Codex's ~2.5k-token budget: a smaller, selected
 # block loads fewer notes that do not apply, at a small cost in ones that do (recall eval session).
@@ -107,55 +132,145 @@ def project_indexes(cwd: str | None, notes: NoteStore) -> tuple[str | None, list
     return name, [i for i in indexes if i]
 
 
-def index_notes(con, notes: dict[str, Note]) -> None:
-    """Rebuild the notes search index from the markdown files, hand edits included. Each note's
+def refresh_notes(con, store: NoteStore | None = None) -> bool:
+    """index_notes, unless the index already holds what it would build: the same note files and
+    the same contexts. A call that finds it current reads and writes nothing, so many agents'
+    servers can search at once without taking the index's write lock or changing its schema.
+    True when it rebuilt."""
+    if _replaced():  # an upgrade replaced this server's code: search the tables the newer code built
+        return False
+    store = store or NoteStore()
+    built = f"{NOTES_SCHEMA}|{store.digest()}"  # before the load, so an edit during it is caught next time
+    if _current(con, built):
+        return False
+    return index_notes(con, store.load(), built)
+
+
+def _replaced() -> bool:
+    """Whether recall's code on disk is now another version than this process runs: an agent's
+    server that outlived an upgrade. It must not rebuild the notes tables under its own layout,
+    or it and the newer servers would rebuild them back and forth on every search; search reads
+    columns by name, so the newer tables serve it as they are."""
+    from .. import __version__
+
+    installed = store._installed()
+    return installed is not None and installed != __version__
+
+
+def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
+    """Rebuild the notes search index from the markdown files, hand edits included, in one
+    transaction: a reader sees the old index or the new, never tables half filled. Each note's
     audience is worked out against the contexts configured now, and the index records which
     (contexts.fingerprint), so that a reader (jit.py) hands over no global note when the
-    config changed since, or could not be read while the index was built. The record goes in
-    last: a rebuild that stops half way leaves none, which a reader treats the same.
+    config changed since, or could not be read while the index was built. True when it rebuilt.
     `brief` is what jit.py may hand over unasked: the rules notes.pushed shows, empty when it
-    shows none. Search reads the whole body."""
-    con.executescript(
-        f"""
-        create table if not exists meta (k text primary key, v text);
-        delete from meta where k = '{contexts.STAMP}';
-        drop table if exists notes; drop table if exists notes_fts;
-        create table notes (id text primary key, path text, type text, scope text, project text,
-          project_name text, title text, body text, confidence text, last_seen text, n_sources int,
-          audience text, brief text);
-        create virtual table notes_fts using fts5(id unindexed, title, body, project_name,
-          tokenize='porter unicode61');
-        """
-    )
+    shows none. Search reads the whole body.
+
+    `built` is refresh_notes's key for the files these notes came from; it is recorded so that the
+    next refresh can tell the index is current, and a rebuild that finds the index current under it
+    once it holds the write lock (another server just did the work) does nothing. A caller with no
+    key, such as a run that has just written the notes, leaves it blank and the next refresh
+    rebuilds from the files once. An audience also depends on the chat index, which only a rebuild
+    reads, so a refresh that finds the notes and contexts unchanged keeps the audiences it has.
+
+    The tables are emptied and refilled, unless the schema changed since they were built (_schema):
+    then other code, such as an agent's server still running an older release, may have rebuilt
+    them under its own layout, so they are dropped and created again."""
+    table, stamp = _contexts()
+    if con.in_transaction:
+        con.commit()
+    con.execute("create table if not exists meta (k text primary key, v text)")
+    con.execute("begin immediate")
     try:
-        table, stamp = contexts.read()
-    except Exception:  # not a config.toml recall can make sense of
-        table, stamp = {}, contexts.UNKNOWN
-    for n in notes.values():
-        if n.status != "active":
-            continue
-        shown = pushed(n)
+        if built and _current(con, built):
+            con.rollback()
+            return False
+        old = (con.execute("select v from meta where k = ?", (NOTES_BUILT,)).fetchone() or [""])[0]
+        same = old.startswith(f"{NOTES_SCHEMA}|") and old.endswith(f"|{_schema(con)}")  # see above
+        if not (same and _columns(con, "notes") == NOTES_COLUMNS and _columns(con, "notes_fts") == NOTES_FTS_COLUMNS):
+            con.execute("drop table if exists notes")
+            con.execute("drop table if exists notes_fts")
+        # Emptied rather than dropped and recreated: a change to the schema makes every other
+        # connection reload it, which can fail while this one commits.
         con.execute(
-            "insert into notes values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                n.id,
-                n.path,
-                n.type,
-                n.scope,
-                n.project,
-                n.project_name,
-                n.title,
-                n.body,
-                n.confidence,
-                n.last_seen,
-                len(n.sources),
-                audience(n, table),
-                render(shown) if shown else "",
-            ),
+            """create table if not exists notes (id text primary key, path text, type text, scope text,
+              project text, project_name text, title text, body text, confidence text, last_seen text,
+              n_sources int, audience text, brief text)"""
         )
-        con.execute("insert into notes_fts values (?,?,?,?)", (n.id, n.title, n.body, n.project_name or ""))
-    con.execute("insert or replace into meta values (?, ?)", (contexts.STAMP, stamp))
-    con.commit()
+        con.execute(
+            """create virtual table if not exists notes_fts using fts5(id unindexed, title, body,
+              project_name, tokenize='porter unicode61')"""
+        )
+        con.execute("delete from notes")
+        con.execute("delete from notes_fts")
+        for n in notes.values():
+            if n.status != "active":
+                continue
+            shown = pushed(n)
+            con.execute(
+                "insert into notes values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    n.id,
+                    n.path,
+                    n.type,
+                    n.scope,
+                    n.project,
+                    n.project_name,
+                    n.title,
+                    n.body,
+                    n.confidence,
+                    n.last_seen,
+                    len(n.sources),
+                    audience(n, table),
+                    render(shown) if shown else "",
+                ),
+            )
+            con.execute("insert into notes_fts values (?,?,?,?)", (n.id, n.title, n.body, n.project_name or ""))
+        con.execute("insert or replace into meta values (?, ?)", (contexts.STAMP, stamp))
+        key = f"{built or f'{NOTES_SCHEMA}|'}|{_schema(con)}"  # after any drop and create above
+        con.execute("insert or replace into meta values (?, ?)", (NOTES_BUILT, key))
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    return True
+
+
+def _contexts() -> tuple[dict[str, list[str]], str]:
+    try:
+        return contexts.read()
+    except Exception:  # not a config.toml recall can make sense of
+        return {}, contexts.UNKNOWN
+
+
+def _current(con, built: str) -> bool:
+    """Whether the index was built from these note files and the contexts configured now, no table was
+    created or dropped since (_schema), and the tables have the columns this code fills. An
+    unreadable config.toml matches an index built while it was unreadable: rebuilding would
+    change nothing. A missing contexts.STAMP is a rebuild an older release stopped half way."""
+    try:
+        have = {
+            r[0]: r[1] for r in con.execute("select k, v from meta where k in (?, ?)", (NOTES_BUILT, contexts.STAMP))
+        }
+        schema = _schema(con)
+        layout = _columns(con, "notes") == NOTES_COLUMNS and _columns(con, "notes_fts") == NOTES_FTS_COLUMNS
+    except sqlite3.Error:
+        return False
+    return layout and have.get(NOTES_BUILT) == f"{built}|{schema}" and have.get(contexts.STAMP) == _contexts()[1]
+
+
+def _columns(con, table: str) -> tuple[str, ...]:
+    """A table's column names in order; empty when it does not exist."""
+    return tuple(r[1] for r in con.execute(f"pragma table_info({table})"))
+
+
+def _schema(con) -> str:
+    """recall.db's schema version, which any process's create or drop moves on. An older
+    release's index_notes drops and recreates the notes tables on every call and leaves
+    NOTES_BUILT as it was, so a moved version is how a refresh can tell those tables may no
+    longer be the ones it built, or have the columns it fills. Refilling the tables in place,
+    as index_notes does, leaves it alone."""
+    return str(con.execute("pragma schema_version").fetchone()[0])
 
 
 def search(con, query: str, project: str | None = None, limit: int = 10) -> list[dict]:
@@ -199,21 +314,20 @@ def search(con, query: str, project: str | None = None, limit: int = 10) -> list
 
 
 def _with_meaning(con, query: str, rows: list, project: str | None, limit: int) -> list:
-    """Fuse keyword matches with notes close in meaning when embeddings are on (RRF, k=60)."""
+    """Fuse keyword matches with notes close in meaning when embeddings are on (RRF, k=60). The
+    notes' words come from the index, which holds the active notes in the order they were read,
+    rather than from a second read of every file."""
     from .. import embeddings
 
     if embeddings.configured() is None:
         return rows[:limit]
-    notes = NoteStore().load()
+    sql, args = "select id, title, body from notes", []
     if project:
-        keep = {
-            r["id"]
-            for r in con.execute(
-                "select id from notes where project_name like ? or project like ?", (f"%{project}%", f"%{project}%")
-            )
-        }
-        notes = {i: n for i, n in notes.items() if i in keep or i in {r["id"] for r in rows}}
-    meaning = embeddings.note_ranking(con, notes, query)[: limit * 3]
+        found = [r["id"] for r in rows]
+        sql += f" where project_name like ? or project like ? or id in ({','.join('?' * len(found))})"
+        args = [f"%{project}%", f"%{project}%", *found]
+    texts = {r["id"]: f"{r['title']}\n{r['body']}" for r in con.execute(f"{sql} order by rowid", args)}
+    meaning = embeddings.note_ranking(con, texts, query)[: limit * 3]
     scores: dict[str, float] = {}
     for ranking in ([r["id"] for r in rows], meaning):
         for rank, i in enumerate(ranking):

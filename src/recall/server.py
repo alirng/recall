@@ -23,7 +23,6 @@ from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from . import __version__, paths, projects, usage
 from .chats import indexer, store
 from .memory import context
-from .memory.notes import NoteStore
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 
@@ -164,7 +163,7 @@ def _notes_db():
     with contextlib.closing(store.connect()) as con:
         con.execute(f"pragma busy_timeout = {TOOL_LOCK_WAIT_MS}")
         try:
-            context.index_notes(con, NoteStore().load())  # picks up hand edits; fast for thousands of notes
+            context.refresh_notes(con)  # picks up hand edits; writes only when the notes or contexts changed
         except sqlite3.OperationalError as e:  # the index is busy: search the notes as last indexed
             con.rollback()
             _complain("notes index", e)
