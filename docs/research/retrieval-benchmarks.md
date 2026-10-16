@@ -209,6 +209,11 @@ All 500 questions (including the 30 abstention questions), Haiku 5.5:
 | recall: the top 10 chats in full | **0.874** | ~44,100 | 7.3 s |
 | Oracle: only the sessions holding the answer | 0.920 | ~10,600 | 7.1 s |
 
+Re-run on 0.4.1 (2026-10-16), same models, prompts and judge, all 500 questions, every answer a
+fresh call: the top 10 chats in full scored **0.884** (about 44,400 measured prompt tokens a
+question) and matched windows of the top 5 chats 0.842 (about 17,500). Retrieval is identical to
+this run's, so the differences are run-to-run variation in answering and judging.
+
 Accuracy against cost, on the 200-question stratified sample (each accuracy ±~5 points),
 judged by Haiku 5.5 throughout so that only the answering model changes:
 
