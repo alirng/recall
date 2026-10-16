@@ -2,8 +2,29 @@
 __pycache__/
 *.db
 *.db-*
+*.sqlite
+*.sqlite3
 dist/
 build/
 *.egg-info/
 .DS_Store
 .ruff_cache/
+
+# JavaScript tooling used beside the repo, never part of the package
+node_modules/
+/package.json
+/package-lock.json
+.wrangler/
+
+# Secrets and per-machine settings
+.env
+.env.*
+keys.json
+*.pem
+*.key
+.claude/worktrees/
+.claude/settings.local.json
+
+# Real eval sets name real chats and stay on the machine (~/.agents/recall/evals)
+evals/*.jsonl
+!evals/*.example.jsonl
