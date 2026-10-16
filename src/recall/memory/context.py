@@ -16,6 +16,24 @@ from .notes import SECTIONS, Note, NoteStore, audience, pushed, render
 # of the note files the tables were built from and recall.db's schema version once they were built.
 NOTES_SCHEMA = "2026-10-16 refresh_notes, brief"
 NOTES_BUILT = "notes_built"
+# The tables' columns. index_notes compares them with what recall.db holds before it refills the
+# tables in place, so a column added here rebuilds them even if NOTES_SCHEMA was not changed.
+NOTES_COLUMNS = (
+    "id",
+    "path",
+    "type",
+    "scope",
+    "project",
+    "project_name",
+    "title",
+    "body",
+    "confidence",
+    "last_seen",
+    "n_sources",
+    "audience",
+    "brief",
+)
+NOTES_FTS_COLUMNS = ("id", "title", "body", "project_name")
 
 # Well inside Claude Code's 10k hook limit and Codex's ~2.5k-token budget: a smaller, selected
 # block loads fewer notes that do not apply, at a small cost in ones that do (recall eval session).
@@ -119,11 +137,24 @@ def refresh_notes(con, store: NoteStore | None = None) -> bool:
     the same contexts. A call that finds it current reads and writes nothing, so many agents'
     servers can search at once without taking the index's write lock or changing its schema.
     True when it rebuilt."""
+    if _replaced():  # an upgrade replaced this server's code: search the tables the newer code built
+        return False
     store = store or NoteStore()
     built = f"{NOTES_SCHEMA}|{store.digest()}"  # before the load, so an edit during it is caught next time
     if _current(con, built):
         return False
     return index_notes(con, store.load(), built)
+
+
+def _replaced() -> bool:
+    """Whether recall's code on disk is now another version than this process runs: an agent's
+    server that outlived an upgrade. It must not rebuild the notes tables under its own layout,
+    or it and the newer servers would rebuild them back and forth on every search; search reads
+    columns by name, so the newer tables serve it as they are."""
+    from .. import __version__
+
+    installed = store._installed()
+    return installed is not None and installed != __version__
 
 
 def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
@@ -155,7 +186,8 @@ def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
             con.rollback()
             return False
         old = (con.execute("select v from meta where k = ?", (NOTES_BUILT,)).fetchone() or [""])[0]
-        if not (old.startswith(f"{NOTES_SCHEMA}|") and old.endswith(f"|{_schema(con)}")):  # see above
+        same = old.startswith(f"{NOTES_SCHEMA}|") and old.endswith(f"|{_schema(con)}")  # see above
+        if not (same and _columns(con, "notes") == NOTES_COLUMNS and _columns(con, "notes_fts") == NOTES_FTS_COLUMNS):
             con.execute("drop table if exists notes")
             con.execute("drop table if exists notes_fts")
         # Emptied rather than dropped and recreated: a change to the schema makes every other
@@ -212,18 +244,24 @@ def _contexts() -> tuple[dict[str, list[str]], str]:
 
 
 def _current(con, built: str) -> bool:
-    """Whether the index was built from these note files and the contexts configured now, and no
-    table was created or dropped since (_schema). An unreadable config.toml matches an index built
-    while it was unreadable: rebuilding would change nothing. A missing contexts.STAMP is a rebuild
-    an older release stopped half way."""
+    """Whether the index was built from these note files and the contexts configured now, no table was
+    created or dropped since (_schema), and the tables have the columns this code fills. An
+    unreadable config.toml matches an index built while it was unreadable: rebuilding would
+    change nothing. A missing contexts.STAMP is a rebuild an older release stopped half way."""
     try:
         have = {
             r[0]: r[1] for r in con.execute("select k, v from meta where k in (?, ?)", (NOTES_BUILT, contexts.STAMP))
         }
         schema = _schema(con)
+        layout = _columns(con, "notes") == NOTES_COLUMNS and _columns(con, "notes_fts") == NOTES_FTS_COLUMNS
     except sqlite3.Error:
         return False
-    return have.get(NOTES_BUILT) == f"{built}|{schema}" and have.get(contexts.STAMP) == _contexts()[1]
+    return layout and have.get(NOTES_BUILT) == f"{built}|{schema}" and have.get(contexts.STAMP) == _contexts()[1]
+
+
+def _columns(con, table: str) -> tuple[str, ...]:
+    """A table's column names in order; empty when it does not exist."""
+    return tuple(r[1] for r in con.execute(f"pragma table_info({table})"))
 
 
 def _schema(con) -> str:
