@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docs/benchmarks/registry.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "benchmarks"
+  ],
+  "properties": {
+    "_about": {
+      "type": "string"
+    },
+    "benchmarks": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/benchmark"
+      }
+    }
+  },
+  "$defs": {
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "description",
+        "corpus",
+        "dataset",
+        "run",
+        "evals",
+        "conditions",
+        "comparable_on",
+        "same_day",
+        "metrics"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "corpus": {
+          "enum": [
+            "public",
+            "private"
+          ]
+        },
+        "dataset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "url",
+            "cases"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^https://"
+            },
+            "cases": {
+              "type": "string"
+            }
+          }
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the command that runs it; null for third-party-only benchmarks"
+        },
+        "evals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "regexes over a run's eval name; named groups become conditions (model sets the model)"
+        },
+        "n_key": {
+          "type": "string",
+          "description": "the summary key holding the case count, when intervals do not"
+        },
+        "conditions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "comparable_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "same_day": {
+          "type": "boolean"
+        },
+        "metrics": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/metric"
+          }
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "values": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "about": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string",
+          "pattern": "^(cmd|summary\\.[\\w.@-]+|meta\\.[\\w.@-]+)$"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "map": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "default": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "dependentRequired": {
+        "pattern": [
+          "from"
+        ]
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unit",
+        "better"
+      ],
+      "properties": {
+        "unit": {
+          "enum": [
+            "fraction",
+            "tokens",
+            "usd",
+            "minutes",
+            "ms",
+            "seconds",
+            "count"
+          ]
+        },
+        "better": {
+          "enum": [
+            "higher",
+            "lower",
+            null
+          ]
+        },
+        "key": {
+          "type": "string",
+          "description": "a dotted path into the run's summary"
+        },
+        "by_repeat": {
+          "type": "string"
+        },
+        "breakdown": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "\\.\\*$"
+              },
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        },
+        "about": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

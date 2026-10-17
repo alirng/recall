@@ -1,0 +1,441 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docs/benchmarks/charts.json",
+  "type": "object",
+  "properties": {
+    "_about": {
+      "type": "string"
+    }
+  },
+  "propertyNames": {
+    "pattern": "^(_about|[a-z0-9][a-z0-9-]*)$"
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/chart"
+  },
+  "$defs": {
+    "selector": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^(release|[a-z_]+(\\.[A-Za-z0-9_@-]+)?)$"
+      }
+    },
+    "chart": {
+      "type": "object",
+      "required": [
+        "kind",
+        "title"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "bars",
+            "grouped",
+            "columns",
+            "scatter",
+            "cost_curve"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bars"
+        },
+        {
+          "$ref": "#/$defs/grouped"
+        },
+        {
+          "$ref": "#/$defs/scatter"
+        },
+        {
+          "$ref": "#/$defs/cost_curve"
+        }
+      ]
+    },
+    "bars": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "groups"
+      ],
+      "properties": {
+        "kind": {
+          "const": "bars"
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "where": {
+          "$ref": "#/$defs/selector"
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/selector"
+          }
+        },
+        "unit": {
+          "enum": [
+            "%",
+            "k"
+          ]
+        },
+        "max": {
+          "type": "number"
+        },
+        "ticks": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "ceiling": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "where"
+          ],
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "where": {
+              "$ref": "#/$defs/selector"
+            }
+          }
+        },
+        "groups": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "rows"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "where": {
+                "$ref": "#/$defs/selector"
+              },
+              "rows": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/bar"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "bar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "where"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "style": {
+          "enum": [
+            "ours",
+            "past"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/selector"
+          }
+        },
+        "where": {
+          "$ref": "#/$defs/selector"
+        }
+      }
+    },
+    "grouped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "categories",
+        "series"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "grouped",
+            "columns"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "where": {
+          "$ref": "#/$defs/selector"
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/selector"
+          }
+        },
+        "labels": {
+          "type": "boolean"
+        },
+        "bar_width": {
+          "type": "number"
+        },
+        "categories": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "where"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "where": {
+                "$ref": "#/$defs/selector"
+              }
+            }
+          }
+        },
+        "series": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "where"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "style": {
+                "enum": [
+                  "ours",
+                  "past"
+                ]
+              },
+              "where": {
+                "$ref": "#/$defs/selector"
+              }
+            }
+          }
+        }
+      }
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "where",
+        "x",
+        "y"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "style": {
+          "enum": [
+            "ours"
+          ]
+        },
+        "where": {
+          "$ref": "#/$defs/selector"
+        },
+        "x": {
+          "$ref": "#/$defs/selector"
+        },
+        "y": {
+          "$ref": "#/$defs/selector"
+        },
+        "anchor": {
+          "enum": [
+            "start",
+            "middle",
+            "end"
+          ]
+        },
+        "label_dx": {
+          "type": "number"
+        },
+        "label_dy": {
+          "type": "number"
+        },
+        "dx": {
+          "type": "number"
+        },
+        "dy": {
+          "type": "number"
+        }
+      }
+    },
+    "scatter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "points"
+      ],
+      "properties": {
+        "kind": {
+          "const": "scatter"
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "where": {
+          "$ref": "#/$defs/selector"
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/selector"
+          }
+        },
+        "points": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/point",
+            "required": [
+              "name"
+            ]
+          }
+        }
+      }
+    },
+    "cost_curve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "series",
+        "x_min",
+        "x_max",
+        "x_ticks",
+        "y_min",
+        "y_max"
+      ],
+      "properties": {
+        "kind": {
+          "const": "cost_curve"
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "where": {
+          "$ref": "#/$defs/selector"
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/selector"
+          }
+        },
+        "x_min": {
+          "type": "number"
+        },
+        "x_max": {
+          "type": "number"
+        },
+        "x_ticks": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "y_min": {
+          "type": "number"
+        },
+        "y_max": {
+          "type": "number"
+        },
+        "series": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "points"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "where": {
+                "$ref": "#/$defs/selector"
+              },
+              "points": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/point",
+                  "required": [
+                    "label"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/point",
+            "required": [
+              "name"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

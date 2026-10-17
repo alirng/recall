@@ -198,6 +198,14 @@ alone.
 Before and after a prompt change, run `recall eval memory --fresh` several times and compare
 the averages.
 
+## Benchmark results
+
+A figure in the README, `docs/` or on rererecall.com is a row in `docs/benchmarks/results.jsonl`,
+recorded from its run folder with `uv run python docs/benchmarks/store.py record RUN_DIR`, and
+the charts take their numbers from there. A new benchmark is one entry in
+`docs/benchmarks/registry.json`. Only aggregates go in. How to record a run, add a benchmark and
+draw a chart: [docs/benchmarks/README.md](docs/benchmarks/README.md).
+
 ## Privacy
 
 recall works on private conversations, so the repo must never hold them. Keep these out of
@@ -220,6 +228,8 @@ paste them.
 - [ ] A prompt change bumps its version line when it should re-run past work.
 - [ ] A parser change edits its module's `CHAT_SCHEMA` string when the index needs a rebuild.
 - [ ] Nothing private is in the diff, and any examples are made up.
+- [ ] A new or changed published figure is a row in `docs/benchmarks/results.jsonl`, and
+      `uv run python docs/benchmarks/store.py check` passes.
 - [ ] README, `docs/` or a `changes/` fragment is updated when a command, option, provider or behavior
       changes. Detail goes in `docs/`; the README gets a few lines and a link.
 

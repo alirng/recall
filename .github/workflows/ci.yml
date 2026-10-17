@@ -1,8 +1,10 @@
 # Continuous integration for recall.
 #
 # What it checks:
-#   - Style: ruff format and ruff lint over src/.
+#   - Style: ruff format and ruff lint over src/ and docs/benchmarks/.
 #   - Changelog: fragments in changes/ are valid, and a PR edits CHANGELOG.md only on a release-* branch.
+#   - Benchmark results: docs/benchmarks/results.jsonl matches its schema and registry, holds nothing
+#     private, every chart resolves, figures.json is current, and a PR edits or removes no row.
 #   - Packaging: the sdist and wheel build, and the wheel installs into a fresh venv.
 #   - Smoke test, run from outside the checkout so only the installed wheel is tested:
 #     every module imports, both memory prompts load, and the core commands
@@ -41,13 +43,22 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Format
-        run: uvx ruff@0.16.10 format --check src
+        run: uvx ruff@0.16.10 format --check src docs/benchmarks
 
       - name: Lint
-        run: uvx ruff@0.16.10 check src
+        run: uvx ruff@0.16.10 check src docs/benchmarks
 
       - name: Changelog fragments
         run: python3 tools/changelog.py --check
+
+      - name: Benchmark results store
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          # Rows are compared with the commit before this one: a pull request's merge ref has the
+          # base it was merged onto as its first parent, and a push to main (squash merges) the
+          # previous main. Not the current tip of main, which may have gained rows since.
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          uv run --no-project --with "jsonschema>=4.20" python docs/benchmarks/store.py check --base "$GITHUB_SHA^1"
 
       - name: CHANGELOG.md is edited by releases only
         if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'

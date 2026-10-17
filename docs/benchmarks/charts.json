@@ -1,0 +1,166 @@
+{
+  "_about": "Which rows of results.jsonl each chart draws, and how. A where is a selector (store.select: dotted fields, \"release\" for code.release); a mark's selector is the chart's, its group's or series', and its own merged in that order, and must find one public row (store.one). Text may name figures as {ref} or {ref:format} (pct, pct0, k, k0, usd, h, min, ms, int), refs being selectors: a mark's merged onto its own selector, a chart's (for its title and subtitle) standing alone; and {self.field} for the mark's own row. No number that a chart draws or prints is written here. make_charts.py draws these; store.chart(name) returns one with its numbers filled in, and figures.json holds them all.",
+  "swecb": {
+    "kind": "bars",
+    "title": "SWE-ContextBench Lite: the past fix among the first results",
+    "subtitle": "99 issues, all 300 Claude Code sessions searched. Products: the paper's runs at their own cutoff. recall: hybrid.",
+    "where": {"benchmark": "swecb-lite-retrieval", "conditions.scope": "all"},
+    "groups": [
+      {"label": "In the top 3", "rows": [
+        {"name": "recall 0.4.1", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.4.1", "metric": "hit@3", "conditions.search": "hybrid"}},
+        {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@3", "conditions.search": "hybrid"}},
+        {"name": "OpenViking", "note": "ingest {usd}, {time:h}", "refs": {"usd": {"metric": "ingest_usd"}, "time": {"metric": "ingest_minutes"}}, "where": {"system": "OpenViking", "metric": "overall_matched", "conditions.k": 3}},
+        {"name": "Mem0", "note": "ingest {usd}, {time}", "refs": {"usd": {"metric": "ingest_usd"}, "time": {"metric": "ingest_minutes"}}, "where": {"system": "Mem0", "metric": "overall_matched", "conditions.k": 3}}
+      ]},
+      {"label": "In the top 10", "rows": [
+        {"name": "recall 0.4.1", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.4.1", "metric": "hit@10", "conditions.search": "hybrid"}},
+        {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@10", "conditions.search": "hybrid"}},
+        {"name": "LangMem", "note": "memories; ingest {usd}", "refs": {"usd": {"metric": "ingest_usd"}}, "where": {"system": "LangMem", "metric": "overall_matched", "conditions.k": 10}}
+      ]},
+      {"label": "In the top 15", "rows": [
+        {"name": "recall 0.4.1", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.4.1", "metric": "hit@15", "conditions.search": "hybrid"}},
+        {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@15", "conditions.search": "hybrid"}},
+        {"name": "Supermemory", "note": "ingest {tokens:k0} tokens", "refs": {"tokens": {"metric": "ingest_tokens"}}, "where": {"system": "Supermemory", "metric": "overall_matched", "conditions.k": 15}}
+      ]}
+    ]
+  },
+  "agent-tokens": {
+    "kind": "bars",
+    "title": "Context added to an agent per question",
+    "subtitle": "Estimated Claude tokens on held-out cases, both releases run on 16 October, with recall's tool definitions ({defs030:k} in 0.3.0, {defs041:k} since 0.4.0).",
+    "refs": {
+      "defs030": {"benchmark": "tool-definitions", "metric": "tokens", "release": "0.3.0"},
+      "defs041": {"benchmark": "tool-definitions", "metric": "tokens", "release": "0.4.1"}
+    },
+    "unit": "k",
+    "max": 20,
+    "ticks": [0, 5, 10, 15, 20],
+    "where": {"metric": "context_tokens", "date": "2026-10-16", "harness": "upfront-v0", "system": "recall"},
+    "groups": [
+      {"label": "SWE-ContextBench Lite, 40 held-out issues", "where": {"benchmark": "swecb-lite-agent"}, "rows": [
+        {"name": "recall 0.4.1", "style": "ours", "note": "{self.repeats} runs; past fix found {hit:pct0}", "refs": {"hit": {"metric": "hit"}}, "where": {"release": "0.4.1"}},
+        {"name": "recall 0.3.0", "style": "past", "note": "{self.repeats} runs; found {hit:pct0}", "refs": {"hit": {"metric": "hit"}}, "where": {"release": "0.3.0"}}
+      ]},
+      {"label": "My questions about past work, 47 held out", "where": {"benchmark": "my-qa"}, "rows": [
+        {"name": "recall 0.4.2", "style": "ours", "note": "{self.repeats} runs; {acc:pct0} correct", "refs": {"acc": {"metric": "accuracy"}}, "where": {"release": "0.4.2"}},
+        {"name": "recall 0.3.0", "style": "past", "note": "{self.repeats} runs; {acc:pct0} correct", "refs": {"acc": {"metric": "accuracy"}}, "where": {"release": "0.3.0"}}
+      ]}
+    ]
+  },
+  "notes": {
+    "kind": "grouped",
+    "title": "Notes that keep up with your conventions",
+    "subtitle": "MemoryCode: 40 held-out histories, 3 fresh runs each, the same histories in every series.",
+    "where": {"benchmark": "memorycode-notes", "conditions.subset": "first-40", "system": "recall"},
+    "categories": [
+      {"label": "Conventions in notes,\nlatest form", "where": {"metric": "recall"}},
+      {"label": "Changed conventions\nrecorded", "where": {"metric": "updates"}}
+    ],
+    "series": [
+      {"name": "recall 0.3.0, gpt-6-luna", "style": "past", "where": {"release": "0.3.0", "model": "chatgpt:gpt-6-luna@medium"}},
+      {"name": "recall 0.4.1, gpt-6-luna", "style": "past", "where": {"release": "0.4.1", "model": "chatgpt:gpt-6-luna@medium"}},
+      {"name": "recall 0.4.1, Claude Haiku 5.5", "style": "ours", "where": {"release": "0.4.1", "model": "anthropic:claude-haiku-5-5"}}
+    ]
+  },
+  "retrieval": {
+    "kind": "bars",
+    "title": "LongMemEval_S: every answer session in the top 5",
+    "subtitle": "Session retrieval, user turns indexed (recall_all@5). recall: the benchmark's official 419 questions; engram: its 343-question test split.",
+    "where": {"benchmark": "longmemeval-retrieval", "metric": "recall_all@5", "conditions.dataset": "S", "conditions.turns": "user"},
+    "groups": [
+      {"rows": [
+        {"name": "recall (keywords + embeddings)", "style": "ours", "note": "nomic-embed-text, local", "where": {"system": "recall", "release": "0.4.2", "conditions.subset": "official-419", "conditions.search": "hybrid"}},
+        {"name": "recall (keywords only)", "style": "ours", "note": "SQLite FTS5", "where": {"system": "recall", "release": "0.4.2", "conditions.subset": "official-419", "conditions.search": "keyword"}},
+        {"name": "engram, dense", "note": "bge-small", "where": {"system": "engram", "conditions.method": "dense, bge-small"}},
+        {"name": "engram, hybrid", "note": "BM25 + bge-small", "where": {"system": "engram", "conditions.method": "hybrid, BM25 + bge-small"}},
+        {"name": "engram, BM25", "note": "", "where": {"system": "engram", "conditions.method": "BM25"}},
+        {"name": "LongMemEval reference BM25", "note": "whitespace tokens", "where": {"system": "LongMemEval reference BM25"}}
+      ]}
+    ]
+  },
+  "accuracy": {
+    "kind": "bars",
+    "title": "LongMemEval_S: answers judged correct",
+    "subtitle": "End to end: retrieve, then answer. Vendor figures are self-reported, with their own answer models and judges.",
+    "where": {"benchmark": "longmemeval-qa", "metric": "accuracy"},
+    "ceiling": {"label": "Haiku 5.5 given only the answer sessions", "where": {"system": "answer sessions only", "conditions.context": "answer-sessions", "conditions.sample": "500"}},
+    "groups": [
+      {"rows": [
+        {"name": "Mastra", "note": "gpt-5-mini", "where": {"system": "Mastra"}},
+        {"name": "Mem0 (platform)", "note": "GPT-5", "where": {"system": "Mem0 (platform)", "grade": "vendor"}},
+        {"name": "Hindsight", "note": "Gemini-3 Pro", "where": {"system": "Hindsight"}},
+        {"name": "Honcho", "note": "Claude Haiku 4.5", "where": {"system": "Honcho"}},
+        {"name": "recall 0.4.1", "style": "ours", "note": "Claude Haiku 5.5", "where": {"system": "recall", "release": "0.4.1", "conditions.context": "top10-chats", "conditions.sample": "500"}},
+        {"name": "Supermemory", "note": "Gemini-3", "where": {"system": "Supermemory", "model": "Gemini-3"}},
+        {"name": "EverMemOS", "note": "GPT-4.1-mini", "where": {"system": "EverMemOS"}},
+        {"name": "ICM folders", "note": "{self.model}, {self.n} questions", "where": {"system": "ICM folders"}},
+        {"name": "Zep", "note": "GPT-4o", "where": {"system": "Zep"}},
+        {"name": "Full history, no memory", "note": "Claude Haiku 4.5", "where": {"system": "full context (Honcho baseline)"}}
+      ]}
+    ]
+  },
+  "tokens": {
+    "kind": "scatter",
+    "title": "Accuracy against context read per question",
+    "subtitle": "LongMemEval_S. Tokens the answer model reads for one question (log scale); recall's are measured prompt tokens.",
+    "where": {"benchmark": "longmemeval-qa"},
+    "points": [
+      {"name": "recall, top 10 chats", "style": "ours", "where": {"system": "recall", "release": "0.4.1", "conditions.context": "top10-chats", "conditions.sample": "500"}, "x": {"metric": "prompt_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "recall, matched windows", "style": "ours", "where": {"system": "recall", "release": "0.4.1", "conditions.context": "top5-windows", "conditions.sample": "500"}, "x": {"metric": "prompt_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "Mem0 (tokens: LoCoMo)", "anchor": "end", "label_dx": -10, "where": {"system": "Mem0 (platform)", "grade": "vendor"}, "x": {"benchmark": "locomo-qa", "metric": "context_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "Mastra", "where": {"system": "Mastra"}, "x": {"metric": "context_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "EverMemOS", "where": {"system": "EverMemOS"}, "x": {"metric": "context_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "ICM folders", "where": {"system": "ICM folders"}, "x": {"metric": "context_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "Zep", "where": {"system": "Zep"}, "x": {"metric": "context_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "Full history, Sonnet 5", "anchor": "end", "label_dx": -10, "label_dy": -16, "where": {"system": "full context (Cost of Remembering)"}, "x": {"metric": "context_tokens"}, "y": {"metric": "accuracy"}},
+      {"name": "Full history, Haiku 4.5", "anchor": "end", "label_dx": -10, "where": {"system": "full context (Honcho baseline)"}, "x": {"metric": "context_tokens"}, "y": {"metric": "accuracy"}}
+    ]
+  },
+  "cost": {
+    "kind": "cost_curve",
+    "title": "LongMemEval_S: accuracy against cost",
+    "subtitle": "recall retrieves; the model answers. 200-question stratified sample, judged by Claude Haiku 5.5. Measured on 0.2.0.",
+    "x_min": 0.001,
+    "x_max": 0.5,
+    "x_ticks": [0.001, 0.003, 0.01, 0.03, 0.1, 0.3],
+    "y_min": 70,
+    "y_max": 95,
+    "where": {"benchmark": "longmemeval-qa", "conditions.sample": "stratified-200"},
+    "series": [
+      {"name": "recall + Haiku 5.5", "where": {"system": "recall", "model": "claude:claude-haiku-5-5"}, "points": [
+        {"label": "Windows", "dy": 24, "where": {"conditions.context": "top5-windows"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}},
+        {"label": "Top 5", "where": {"conditions.context": "top5-chats"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}},
+        {"label": "Top 10", "where": {"conditions.context": "top10-chats"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}},
+        {"label": "Top 20", "where": {"conditions.context": "top20-chats"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}}
+      ]},
+      {"name": "recall + Sonnet 5.5", "where": {"system": "recall", "model": "claude:claude-sonnet-5-5"}, "points": [
+        {"label": "Windows", "where": {"conditions.context": "top5-windows"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}}
+      ]}
+    ],
+    "references": [
+      {"name": "Haiku 5.5, answer sessions only", "anchor": "start", "dx": 10, "where": {"system": "answer sessions only", "conditions.context": "answer-sessions"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}},
+      {"name": "Full history, Sonnet 5 (Cost of Remembering)", "anchor": "end", "dx": -10, "where": {"system": "full context (Cost of Remembering)", "conditions.sample": "39"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}},
+      {"name": "ICM folders, Sonnet 5", "anchor": "start", "dx": 10, "where": {"system": "ICM folders", "conditions.sample": "39"}, "x": {"metric": "cost_usd"}, "y": {"metric": "accuracy"}}
+    ]
+  },
+  "by-type": {
+    "kind": "columns",
+    "title": "LongMemEval_S by question type",
+    "subtitle": "All 500 questions; Claude Haiku 5.5 answers and judges. recall 0.4.1; answer sessions only measured on 9 October.",
+    "where": {"benchmark": "longmemeval-qa", "metric": "accuracy", "conditions.sample": "500"},
+    "categories": [
+      {"label": "Single session,\nuser", "where": {"conditions.question_type": "single-session-user"}},
+      {"label": "Single session,\nassistant", "where": {"conditions.question_type": "single-session-assistant"}},
+      {"label": "Preference", "where": {"conditions.question_type": "single-session-preference"}},
+      {"label": "Multi-session", "where": {"conditions.question_type": "multi-session"}},
+      {"label": "Knowledge\nupdate", "where": {"conditions.question_type": "knowledge-update"}},
+      {"label": "Temporal", "where": {"conditions.question_type": "temporal-reasoning"}},
+      {"label": "Abstention", "where": {"conditions.question_type": "abstention"}}
+    ],
+    "series": [
+      {"name": "recall, matched windows", "where": {"system": "recall", "release": "0.4.1", "conditions.context": "top5-windows"}},
+      {"name": "recall, top 10 chats", "where": {"system": "recall", "release": "0.4.1", "conditions.context": "top10-chats"}},
+      {"name": "Answer sessions only", "where": {"system": "answer sessions only", "conditions.context": "answer-sessions"}}
+    ]
+  }
+}

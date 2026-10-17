@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "One figure in docs/benchmarks/results.jsonl",
+  "description": "Every row carries every field, in store.FIELDS order; null (or []) is unknown or does not apply. Only aggregates: no per-case data, chat or case ids, titles, paths or free text from a run folder.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "kind", "date", "benchmark", "metric", "value", "ci", "range", "by_repeat", "n", "repeats", "split", "system", "code", "model", "judge", "judge_version", "harness", "conditions", "corpus", "pair", "role", "control", "candidate", "varies", "runs", "source", "source_detail", "grade", "reported", "public", "supersedes", "note"],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+    "interval": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+    "name": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9 ._:@+()-]{1,80}$"}
+  },
+  "properties": {
+    "id": {"$ref": "#/$defs/id", "description": "sha1 of the row without its id, first 12 hex digits"},
+    "kind": {"enum": ["measured", "delta", "third_party"], "description": "measured: a recall eval run; delta: a paired difference (candidate minus control); third_party: a figure copied from a publication"},
+    "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "the day the run started; third_party: the day the figure entered the repo from its source"},
+    "benchmark": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "metric": {"type": "string", "pattern": "^[A-Za-z0-9_@.-]+$"},
+    "value": {"type": ["number", "null"], "description": "in the metric's unit (fractions 0 to 1); null when only a range is known, or for a withdrawal"},
+    "ci": {"$ref": "#/$defs/interval", "description": "95% bootstrap interval over cases (paired, for a delta)"},
+    "range": {"$ref": "#/$defs/interval", "description": "lowest and highest value over repeats or as reported, when the values themselves are not known"},
+    "by_repeat": {"type": ["array", "null"], "items": {"type": "number"}},
+    "n": {"type": ["integer", "null"], "minimum": 0, "description": "cases scored"},
+    "repeats": {"type": ["integer", "null"], "minimum": 1},
+    "split": {"enum": ["train", "test", "all", "holdout", null]},
+    "system": {"type": "string", "pattern": "^[A-Za-z0-9 ._:@+(),-]{1,80}$", "description": "recall, a baseline recall's harness ran (no memory, answer sessions only, whole history), or a third-party product or method"},
+    "code": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["release", "git", "prod"],
+      "properties": {
+        "release": {"type": ["string", "null"], "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "only when the product code is exactly that release tag's"},
+        "git": {"type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$"},
+        "prod": {"type": ["string", "null"], "pattern": "^[0-9a-f]{8}$", "description": "the run wrapper's product-code hash (store.prod_hash)"}
+      }
+    },
+    "model": {"$ref": "#/$defs/name", "description": "the model under test: the agent, the notes writer, or the answer model"},
+    "judge": {"$ref": "#/$defs/name"},
+    "judge_version": {"$ref": "#/$defs/name"},
+    "harness": {"$ref": "#/$defs/name", "description": "the agent harness (toolsearch-v1, upfront-v0)"},
+    "conditions": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"], "maxLength": 60}, "description": "the benchmark's knobs, as registry.json declares them"},
+    "corpus": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["home", "chat_schema"],
+      "properties": {
+        "home": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9._-]{1,60}$", "description": "the eval home's folder name"},
+        "chat_schema": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9._:-]{1,60}$"}
+      }
+    },
+    "pair": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9._:-]{1,80}$", "description": "groups a control, its candidate and their deltas"},
+    "role": {"enum": ["control", "candidate", "delta", null]},
+    "control": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}], "description": "a delta: the control row"},
+    "candidate": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}], "description": "a delta: the candidate row"},
+    "varies": {"type": "array", "items": {"type": "string", "pattern": "^[a-z_]+(\\.[A-Za-z0-9_]+)?$"}, "description": "a pair's or a delta's declared differences between its arms: fields (code, model, corpus, date...) or conditions (conditions.arm); check fails on any other difference among the fields the arms must share"},
+    "runs": {"type": "array", "items": {"type": "string", "pattern": "^\\d{8}-\\d{4,6}-[A-Za-z0-9._-]+$"}, "description": "run folder basenames under the private runs folder; never paths"},
+    "source": {"type": ["string", "null"], "pattern": "^https://\\S+$"},
+    "source_detail": {"type": ["string", "null"], "maxLength": 120, "description": "where in the source: a table, section or file"},
+    "grade": {"enum": ["vendor", "paper", "independent", "mixed", null], "description": "third_party: vendor (by the system's maker, its own paper included), paper (a research paper's own method or baseline), independent (anyone else: a benchmark's authors, an audit), mixed (a leaderboard of both)"},
+    "reported": {"type": ["string", "null"], "maxLength": 40, "description": "third_party: the figure exactly as the source prints it"},
+    "public": {"type": "boolean", "description": "cleared for the README, docs and the site"},
+    "supersedes": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+    "note": {"type": ["string", "null"], "maxLength": 400}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "third_party"}}}, "then": {"properties": {"source": {"type": "string"}, "grade": {"type": "string"}, "code": {"type": "null"}, "runs": {"maxItems": 0}}}},
+    {"if": {"properties": {"kind": {"const": "delta"}}}, "then": {"properties": {"control": {"type": "string"}, "candidate": {"type": "string"}, "varies": {"minItems": 1}}}},
+    {"if": {"properties": {"pair": {"type": "string"}}}, "then": {"properties": {"varies": {"minItems": 1}}}},
+    {"if": {"properties": {"kind": {"const": "measured"}}}, "then": {"properties": {"code": {"type": "object"}, "source": {"type": "null"}}}}
+  ]
+}
