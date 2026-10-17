@@ -1,1 +1,1 @@
-Menu bar: the Restart rows name how many stale recall servers an agent has and when the oldest and newest started, instead of listing every start time.
+Menu bar: the Restart rows name how many stale recall servers an agent has and when the oldest and newest started, instead of listing every start time. Working now is a git log again: newest chat at the top, main as the trunk even when no chat is on it, and each branch curving into the trunk below its oldest chat; before, a repo with no chat on main drew a dangling stub above every branch.
