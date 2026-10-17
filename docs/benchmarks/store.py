@@ -21,6 +21,7 @@ Commands, from the repo root:
     python docs/benchmarks/store.py show [--benchmark B] [--metric M] [--system S] [--release R]
     python docs/benchmarks/store.py pairs
     uv run python docs/benchmarks/store.py record RUN_DIR [RUN_DIR ...] [--public] [--pair P --role R]
+    uv run python docs/benchmarks/store.py record-pair PAIR CONTROL_DIR CANDIDATE_DIR [--public]
     uv run python docs/benchmarks/store.py add ROWS.json
     uv run python docs/benchmarks/store.py check [--base origin/main]
 
@@ -873,15 +874,24 @@ def main() -> None:
     sub.add_parser("pairs", help="control and candidate rows by pair, with their deltas")
     r = sub.add_parser("record", help="turn run folders into rows (several folders: repeats of one setting)")
     r.add_argument("runs", nargs="+")
-    r.add_argument("--public", action="store_true", help="cleared for the README, docs and the site")
     r.add_argument("--pair", help="a pair id shared by a same-day control and its candidate")
     r.add_argument("--role", choices=["control", "candidate"])
     r.add_argument("--git", help="the commit, when the prod hash matches no tag (checked against the runs' prod)")
-    r.add_argument("--harness", help="the agent harness, for runs whose meta.json does not say (before toolsearch-v1)")
-    r.add_argument("--metrics", help="only these metrics, comma separated")
-    r.add_argument("--set", action="append", help="a condition the run does not record, key=value")
-    r.add_argument("--note")
-    r.add_argument("--dry-run", action="store_true")
+    rp = sub.add_parser(
+        "record-pair", help="a same-day control and candidate (pair.sh's two folders) under one pair id"
+    )
+    rp.add_argument("pair", help="the pair id, such as 2026-10-17-v042-vs-v050-qa")
+    rp.add_argument("control")
+    rp.add_argument("candidate")
+    for o in (r, rp):
+        o.add_argument("--public", action="store_true", help="cleared for the README, docs and the site")
+        o.add_argument(
+            "--harness", help="the agent harness, for runs whose meta.json does not say (before toolsearch-v1)"
+        )
+        o.add_argument("--metrics", help="only these metrics, comma separated")
+        o.add_argument("--set", action="append", help="a condition the run does not record, key=value")
+        o.add_argument("--note")
+        o.add_argument("--dry-run", action="store_true")
     a = sub.add_parser("add", help="append hand-made rows (third-party or derived figures) from a JSON file")
     a.add_argument("file", help="a JSON object or list of objects, or - for stdin")
     a.add_argument("--dry-run", action="store_true")
@@ -907,6 +917,27 @@ def main() -> None:
         if (args.pair is None) != (args.role is None):
             sys.exit("--pair and --role go together")
         rows = rows_from_runs(args.runs, args)
+        for row in rows:
+            print(dumps(row))
+        if not args.dry_run:
+            _append(rows)
+    elif args.cmd == "record-pair":
+        args.git = None
+        arms = {}
+        for role in ("control", "candidate"):
+            arm = argparse.Namespace(**{**vars(args), "role": role})
+            arms[role] = rows_from_runs([getattr(args, role)], arm)
+        ctl, cand = (
+            next(r for r in arms[k] if not r["conditions"].keys() - set(arms[k][0]["conditions"])) for k in arms
+        )
+        if ctl["benchmark"] != cand["benchmark"]:
+            sys.exit(f"the arms are of different benchmarks: {ctl['benchmark']}, {cand['benchmark']}")
+        if registry()["benchmarks"][ctl["benchmark"]].get("same_day") and ctl["date"] != cand["date"]:
+            sys.exit(f"{ctl['benchmark']} compares only within a day: the arms ran on {ctl['date']} and {cand['date']}")
+        differ = [k for k in comparable(ctl, cand) if k != "date"]
+        if differ:
+            print(f"note: the arms also differ in {', '.join(differ)}", file=sys.stderr)
+        rows = arms["control"] + arms["candidate"]
         for row in rows:
             print(dumps(row))
         if not args.dry_run:

@@ -103,8 +103,12 @@ benchmark claims.
 
 - Several folders that are repeats of one setting (`--agent` runs, one folder each) make one row:
   their mean, each folder's value in `by_repeat`.
-- A planned same-day comparison: `--pair 2026-10-17-what --role control` on one run and `--role
-  candidate` on the other. Then add the paired delta from `recall eval compare` with `add`.
+- A planned same-day comparison: `~/.agents/recall-eval/bin/pair.sh` runs two refs side by side
+  and prints both folders; `record-pair 2026-10-17-what CONTROL_DIR CANDIDATE_DIR --public`
+  records them under one pair id, refuses arms of different benchmarks (or days, for a same-day
+  benchmark), and names any other field in which they differ. (`--pair P --role R` on `record`
+  does the same one arm at a time.) Then add the paired delta from `recall eval compare` with
+  `add`.
 - `--set key=value` adds a condition the run does not record (`--set notes="0.4.1 by
   claude-haiku-5-5"` for a hook arm); `--harness upfront-v0` names the harness of runs from before
   `agent_harness` was recorded; `--git SHA` names the commit when the code matches no tag, and is
