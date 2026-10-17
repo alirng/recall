@@ -47,8 +47,8 @@ LongMemEval retrieval match 0.4.1.
 Re-checked for 0.5.0: search is unchanged, and agents do as well while recall answers them
 faster. The model-free runs on the v0.5.0 tag give 0.4.1's figures at every cutoff
 (SWE-ContextBench Lite in the all-sessions scope with hybrid search, LongMemEval_S hybrid and
-keywords, LongMemEval_M keywords, LoCoMo hybrid, and search over my chats' 60 held-out
-questions). The agent evals ran on 17 October on both release tags side by side, three runs
+keywords, LongMemEval_M keywords and LoCoMo hybrid on 16 October, and search over my chats' 60
+held-out questions on 17 October). The agent evals ran on 17 October on both release tags side by side, three runs
 each, each tag on its own copy of the eval index (2,798 chats) and its own Ollama:
 
 | 17 October, both tags the same day, three runs each | 0.4.2 | 0.5.0 |
@@ -58,7 +58,7 @@ each, each tag on its own copy of the eval index (2,798 chats) and its own Ollam
 | A call to recall's tools, median (95th percentile) | 258 ms (723 ms) | **65 ms (506 ms)** |
 | `memory_search`, median | 409 ms | **66 ms** |
 | `read_chat`, median | 74 ms | **30 ms** |
-| Calls to recall that failed | 2 of 490 | **0 of 493** |
+| Calls to recall that failed, as recall logged them | 2 of 492 | **0 of 493** |
 | MemoryCode, notes at session start plus search: code that follows the latest conventions | 85.0% | 85.5% |
 | MemoryCode, long histories (20 to 100 sessions) | 74.1% | 74.8% |
 | MemoryCode, changed conventions followed | 76.5% | 79.9% |

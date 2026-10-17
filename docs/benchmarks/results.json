@@ -1099,14 +1099,16 @@
     ]
   },
   "rechecked_0_5_0": {
-    "about": "Model-free runs on the v0.5.0 tag (2026-10-16), the same as rechecked_0_4_1 at every cutoff: SWE-ContextBench Lite all scope hybrid, LongMemEval_S hybrid and keywords, LongMemEval_M keywords, LoCoMo hybrid; and search over my chats (60 held-out questions, hybrid hit@5 0.867). The other rechecked_0_4_1 rows were not re-run on 0.5.0.",
+    "about": "Model-free runs on the v0.5.0 tag, the same as rechecked_0_4_1 at every cutoff: SWE-ContextBench Lite all scope hybrid, LongMemEval_S hybrid and keywords, LongMemEval_M keywords, LoCoMo hybrid (2026-10-16); and search over my chats (60 held-out questions, hybrid hit@5 0.867, the same as its v0.4.2 control run that day; 2026-10-17). The other rechecked_0_4_1 rows were not re-run on 0.5.0.",
     "same_as": "rechecked_0_4_1",
     "runs": [
       "20261016-232352-release-swecb-050",
       "20261016-232405-release-locomo-hyb-050",
       "20261016-232423-release-lme-s-hyb-050",
       "20261016-232520-release-lme-s-kw-050",
-      "20261016-232600-release-lme-m-kw-050"
+      "20261016-232600-release-lme-m-kw-050",
+      "20261017-114239-rel050tag-sv2-test-v042",
+      "20261017-114243-rel050tag-sv2-test-v050"
     ]
   },
   "same_day_0_4_2_vs_0_5_0": {
@@ -1147,8 +1149,9 @@
         "memory_search_p50": 409,
         "read_chat_p50": 74,
         "search_chats_p50": 448,
-        "calls": 490,
-        "failed": 2
+        "calls": 492,
+        "failed": 2,
+        "timed": 490
       },
       "0.5.0": {
         "all_p50": 65,
@@ -1157,8 +1160,10 @@
         "read_chat_p50": 30,
         "search_chats_p50": 384,
         "calls": 493,
-        "failed": 0
-      }
+        "failed": 0,
+        "timed": 493
+      },
+      "about": "Calls as recall's usage log records them (via=mcp, 11:43-12:06); failed calls carry no time, so the timings cover the timed ones. Counted from the agents' transcripts, 0.4.2 also had two project_memory calls the MCP layer rejected before recall ran (4 of 494 against 0 of 493)."
     },
     "memorycode_hook_test": {
       "0.4.2": {
