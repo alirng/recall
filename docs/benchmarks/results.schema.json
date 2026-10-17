@@ -4,7 +4,7 @@
   "description": "Every row carries every field, in store.FIELDS order; null (or []) is unknown or does not apply. Only aggregates: no per-case data, chat or case ids, titles, paths or free text from a run folder.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "kind", "date", "benchmark", "metric", "value", "ci", "range", "by_repeat", "n", "repeats", "split", "system", "code", "model", "judge", "judge_version", "harness", "conditions", "corpus", "pair", "role", "control", "candidate", "runs", "source", "source_detail", "grade", "reported", "public", "supersedes", "note"],
+  "required": ["id", "kind", "date", "benchmark", "metric", "value", "ci", "range", "by_repeat", "n", "repeats", "split", "system", "code", "model", "judge", "judge_version", "harness", "conditions", "corpus", "pair", "role", "control", "candidate", "varies", "runs", "source", "source_detail", "grade", "reported", "public", "supersedes", "note"],
   "$defs": {
     "id": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
     "interval": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
@@ -52,6 +52,7 @@
     "role": {"enum": ["control", "candidate", "delta", null]},
     "control": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}], "description": "a delta: the control row"},
     "candidate": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}], "description": "a delta: the candidate row"},
+    "varies": {"type": "array", "items": {"type": "string", "pattern": "^[a-z_]+(\\.[A-Za-z0-9_]+)?$"}, "description": "a pair's or a delta's declared differences between its arms: fields (code, model, corpus, date...) or conditions (conditions.arm); check fails on any other difference among the fields the arms must share"},
     "runs": {"type": "array", "items": {"type": "string", "pattern": "^\\d{8}-\\d{4,6}-[A-Za-z0-9._-]+$"}, "description": "run folder basenames under the private runs folder; never paths"},
     "source": {"type": ["string", "null"], "pattern": "^https://\\S+$"},
     "source_detail": {"type": ["string", "null"], "maxLength": 120, "description": "where in the source: a table, section or file"},
@@ -63,7 +64,8 @@
   },
   "allOf": [
     {"if": {"properties": {"kind": {"const": "third_party"}}}, "then": {"properties": {"source": {"type": "string"}, "grade": {"type": "string"}, "code": {"type": "null"}, "runs": {"maxItems": 0}}}},
-    {"if": {"properties": {"kind": {"const": "delta"}}}, "then": {"properties": {"control": {"type": "string"}, "candidate": {"type": "string"}}}},
+    {"if": {"properties": {"kind": {"const": "delta"}}}, "then": {"properties": {"control": {"type": "string"}, "candidate": {"type": "string"}, "varies": {"minItems": 1}}}},
+    {"if": {"properties": {"pair": {"type": "string"}}}, "then": {"properties": {"varies": {"minItems": 1}}}},
     {"if": {"properties": {"kind": {"const": "measured"}}}, "then": {"properties": {"code": {"type": "object"}, "source": {"type": "null"}}}}
   ]
 }

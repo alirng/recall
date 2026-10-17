@@ -9,19 +9,19 @@ store, so nothing is copied by hand.
 
 | File | What it is | Edited by |
 | --- | --- | --- |
-| `registry.json` | every benchmark and metric: unit, direction, public or private corpus, the command that runs it, and which fields must match for two figures to compare | hand |
-| `results.jsonl` | the store, one row per figure ([schema.json](schema.json)) | `store.py record` / `add` only |
-| `charts.json` | which rows each chart draws; holds no numbers | hand |
-| `figures.json` | every chart with its numbers filled in and the row id behind each mark | `make_charts.py` |
+| `registry.json` | every benchmark and metric: unit, direction, public or private corpus, the command that runs it, and which fields must match for two figures to compare ([registry.schema.json](registry.schema.json)) | hand |
+| `results.jsonl` | the store, one row per figure ([results.schema.json](results.schema.json)) | `store.py record` / `record-pair` / `add` only |
+| `charts.json` | which rows each chart draws; holds no numbers ([charts.schema.json](charts.schema.json)) | hand |
+| `figures.json` | every chart with its numbers filled in, and for each mark the row id behind it and any third-party source | `make_charts.py` |
 | `*.svg` | the charts, light and dark | `make_charts.py` |
 | `store.py` | reader, queries, recorder and checks (standard library, plus jsonschema for `check`) | |
 
 ## A row
 
 ```json
-{"id": "e784aa6c526f", "kind": "measured", "date": "2026-10-16", "benchmark": "swecb-lite-retrieval",
+{"id": "66e5fa67b0f2", "kind": "measured", "date": "2026-10-16", "benchmark": "swecb-lite-retrieval",
  "metric": "hit@3", "value": 0.768, "ci": [0.677, 0.848], "n": 99, "repeats": 1, "split": "all",
- "system": "recall", "code": {"release": "0.4.1", "git": "144938f", "prod": "619344aa"},
+ "system": "recall", "code": {"release": "0.4.1", "git": "cdc05db", "prod": "619344aa"},
  "conditions": {"scope": "all", "search": "hybrid"}, "runs": ["20261016-111052-release-swecb-041"],
  "public": true, ...}
 ```
@@ -38,22 +38,32 @@ applicable. The fields that matter most:
 - **code**: `prod` is the run wrapper's product-code hash from `meta.txt`. `store.py` hashes git
   refs the same way (`prod_hash`), so `release` is the tag whose product code the run had, apart
   from `__version__`: release runs measure the commit before the version bump. `git` is a commit
-  with exactly that code. A row added by hand has no `prod`, and its `release` is as published.
+  with exactly that code on `main` or a tag, so anyone can look it up; code that only ever lived on
+  a local branch gets no `git`. A row added by hand has no `prod`, and its `release` is as
+  published.
 - **conditions**: the benchmark's knobs as `registry.json` declares them (search, scope, arm,
   context, subset, question type...). A breakdown (by history length, by question type) is a row
   per value with that condition set; the aggregate row leaves it out.
-- **pair** and **role** group a same-day control, its candidate and their deltas.
+- **pair** and **role** group a same-day control, its candidate and their deltas. **varies**
+  names what the two arms are meant to differ in (`code`, `model`, `corpus`, `conditions.arm`,
+  `date`...); a pair or delta must name at least one, and `check` fails if the arms also differ in
+  anything else they should share (split, model, judge, harness, code, corpus, the registry's
+  `comparable_on`, every condition, and the date for a same-day benchmark). A delta across days
+  on a same-day benchmark has to say `date`, and its note why it is kept.
 - **runs** names run folders under `~/.agents/recall-eval/runs/` (`RECALL_EVAL_RUNS`), a private
   pointer: the folders never leave this machine.
 - **public**: cleared for the README, docs and the site. Everything in the file is public (the
   repo is), so only aggregates go in; `public: false` marks a figure kept for the record, such as
   a run left out of the docs and why.
-- **supersedes**: a correction is a new row listing the ids it replaces (a withdrawal has
-  `value: null`). Readers drop superseded rows.
+- **supersedes**: a correction is a new row listing the ids it replaces; a withdrawal is such a row
+  with `value: null`. `store.load()` returns only the rows that stand. Anyone reading
+  `results.jsonl` directly should do the same: drop every row whose id another row's `supersedes`
+  lists, and every row that supersedes others with `value: null`.
 
 What never goes in: per-case data, case or chat ids, chat titles, questions, transcripts, paths,
-or free text from a run folder. `check` enforces it: no paths or account names, no chat-id
-shapes, run names only as folder basenames, and, where the private eval cases exist on this
+or free text from a run folder. `check` enforces it: no paths (`/Users/`, `/home/`, `/private/`,
+`/var/`, `/tmp/`, `~/`, `file://`, this machine's home), no chat ids or other UUIDs, no email
+addresses, run names only as folder basenames, and, where the private eval cases exist on this
 machine, none of their ids or text.
 
 ## Comparing figures
@@ -63,7 +73,8 @@ benchmark, metric and conditions. Agent and model evals drift from day to day (o
 October the same code took in 9.0k and 7.3k tokens), so their benchmarks are `same_day` in the
 registry: a figure compares only with one measured the same day, ideally as a planned pair.
 `store.comparable(a, b)` lists the fields that differ among those the registry names, plus the
-date for a same-day benchmark.
+date for a same-day benchmark; `store.pair_differences(a, b)` is the stricter list a pair is held
+to.
 
 ```python
 import sys
@@ -98,21 +109,26 @@ the wrapper's `output.txt` names), maps the eval name to a benchmark through the
 the settings the registry names, nothing else from the folder. It fills code identity from
 `prod=`, the model, judge, harness, repeats and split from the run, conditions from the eval name
 and the summary, and for private-corpus benchmarks the eval home's name and chat schema. It
-refuses a run that is still going or failed, one the ledger marks `INVALID`, and an eval no
-benchmark claims.
+refuses a run that is still going or failed, one whose folder (or the harness folder it names)
+the ledger beside the runs folder marks `INVALID`, and an eval no benchmark claims. With no
+`LEDGER.md` it stops, unless `--no-ledger` says to go on.
 
 - Several folders that are repeats of one setting (`--agent` runs, one folder each) make one row:
-  their mean, each folder's value in `by_repeat`.
+  their mean, each folder's value in `by_repeat`. The folders must agree on everything, the
+  conditions in their eval names included, and a breakdown value counts only where every folder
+  reports it.
 - A planned same-day comparison: `~/.agents/recall-eval/bin/pair.sh` runs two refs side by side
-  and prints both folders; `record-pair 2026-10-17-what CONTROL_DIR CANDIDATE_DIR --public`
-  records them under one pair id, refuses arms of different benchmarks (or days, for a same-day
-  benchmark), and names any other field in which they differ. (`--pair P --role R` on `record`
-  does the same one arm at a time.) Then add the paired delta from `recall eval compare` with
-  `add`.
+  and prints both folders; `record-pair 2026-10-17-what CONTROL_DIR CANDIDATE_DIR --allow-diff code
+  --public` records them under one pair id. It compares every metric of the two arms and exits
+  non-zero on any difference `--allow-diff` does not name (two tags on their own eval-home copies
+  differ in `code` and `corpus`), and on arms of different benchmarks. `--pair P --role R
+  --allow-diff F` on `record` does the same one arm at a time, and `check` holds the pair to it
+  once both are in. Then add the paired delta from `recall eval compare` with `add`, its `varies`
+  the pair's.
 - `--set key=value` adds a condition the run does not record (`--set notes="0.4.1 by
   claude-haiku-5-5"` for a hook arm); `--harness upfront-v0` names the harness of runs from before
-  `agent_harness` was recorded; `--git SHA` names the commit when the code matches no tag, and is
-  checked against `prod=`; `--metrics` keeps a subset.
+  `agent_harness` was recorded; `--git SHA` names the commit when the code matches no tag, and must
+  have the runs' `prod=` and be on `main` or a tag; `--metrics` keeps a subset.
 
 Then `uv run --with fonttools --with brotli python docs/benchmarks/make_charts.py` if a chart
 should show it, `uv run python docs/benchmarks/store.py check`, and commit.
@@ -121,7 +137,8 @@ should show it, `uv run python docs/benchmarks/store.py check`, and commit.
 
 Derived figures (`agent_tokens.py`'s context tokens), deltas and other systems' published figures
 go in with `add`, from a JSON object or a list of them. `id`, missing fields and field order are
-filled in, and the store is checked after appending:
+filled in (a field the store does not have is refused), and nothing is appended unless the store
+passes `check` with the new rows:
 
 ```bash
 uv run python docs/benchmarks/store.py add - <<'EOF'
@@ -133,7 +150,7 @@ EOF
 ```
 
 For a derived figure, copy the identity of the rows it was computed from (`code`, `runs`,
-`model`, `harness`, `pair`, `role`) and say how in `note`.
+`model`, `harness`, `pair`, `role`, `varies`) and say how in `note`.
 
 ## Add a benchmark
 
@@ -144,7 +161,9 @@ and `from` / `map` / `default` to read them from the summary, `meta.json` or the
 `comparable_on`, `same_day`, and `metrics`. Each metric has a `unit`, `better` (`higher`, `lower`
 or null), and, for the recorder, `key` (a dotted path into the summary; an interval
 `{mean, lo, hi, n}` or a number), optionally `by_repeat` and `breakdown`. A benchmark that only
-has other systems' figures needs no `evals` or keys. Then record a run.
+has other systems' figures needs empty `evals` and no keys. `registry.schema.json` holds the
+exact shape, and `check` validates the registry against it (a misspelt `comparable_on` fails),
+along with every `comparable_on` field and `evals` pattern. Then record a run.
 
 ## Draw a chart
 
@@ -154,8 +173,9 @@ and subtitle, and selectors. A mark's selector merges the chart's `where`, its g
 series', and its own, and must find exactly one public row: matching, carrying the fewest
 conditions the selector leaves out, newest by date. `"release": "latest"` follows new releases.
 Text that needs a figure names it, `{ref}` or `{ref:pct0}`, with `refs` holding selectors.
-`check` resolves every chart, so a selector that finds nothing, or two different figures, fails
-it.
+`check` validates `charts.json` against `charts.schema.json` and resolves every chart, so an
+unknown key or kind, a selector that finds nothing, or one that finds two different figures, fails
+it. Pin a chart's recall rows to a release (`"release": "0.4.2"`) unless it should follow new ones.
 
 ## Reading from another repo (rererecall.com)
 
@@ -164,8 +184,9 @@ The store is plain files on `main`: `docs/benchmarks/results.jsonl`, `registry.j
 the working tree: `git -C ../recall fetch -q && git -C ../recall show
 origin/main:docs/benchmarks/figures.json`. A build in CI can fetch
 `https://raw.githubusercontent.com/alirng/recall/main/docs/benchmarks/figures.json`. A site that
-draws its own charts can read `figures.json` (each chart as drawn, with row ids for tooltips and
-sources) or the rows themselves, and Python can import `store.py` from a checkout.
+draws its own charts can read `figures.json` (each chart as drawn; each mark has `row` or `rows`,
+and `source` or `sources` when a figure is another system's) or the rows themselves, applying
+`supersedes` as above, and Python can import `store.py` from a checkout.
 
 ## Checks
 
@@ -173,11 +194,21 @@ sources) or the rows themselves, and Python can import `store.py` from a checkou
 uv run python docs/benchmarks/store.py check --base origin/main
 ```
 
-checks every row against the schema and the registry, that each id matches its row (an edit
-changes it), references between rows, private content, that every chart resolves and
-`figures.json` is current, and with `--base` that no row of that revision was edited or removed.
-CI runs it on every pull request. `.gitattributes` merges `results.jsonl` with `union`, so two
-branches that each append rows merge without a conflict.
+checks `registry.json` and `charts.json` against their schemas, every row against
+`results.schema.json` and the registry, that each id matches its row (an edit changes it),
+references between rows, private content, the declared differences of pairs and deltas, that
+every chart resolves and `figures.json` is current, and with `--base` that no row of that
+revision was edited or removed (a revision that does not exist is an error; a store that did not
+exist there passes). A malformed row is reported, and the checks that read rows then stop. CI runs
+it, and ruff over `docs/benchmarks/`, on every pull request and push, on Python 3.11 and 3.13,
+against the commit before (a pull request's merge ref has the base as its first parent).
+
+Two branches that both append rows touch the end of the same file. `.gitattributes` gives
+`results.jsonl` the `union` merge driver, which keeps both sides in a local `git merge` and in the
+app's sync, but GitHub's merge button and its pull request merge refs do not run merge drivers:
+there the PR shows a conflict. Resolve it locally by merging `origin/main` into the branch and
+keeping both sides' rows; `check` then catches a row that came in twice (duplicate id) or was
+changed on the way.
 
 ## Provenance of the first rows
 
@@ -191,4 +222,7 @@ two labels: the MemoryCode "0.2.1" notes run and its "0.3.0 tools only" agent ru
 and call figures (61k and 36k tokens, 7.3 and 2.2 calls) do not match their runs' summaries
 (62.5k and 35.3k, 7.7 and 2.1); they are stored as published with both in the note. The 0.5.0
 recheck and the 17 October 0.4.2-against-0.5.0 pair were then added the ordinary way, with
-`record` on their run folders and `add` for the MCP call times from recall's usage log.
+`record` and `record-pair` on their run folders and `add` for the MCP call times (and timed
+counts) from recall's usage log. What `results.json` called `input_tokens_median` is the metric
+`tokens_in_median`, taken exactly from the run summaries (55784.5 where `results.json` rounded it
+to 55785).

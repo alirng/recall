@@ -188,7 +188,8 @@
         "mcp_p50_ms": {"unit": "ms", "better": "lower", "about": "median time of the agents' calls to recall's MCP tools, from recall's usage log"},
         "mcp_p95_ms": {"unit": "ms", "better": "lower", "about": "95th percentile of the same"},
         "mcp_calls": {"unit": "count", "better": null, "about": "calls to recall's MCP tools in recall's usage log"},
-        "mcp_failed": {"unit": "count", "better": "lower", "about": "of those, calls that failed"}
+        "mcp_failed": {"unit": "count", "better": "lower", "about": "of those, calls that failed"},
+        "mcp_timed": {"unit": "count", "better": null, "about": "of those, calls with a time (a failed call has none), which the mcp_p* figures cover"}
       }
     },
     "my-notes": {

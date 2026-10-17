@@ -69,8 +69,8 @@
     "where": {"benchmark": "longmemeval-retrieval", "metric": "recall_all@5", "conditions.dataset": "S", "conditions.turns": "user"},
     "groups": [
       {"rows": [
-        {"name": "recall (keywords + embeddings)", "style": "ours", "note": "nomic-embed-text, local", "where": {"system": "recall", "conditions.subset": "official-419", "conditions.search": "hybrid"}},
-        {"name": "recall (keywords only)", "style": "ours", "note": "SQLite FTS5", "where": {"system": "recall", "conditions.subset": "official-419", "conditions.search": "keyword"}},
+        {"name": "recall (keywords + embeddings)", "style": "ours", "note": "nomic-embed-text, local", "where": {"system": "recall", "release": "0.4.2", "conditions.subset": "official-419", "conditions.search": "hybrid"}},
+        {"name": "recall (keywords only)", "style": "ours", "note": "SQLite FTS5", "where": {"system": "recall", "release": "0.4.2", "conditions.subset": "official-419", "conditions.search": "keyword"}},
         {"name": "engram, dense", "note": "bge-small", "where": {"system": "engram", "conditions.method": "dense, bge-small"}},
         {"name": "engram, hybrid", "note": "BM25 + bge-small", "where": {"system": "engram", "conditions.method": "hybrid, BM25 + bge-small"}},
         {"name": "engram, BM25", "note": "", "where": {"system": "engram", "conditions.method": "BM25"}},

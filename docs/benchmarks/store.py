@@ -2,9 +2,10 @@
 chart specs that draw from it. See README.md beside this file.
 
     registry.json   every benchmark and metric: unit, direction, corpus, how to run it, and which
-                    fields must match for two figures to compare
-    results.jsonl   one row per figure, appended and never edited (schema.json)
+                    fields must match for two figures to compare (registry.schema.json)
+    results.jsonl   one row per figure, appended and never edited (results.schema.json)
     charts.json     which rows each chart draws; every number in a chart comes from the store
+                    (charts.schema.json)
     figures.json    every chart with its numbers filled in, written by make_charts.py
 
 Reading needs only the standard library:
@@ -20,8 +21,8 @@ Commands, from the repo root:
 
     python docs/benchmarks/store.py show [--benchmark B] [--metric M] [--system S] [--release R]
     python docs/benchmarks/store.py pairs
-    uv run python docs/benchmarks/store.py record RUN_DIR [RUN_DIR ...] [--public] [--pair P --role R]
-    uv run python docs/benchmarks/store.py record-pair PAIR CONTROL_DIR CANDIDATE_DIR [--public]
+    uv run python docs/benchmarks/store.py record RUN_DIR [RUN_DIR ...] [--public] [--pair P --role R --allow-diff F]
+    uv run python docs/benchmarks/store.py record-pair PAIR CONTROL_DIR CANDIDATE_DIR --allow-diff F [--public]
     uv run python docs/benchmarks/store.py add ROWS.json
     uv run python docs/benchmarks/store.py check [--base origin/main]
 
@@ -49,31 +50,41 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 STORE = os.path.join(HERE, "results.jsonl")
 REGISTRY = os.path.join(HERE, "registry.json")
-SCHEMA = os.path.join(HERE, "schema.json")
+SCHEMA = os.path.join(HERE, "results.schema.json")
+SCHEMAS = {
+    REGISTRY: os.path.join(HERE, "registry.schema.json"),
+    os.path.join(HERE, "charts.json"): os.path.join(HERE, "charts.schema.json"),
+}
 CHARTS = os.path.join(HERE, "charts.json")
-RUNS = os.path.expanduser(os.environ.get("RECALL_EVAL_RUNS", "~/.agents/recall-eval/runs"))
+RUNS = os.path.normpath(os.path.expanduser(os.environ.get("RECALL_EVAL_RUNS", "~/.agents/recall-eval/runs")))
 CASES = os.path.expanduser(os.environ.get("RECALL_EVAL_CASES", "~/.agents/recall/evals"))
 
 # every row carries every field, in this order; null (or []) is "unknown" or "does not apply"
 FIELDS = [
     "id", "kind", "date", "benchmark", "metric", "value", "ci", "range", "by_repeat", "n", "repeats", "split",
     "system", "code", "model", "judge", "judge_version", "harness", "conditions", "corpus", "pair", "role",
-    "control", "candidate", "runs", "source", "source_detail", "grade", "reported", "public", "supersedes", "note",
+    "control", "candidate", "varies", "runs", "source", "source_detail", "grade", "reported", "public", "supersedes",
+    "note",
 ]  # fmt: skip
-LISTS = {"runs", "supersedes"}
+LISTS = {"varies", "runs", "supersedes"}
 RUN_NAME = re.compile(r"^\d{8}-\d{4,6}-[A-Za-z0-9._-]+$")
-# never in the store: paths (this machine's home among them), chat ids, email addresses
+# never in the store: paths (this machine's home among them), file URLs, chat ids and other
+# UUIDs, email addresses
 PRIVATE = re.compile(
     "|".join(
         [
             re.escape(os.path.expanduser("~")),
-            r"/Users/|/home/|~/|\.agents\b",
+            r"/Users/|/home/|/private/|/var/|/tmp/|~/|file://|\.agents\b",
             r"\b(?:claude|codex|cursor|gemini|opencode)[:/][0-9a-f]{8}-",
+            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
             r"[\w.+-]+@[\w-]+\.[a-z]{2,}",
         ]
     ),
     re.I,
 )
+# what the two arms of a pair (and of a delta) must share, beyond the registry's comparable_on,
+# unless the pair names the field in varies
+PAIR_FIELDS = ["split", "model", "judge", "judge_version", "harness", "code", "corpus.home", "corpus.chat_schema"]
 
 
 # --- rows -------------------------------------------------------------------------
@@ -87,7 +98,11 @@ def row_id(row: dict) -> str:
 
 
 def complete(row: dict) -> dict:
-    """Every field in FIELDS order, missing ones null (or []), and the id computed."""
+    """Every field in FIELDS order, missing ones null (or []), and the id computed. A field the
+    store does not have is an error, not something to drop."""
+    unknown = sorted(set(row) - set(FIELDS))
+    if unknown:
+        raise ValueError(f"unknown fields {', '.join(unknown)}: a row has only {', '.join(FIELDS)}")
     out = {k: row.get(k, [] if k in LISTS else None) for k in FIELDS}
     out["conditions"] = out["conditions"] or {}
     out["id"] = row_id(out)
@@ -98,14 +113,18 @@ def dumps(row: dict) -> str:
     return json.dumps(row, ensure_ascii=False)
 
 
+def current(rows: list[dict]) -> list[dict]:
+    """The rows that stand: without any a later row supersedes, and without withdrawals (a row
+    with no value that supersedes others). Anyone reading results.jsonl should do the same."""
+    gone = {i for r in rows for i in r.get("supersedes") or []}
+    return [r for r in rows if r["id"] not in gone and not (r.get("supersedes") and r.get("value") is None)]
+
+
 def load(path: str = STORE, superseded: bool = False) -> list[dict]:
-    """Every row, without the ones a later row supersedes (unless superseded=True)."""
+    """The rows that stand (current); every row as written with superseded=True."""
     with open(path, encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
-    if not superseded:
-        gone = {i for r in rows for i in r.get("supersedes") or []}
-        rows = [r for r in rows if r["id"] not in gone]
-    return rows
+    return rows if superseded else current(rows)
 
 
 @functools.cache
@@ -209,6 +228,30 @@ def comparable(a: dict, b: dict) -> list[str]:
     return [k for k in keys if get(a, k) != get(b, k)]
 
 
+def pair_differences(a: dict, b: dict) -> list[str]:
+    """The fields in which two arms of a pair or a delta differ, among those they must share:
+    PAIR_FIELDS, the benchmark's comparable_on, every condition either has, and the date for a
+    same_day benchmark. A pair lists the ones it means to vary in its rows' varies."""
+    spec = registry()["benchmarks"][a["benchmark"]]
+    keys = set(PAIR_FIELDS) | set(spec.get("comparable_on", []))
+    keys |= {f"conditions.{k}" for k in set(a["conditions"]) | set(b["conditions"])}
+    if spec.get("same_day"):
+        keys.add("date")
+    return sorted(k for k in keys if get(a, k) != get(b, k))
+
+
+def allowed(field: str, varies: list[str]) -> bool:
+    """Is a difference in field one that varies names (itself, or a parent such as corpus)?"""
+    return any(field == v or field.startswith(v + ".") for v in varies)
+
+
+def pair_key(r: dict, varies: list[str]) -> tuple:
+    """What matches a control row with its candidate: benchmark, metric and the conditions the
+    pair does not vary."""
+    kept = tuple(sorted((k, v) for k, v in r["conditions"].items() if not allowed(f"conditions.{k}", varies)))
+    return r["benchmark"], r["metric"], kept
+
+
 def pairs(rows: list[dict]) -> dict[str, dict]:
     """{pair: {"control": [...], "candidate": [...], "delta": [...], "same_day": bool}}."""
     out: dict[str, dict] = {}
@@ -280,6 +323,15 @@ class _Chart:
 
     def __init__(self, spec: dict, rows: list[dict]):
         self.spec, self.rows, self.used = spec, rows, []
+        self.by_id = {r["id"]: r for r in rows}
+
+    def sources(self, ids: list[str]) -> dict:
+        """A mark's third-party sources, when it has any: source for one row, sources (one per
+        row, null for recall's own) for several."""
+        found = [self.by_id[i]["source"] for i in ids]
+        if not any(found):
+            return {}
+        return {"source": found[0]} if len(found) == 1 else {"sources": found}
 
     def row(self, *wheres: dict) -> dict:
         where = {}
@@ -334,7 +386,7 @@ class _Chart:
                     if item.get("label"):
                         mark["label"] = item["label"]
                     mark["row"] = r["id"]
-                    out["rows"].append(mark)
+                    out["rows"].append({**mark, **self.sources([r["id"]])})
             if s.get("ceiling"):
                 c = s["ceiling"]
                 v, rid = self.value(display, base, c["where"])
@@ -349,7 +401,7 @@ class _Chart:
                     vals.append(v)
                     ids.append(rid)
                 mark = {"name": se["name"], **({"cls": se["style"]} if se.get("style") else {}), "values": vals}
-                out["series"].append({**mark, "rows": ids})
+                out["series"].append({**mark, "rows": ids, **self.sources(ids)})
         elif kind == "scatter":
             out["points"] = []
             for p in s["points"]:
@@ -359,7 +411,7 @@ class _Chart:
                 if p.get("style") == "ours":
                     mark["ours"] = True
                 mark.update({k: p[k] for k in ("anchor", "label_dx", "label_dy") if k in p})
-                out["points"].append({**mark, "rows": [xid, yid]})
+                out["points"].append({**mark, "rows": [xid, yid], **self.sources([xid, yid])})
         elif kind == "cost_curve":
             out["series"] = []
             for se in s["series"]:
@@ -369,7 +421,7 @@ class _Chart:
                     y, yid = self.value("%", base, se.get("where"), p["where"], p["y"])
                     mark = {"label": p["label"], "cost": x, "value": y}
                     mark.update({k: p[k] for k in ("dx", "dy") if k in p})
-                    pts.append({**mark, "rows": [xid, yid]})
+                    pts.append({**mark, "rows": [xid, yid], **self.sources([xid, yid])})
                 out["series"].append({"name": se["name"], "points": pts})
             out["references"] = []
             for p in s.get("references", []):
@@ -377,7 +429,7 @@ class _Chart:
                 y, yid = self.value("%", base, p["where"], p["y"])
                 mark = {"name": p["name"], "cost": x, "value": y}
                 mark.update({k: p[k] for k in ("anchor", "dx", "dy") if k in p})
-                out["references"].append({**mark, "rows": [xid, yid]})
+                out["references"].append({**mark, "rows": [xid, yid], **self.sources([xid, yid])})
         else:
             raise ValueError(f"unknown chart kind {kind}")
         out["rows_used"] = sorted(set(self.used))
@@ -513,24 +565,30 @@ def _first_json(path: str) -> dict | None:
     return None
 
 
-def _invalid_runs() -> set[str]:
-    """Run folders the ledger beside the runs folder marks INVALID."""
+@functools.cache
+def _invalid_runs(ledger_needed: bool = True) -> frozenset[str]:
+    """Run folders the ledger beside the runs folder marks INVALID. With no ledger there is no
+    telling, so recording stops unless the caller says to go on without one."""
     ledger = os.path.join(os.path.dirname(RUNS), "LEDGER.md")
     if not os.path.exists(ledger):
-        return set()
+        if ledger_needed:
+            sys.exit(f"no ledger at {ledger}, so INVALID runs cannot be told apart: pass --no-ledger to record anyway")
+        return frozenset()
     with open(ledger, encoding="utf-8") as f:
-        return {m for line in f if "INVALID" in line for m in re.findall(r"\d{8}-\d{4,6}-[A-Za-z0-9._-]+", line)}
+        text = f.read()
+    return frozenset(
+        m for line in text.splitlines() if "INVALID" in line for m in re.findall(r"\d{8}-\d{4,6}-[A-Za-z0-9._-]+", line)
+    )
 
 
-def read_run(folder: str) -> dict:
+def read_run(folder: str, ledger_needed: bool = True) -> dict:
     """What a run folder says about itself: its eval, aggregates, settings and code. Refuses a
-    run that has not finished, failed, or is marked INVALID in the ledger."""
-    folder = os.path.abspath(os.path.expanduser(folder))
-    name = os.path.basename(folder.rstrip("/"))
+    run that has not finished, failed, or whose folder (or the harness folder it names) the
+    ledger marks INVALID."""
+    folder = os.path.normpath(os.path.abspath(os.path.expanduser(folder)))
+    name = os.path.basename(folder)
     if not RUN_NAME.match(name):
         sys.exit(f"{name}: not a run folder name (YYYYMMDD-HHMM[SS]-who-name)")
-    if name in _invalid_runs():
-        sys.exit(f"{name}: the ledger marks this run INVALID")
     wrapper = _meta_txt(os.path.join(folder, "meta.txt")) if os.path.exists(os.path.join(folder, "meta.txt")) else {}
     meta = {}
     if os.path.exists(os.path.join(folder, "meta.json")):
@@ -548,8 +606,8 @@ def read_run(folder: str) -> dict:
         # older harness code wrote its own folder; the wrapper's output names it
         with open(out_txt, encoding="utf-8", errors="replace") as f:
             m = re.search(r"results: (\S+)/index\.html", f.read())
-        if m and os.path.isdir(m.group(1)) and RUN_NAME.match(os.path.basename(m.group(1))):
-            inner = m.group(1)
+        if m and os.path.isdir(m.group(1)) and RUN_NAME.match(os.path.basename(os.path.normpath(m.group(1)))):
+            inner = os.path.normpath(m.group(1))
             names.append(os.path.basename(inner))
             if os.path.exists(os.path.join(inner, "meta.json")):
                 with open(os.path.join(inner, "meta.json"), encoding="utf-8") as f:
@@ -560,6 +618,9 @@ def read_run(folder: str) -> dict:
             summary = json.load(f)
     elif os.path.exists(out_txt):
         summary = _first_json(out_txt)
+    for n in names:
+        if n in _invalid_runs(ledger_needed):
+            sys.exit(f"{n}: the ledger marks this run INVALID")
     if not summary:
         sys.exit(f"{name}: no summary.json, and output.txt holds no JSON summary")
     eval_name = summary.get("eval") or meta.get("eval")
@@ -604,16 +665,17 @@ def _chat_schema(home: str | None) -> str | None:
 def rows_from_runs(folders: list[str], args) -> list[dict]:
     """One row per registered metric the runs report. Several folders are repeats of one
     setting: the row is their mean, with each folder's value in by_repeat."""
-    runs = [read_run(f) for f in folders]
+    runs = [read_run(f, not getattr(args, "no_ledger", False)) for f in folders]
     found = {_benchmark_for(r["eval"])[0] for r in runs}
     if len(found) != 1:
         sys.exit(f"the runs are of different benchmarks: {sorted(found)}")
-    bid, groups = _benchmark_for(runs[0]["eval"])
+    bid = found.pop()
     bench = registry()["benchmarks"][bid]
 
     def setting(r: dict) -> dict:
+        """Everything the row says about how the run ran, this folder's own eval name included."""
         s, meta = r["summary"], r["meta"]
-        conds = dict(groups)
+        conds = dict(_benchmark_for(r["eval"])[1])
         for key, c in bench.get("conditions", {}).items():
             v, src = conds.get(key), c.get("from")
             if v is None and src == "cmd":  # a pattern over the command line
@@ -651,6 +713,11 @@ def rows_from_runs(folders: list[str], args) -> list[dict]:
             sys.exit("--git: these runs have no prod hash to check it against")
         if prod_hash(args.git) != st["code"]["prod"]:
             sys.exit(f"--git {args.git}: its product code is {prod_hash(args.git)}, the runs' is {st['code']['prod']}")
+        on_main = (
+            subprocess.run(["git", "-C", REPO, "merge-base", "--is-ancestor", args.git, _main_ref()]).returncode == 0
+        )
+        if not on_main and not _git("tag", "--contains", args.git).strip():
+            sys.exit(f"--git {args.git}: not on {_main_ref()} or a tag, so no one else could look it up")
         st["code"]["git"] = _git("rev-parse", "--short=7", args.git).strip()
     corpus = None
     if bench["corpus"] == "private":
@@ -681,11 +748,13 @@ def rows_from_runs(folders: list[str], args) -> list[dict]:
     for mid, spec in bench["metrics"].items():
         if wanted and mid not in wanted:
             continue
-        per_run = [figures(r["summary"], spec) for r in runs]
-        keys = [tuple(sorted(c.items())) for c, _ in per_run[0]]
-        for i, extra in enumerate(keys):
-            vals = [pr[i][1] if i < len(pr) else None for pr in per_run]
+        # each folder's figures by their breakdown conditions, so folders match on what they
+        # measured, not on the order their summaries list it
+        per_run = [{tuple(sorted(c.items())): v for c, v in figures(r["summary"], spec)} for r in runs]
+        for extra in per_run[0]:
+            vals = [pr.get(extra) for pr in per_run]
             if any(v is None for v in vals):
+                print(f"skipped {mid} {dict(extra) or ''}: not every folder reports it", file=sys.stderr)
                 continue
             row = {"kind": "measured", "date": st["date"], "benchmark": bid, "metric": mid, "system": "recall"}
             if len(runs) == 1:
@@ -713,6 +782,7 @@ def rows_from_runs(folders: list[str], args) -> list[dict]:
             row["corpus"] = corpus
             row["runs"] = [n for r in runs for n in r["names"]]
             row["pair"], row["role"], row["public"], row["note"] = args.pair, args.role, args.public, args.note
+            row["varies"] = sorted(args.allow_diff or []) if args.pair else []
             out.append(complete(row))
     if not out:
         sys.exit(f"the runs report none of {bid}'s registered metrics")
@@ -748,20 +818,58 @@ def _private_strings() -> list[str]:
     return sorted(out)
 
 
-def check(path: str = STORE, base: str | None = None) -> list[str]:
-    """Every problem with the store: schema, ids, registry references, private content, and
-    (with base) a row of the base revision edited or removed."""
+def _check_definitions(jsonschema) -> list[str]:
+    """registry.json and charts.json against their schemas, plus what a schema cannot say: that
+    comparable_on names real fields and the evals patterns compile."""
     errors = []
+    for path, schema_path in SCHEMAS.items():
+        with open(schema_path, encoding="utf-8") as f:
+            v = jsonschema.Draft202012Validator(json.load(f))
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        for e in v.iter_errors(doc):
+            if e.context:  # a oneOf with no branch matching: report the closest branch's error
+                e = jsonschema.exceptions.best_match(e.context)
+            where = ".".join(map(str, e.absolute_path)) or "top"
+            errors.append(f"{os.path.basename(path)}: {where}: {e.message[:200]}")
+    if errors:
+        return errors
+    fields = set(FIELDS) | {"code.release", "code.git", "code.prod", "corpus.home", "corpus.chat_schema"}
+    for bid, b in registry()["benchmarks"].items():
+        for k in b["comparable_on"]:
+            ok = k in fields or (k.startswith("conditions.") and k[11:] in b["conditions"])
+            if not ok:
+                errors.append(f"registry.json: {bid}: comparable_on names {k!r}, which no row has")
+        for pattern in b["evals"]:
+            try:
+                groups = re.compile(pattern).groupindex
+            except re.error as e:
+                errors.append(f"registry.json: {bid}: evals pattern {pattern!r}: {e}")
+                continue
+            for g in groups:
+                if g != "model" and g not in b["conditions"]:
+                    errors.append(f"registry.json: {bid}: evals pattern names {g!r}, which is not a condition")
+    return errors
+
+
+def check(path: str = STORE, base: str | None = None) -> list[str]:
+    """Every problem with the store: the registry and chart definitions, each row's schema, id
+    and registry references, private content, declared differences between the arms of pairs
+    and deltas, charts that do not resolve, a stale figures.json, and (with base) a row of the
+    base revision edited or removed. Once a row is malformed the checks that read rows stop."""
     try:
         import jsonschema
     except ImportError:
         return ["jsonschema is not installed: run this with `uv run`"]
+    errors = _check_definitions(jsonschema)
+    if errors:
+        return [*errors, "the store was not checked: fix registry.json and charts.json first"]
     with open(SCHEMA, encoding="utf-8") as f:
         validator = jsonschema.Draft202012Validator(json.load(f))
     reg = registry()["benchmarks"]
     with open(path, encoding="utf-8") as f:
         lines = [line.rstrip("\n") for line in f]
-    rows, ids = [], set()
+    rows, ids, malformed = [], set(), False
     for n, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -769,62 +877,126 @@ def check(path: str = STORE, base: str | None = None) -> list[str]:
             r = json.loads(line)
         except json.JSONDecodeError as e:
             errors.append(f"line {n}: not JSON ({e})")
+            malformed = True
             continue
-        rows.append((n, r))
-        for e in validator.iter_errors(r):
-            errors.append(f"line {n}: {'.'.join(map(str, e.absolute_path)) or 'row'}: {e.message}")
+        if not isinstance(r, dict):
+            errors.append(f"line {n}: not a JSON object")
+            malformed = True
+            continue
+        problems = [
+            f"line {n}: {'.'.join(map(str, e.absolute_path)) or 'row'}: {e.message}" for e in validator.iter_errors(r)
+        ]
+        errors += problems
+        malformed |= bool(problems)
         if list(r) != FIELDS:
             errors.append(f"line {n}: fields must be exactly {FIELDS}, in that order")
-        if r.get("id") != row_id(r):
-            errors.append(f"line {n}: id {r.get('id')} does not match the row (edited? rows are never edited)")
-        if r.get("id") in ids:
-            errors.append(f"line {n}: duplicate id {r.get('id')}")
-        ids.add(r.get("id"))
+            malformed = True
         if PRIVATE.search(line):
             errors.append(f"line {n}: looks private ({PRIVATE.search(line).group(0)!r})")
-        b = reg.get(r.get("benchmark"))
-        if not b:
-            errors.append(f"line {n}: benchmark {r.get('benchmark')!r} is not in registry.json")
+        if problems:
             continue
-        if r.get("metric") not in b["metrics"]:
-            errors.append(f"line {n}: {r.get('benchmark')} has no metric {r.get('metric')!r}")
-        for k, v in (r.get("conditions") or {}).items():
-            c = b.get("conditions", {}).get(k)
+        if r["id"] != row_id(r):
+            errors.append(f"line {n}: id {r['id']} does not match the row (edited? rows are never edited)")
+        if r["id"] in ids:
+            errors.append(f"line {n}: duplicate id {r['id']}")
+        ids.add(r["id"])
+        rows.append((n, r))
+        b = reg.get(r["benchmark"])
+        if not b:
+            errors.append(f"line {n}: benchmark {r['benchmark']!r} is not in registry.json")
+            malformed = True
+            continue
+        if r["metric"] not in b["metrics"]:
+            errors.append(f"line {n}: {r['benchmark']} has no metric {r['metric']!r}")
+            malformed = True
+        for k, v in r["conditions"].items():
+            c = b["conditions"].get(k)
             if c is None:
                 errors.append(f"line {n}: {r['benchmark']} declares no condition {k!r}")
             elif c.get("values") and v not in c["values"]:
                 errors.append(f"line {n}: condition {k}={v!r} is not one of {c['values']}")
-    for n, r in rows:
-        for k in ("control", "candidate", *[f"supersedes[{i}]" for i in range(len(r.get("supersedes") or []))]):
-            ref = r["supersedes"][int(k[11:-1])] if k.startswith("supersedes") else r.get(k)
-            if ref and ref not in ids:
-                errors.append(f"line {n}: {k} names {ref}, which is not in the store")
     private = _private_strings()
     for n, ln in enumerate(lines, 1):  # say where, never what
         if any(s in ln and re.search(rf"(?<![\w-]){re.escape(s)}(?![\w-])", ln) for s in private):
             errors.append(f"line {n}: holds a private eval case's id or text")
     if base:
-        rel = os.path.relpath(path, REPO)
-        old = subprocess.run(["git", "-C", REPO, "show", f"{base}:{rel}"], capture_output=True, text=True)
-        if old.returncode == 0:
-            now = set(lines)
-            gone = [ln for ln in old.stdout.splitlines() if ln.strip() and ln not in now]
-            errors += [f"a row in {base} was edited or removed: {json.loads(ln)['id']}" for ln in gone]
+        errors += _check_base(path, lines, base)
+    if malformed:
+        return [*errors, "references, pairs and charts were not checked: fix the rows above first"]
+    by_id = {r["id"]: (n, r) for n, r in rows}
+    for n, r in rows:
+        for key in ("control", "candidate"):
+            if r[key] and r[key] not in by_id:
+                errors.append(f"line {n}: {key} names {r[key]}, which is not in the store")
+        for ref in r["supersedes"]:
+            if ref not in by_id:
+                errors.append(f"line {n}: supersedes names {ref}, which is not in the store")
+        if r["kind"] == "delta" and r["control"] in by_id and r["candidate"] in by_id:
+            ctl, cand = by_id[r["control"]][1], by_id[r["candidate"]][1]
+            if (
+                not ctl["benchmark"] == cand["benchmark"] == r["benchmark"]
+                or not ctl["metric"] == cand["metric"] == r["metric"]
+            ):
+                errors.append(f"line {n}: a delta and its two arms must share benchmark and metric")
+                continue
+            undeclared = [f for f in pair_differences(ctl, cand) if not allowed(f, r["varies"])]
+            if undeclared:
+                errors.append(
+                    f"line {n}: the delta's arms also differ in {', '.join(undeclared)}, which varies does not name"
+                )
+    errors += _check_pairs([r for _, r in rows])
     figures = os.path.join(HERE, "figures.json")
     drawn = {}
     if path == STORE and os.path.exists(figures):
         with open(figures, encoding="utf-8") as f:
             drawn = json.load(f)
-    gone = {i for _, r in rows for i in r.get("supersedes") or []}
+    standing = current([r for _, r in rows])
     for name in chart_specs():
         try:
-            resolved = json.loads(json.dumps(chart(name, [r for _, r in rows if r.get("id") not in gone])))
-        except (LookupError, KeyError) as e:
+            resolved = json.loads(json.dumps(chart(name, standing)))
+        except (LookupError, KeyError, ValueError) as e:
             errors.append(f"chart {name}: {e}")
             continue
         if drawn and drawn.get(name) != resolved:
             errors.append(f"figures.json does not match the store for chart {name}: run make_charts.py")
     return errors
+
+
+def _check_pairs(rows: list[dict]) -> list[str]:
+    """A pair's control and candidate rows, matched on benchmark, metric and the conditions the
+    pair does not vary, may differ only in the fields their varies names."""
+    errors = []
+    for pid, p in sorted(pairs(rows).items()):
+        varies = sorted({v for r in p["control"] + p["candidate"] + p["delta"] for v in r["varies"]})
+        controls = {pair_key(r, varies): r for r in p["control"]}
+        for cand in p["candidate"]:
+            ctl = controls.get(pair_key(cand, varies))
+            if ctl is None:
+                continue
+            undeclared = [f for f in pair_differences(ctl, cand) if not allowed(f, varies)]
+            if undeclared:
+                errors.append(
+                    f"pair {pid}: {cand['metric']} {ctl['id']} and {cand['id']} also differ in "
+                    f"{', '.join(undeclared)}, which its rows' varies does not name"
+                )
+    return errors
+
+
+def _check_base(path: str, lines: list[str], base: str) -> list[str]:
+    """Every row of the base revision is still here, unedited. The revision must exist; only a
+    store that did not exist at base passes without comparing."""
+    ok = subprocess.run(["git", "-C", REPO, "rev-parse", "--verify", "-q", f"{base}^{{commit}}"], capture_output=True)
+    if ok.returncode != 0:
+        return [f"--base {base}: no such revision here (fetch it first)"]
+    rel = os.path.relpath(path, REPO)
+    if subprocess.run(["git", "-C", REPO, "cat-file", "-e", f"{base}:{rel}"], capture_output=True).returncode != 0:
+        return []  # the store is new since base
+    old = subprocess.run(["git", "-C", REPO, "show", f"{base}:{rel}"], capture_output=True, text=True)
+    if old.returncode != 0:
+        return [f"--base {base}: could not read {rel} there: {old.stderr.strip()}"]
+    now = set(lines)
+    gone = [ln for ln in old.stdout.splitlines() if ln.strip() and ln not in now]
+    return [f"a row in {base} was edited or removed: {json.loads(ln).get('id')}" for ln in gone]
 
 
 # --- command line -----------------------------------------------------------------
@@ -891,6 +1063,15 @@ def main() -> None:
         o.add_argument("--metrics", help="only these metrics, comma separated")
         o.add_argument("--set", action="append", help="a condition the run does not record, key=value")
         o.add_argument("--note")
+        o.add_argument(
+            "--allow-diff",
+            action="append",
+            metavar="FIELD",
+            help="with a pair: a field the arms are meant to differ in (code, model, corpus, conditions.arm, date...)",
+        )
+        o.add_argument(
+            "--no-ledger", action="store_true", help="record although no LEDGER.md says which runs are INVALID"
+        )
         o.add_argument("--dry-run", action="store_true")
     a = sub.add_parser("add", help="append hand-made rows (third-party or derived figures) from a JSON file")
     a.add_argument("file", help="a JSON object or list of objects, or - for stdin")
@@ -916,6 +1097,10 @@ def main() -> None:
     elif args.cmd == "record":
         if (args.pair is None) != (args.role is None):
             sys.exit("--pair and --role go together")
+        if args.pair and not args.allow_diff:
+            sys.exit(
+                "--pair needs --allow-diff FIELD for each field the arms are meant to differ in (code, model, ...)"
+            )
         rows = rows_from_runs(args.runs, args)
         for row in rows:
             print(dumps(row))
@@ -925,18 +1110,27 @@ def main() -> None:
         args.git = None
         arms = {}
         for role in ("control", "candidate"):
-            arm = argparse.Namespace(**{**vars(args), "role": role})
-            arms[role] = rows_from_runs([getattr(args, role)], arm)
-        ctl, cand = (
-            next(r for r in arms[k] if not r["conditions"].keys() - set(arms[k][0]["conditions"])) for k in arms
-        )
-        if ctl["benchmark"] != cand["benchmark"]:
-            sys.exit(f"the arms are of different benchmarks: {ctl['benchmark']}, {cand['benchmark']}")
-        if registry()["benchmarks"][ctl["benchmark"]].get("same_day") and ctl["date"] != cand["date"]:
-            sys.exit(f"{ctl['benchmark']} compares only within a day: the arms ran on {ctl['date']} and {cand['date']}")
-        differ = [k for k in comparable(ctl, cand) if k != "date"]
-        if differ:
-            print(f"note: the arms also differ in {', '.join(differ)}", file=sys.stderr)
+            arms[role] = rows_from_runs([getattr(args, role)], argparse.Namespace(**{**vars(args), "role": role}))
+        varies = sorted(args.allow_diff or [])
+        controls = {pair_key(r, varies): r for r in arms["control"]}
+        benchmarks = sorted({r["benchmark"] for r in arms["control"] + arms["candidate"]})
+        if len(benchmarks) > 1:
+            sys.exit(f"the arms are of different benchmarks: {', '.join(benchmarks)}")
+        undeclared = {}
+        for cand in arms["candidate"]:
+            if pair_key(cand, varies) in controls:
+                for f in pair_differences(controls[pair_key(cand, varies)], cand):
+                    if not allowed(f, varies):
+                        undeclared.setdefault(f, []).append(cand["metric"])
+        if undeclared:
+            listed = "; ".join(f"{f} ({', '.join(sorted(set(m)))})" for f, m in sorted(undeclared.items()))
+            sys.exit(
+                f"the arms differ in {listed}: name each with --allow-diff if the pair means it, or do not pair them"
+            )
+        if not varies:
+            sys.exit(
+                "the arms differ in nothing a pair tracks: name the difference the pair is about with --allow-diff"
+            )
         rows = arms["control"] + arms["candidate"]
         for row in rows:
             print(dumps(row))
@@ -948,7 +1142,10 @@ def main() -> None:
         else:
             with open(args.file, encoding="utf-8") as f:
                 data = json.load(f)
-        rows = [complete(d) for d in (data if isinstance(data, list) else [data])]
+        try:
+            rows = [complete(d) for d in (data if isinstance(data, list) else [data])]
+        except (ValueError, AttributeError) as e:
+            sys.exit(f"not added: {e}")
         for row in rows:
             print(dumps(row))
         if not args.dry_run:
