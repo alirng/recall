@@ -8,6 +8,7 @@
 One memory for all your coding agents.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/alirng/recall/ci.yml?branch=main&label=CI&style=flat-square&labelColor=2b2b2e)](https://github.com/alirng/recall/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/recall-agents?label=pypi&style=flat-square&labelColor=2b2b2e&color=58585d)](https://pypi.org/project/recall-agents/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-58585d?style=flat-square&labelColor=2b2b2e)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-58585d?style=flat-square&labelColor=2b2b2e)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-58585d?style=flat-square&labelColor=2b2b2e)
@@ -81,8 +82,12 @@ the method, the caveats and the commands.
   latest form; written by gpt-6-luna, two in three ([which model to pick](docs/benchmarks.md#which-model-writes-your-notes)).
 - **No LLM calls to index or to search.** On ~2,800 chats a search takes about 11 ms, or
   47 ms with embeddings (median, on a laptop).
+- **Out of the way while agents work.** In 0.5.0 a call to recall's tools takes 65 ms at the
+  median, against 258 ms in 0.4.2, and agents answer as accurately (same day, three runs each;
+  [the comparison](docs/benchmarks.md)). It waits for power before background work on battery,
+  and every agent's server shares one copy of the search vectors.
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.4.1 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.4.1 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.4.1 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.5.0 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.5.0 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.5.0 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
 
 On LongMemEval, the chat benchmark memory products usually report, recall's search puts a
 session that answers the question in its top five 98.7% of the time.

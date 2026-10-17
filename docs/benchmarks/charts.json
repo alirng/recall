@@ -7,18 +7,18 @@
     "where": {"benchmark": "swecb-lite-retrieval", "conditions.scope": "all"},
     "groups": [
       {"label": "In the top 3", "rows": [
-        {"name": "recall 0.4.1", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.4.1", "metric": "hit@3", "conditions.search": "hybrid"}},
+        {"name": "recall 0.5.0", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.0", "metric": "hit@3", "conditions.search": "hybrid"}},
         {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@3", "conditions.search": "hybrid"}},
         {"name": "OpenViking", "note": "ingest {usd}, {time:h}", "refs": {"usd": {"metric": "ingest_usd"}, "time": {"metric": "ingest_minutes"}}, "where": {"system": "OpenViking", "metric": "overall_matched", "conditions.k": 3}},
         {"name": "Mem0", "note": "ingest {usd}, {time}", "refs": {"usd": {"metric": "ingest_usd"}, "time": {"metric": "ingest_minutes"}}, "where": {"system": "Mem0", "metric": "overall_matched", "conditions.k": 3}}
       ]},
       {"label": "In the top 10", "rows": [
-        {"name": "recall 0.4.1", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.4.1", "metric": "hit@10", "conditions.search": "hybrid"}},
+        {"name": "recall 0.5.0", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.0", "metric": "hit@10", "conditions.search": "hybrid"}},
         {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@10", "conditions.search": "hybrid"}},
         {"name": "LangMem", "note": "memories; ingest {usd}", "refs": {"usd": {"metric": "ingest_usd"}}, "where": {"system": "LangMem", "metric": "overall_matched", "conditions.k": 10}}
       ]},
       {"label": "In the top 15", "rows": [
-        {"name": "recall 0.4.1", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.4.1", "metric": "hit@15", "conditions.search": "hybrid"}},
+        {"name": "recall 0.5.0", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.0", "metric": "hit@15", "conditions.search": "hybrid"}},
         {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@15", "conditions.search": "hybrid"}},
         {"name": "Supermemory", "note": "ingest {tokens:k0} tokens", "refs": {"tokens": {"metric": "ingest_tokens"}}, "where": {"system": "Supermemory", "metric": "overall_matched", "conditions.k": 15}}
       ]}

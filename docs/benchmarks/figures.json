@@ -7,11 +7,11 @@
   "rows": [
    {
     "group": "In the top 3",
-    "name": "recall 0.4.1",
+    "name": "recall 0.5.0",
     "value": 76.8,
     "ours": true,
     "note": "no LLM calls",
-    "row": "66e5fa67b0f2"
+    "row": "010d1caef0a1"
    },
    {
     "group": "In the top 3",
@@ -39,11 +39,11 @@
    },
    {
     "group": "In the top 10",
-    "name": "recall 0.4.1",
+    "name": "recall 0.5.0",
     "value": 92.9,
     "ours": true,
     "note": "no LLM calls",
-    "row": "c51c752bea00"
+    "row": "111968a43852"
    },
    {
     "group": "In the top 10",
@@ -63,11 +63,11 @@
    },
    {
     "group": "In the top 15",
-    "name": "recall 0.4.1",
+    "name": "recall 0.5.0",
     "value": 97.0,
     "ours": true,
     "note": "no LLM calls",
-    "row": "ed5ec6eb42d6"
+    "row": "465e475f6b39"
    },
    {
     "group": "In the top 15",
@@ -87,22 +87,22 @@
    }
   ],
   "rows_used": [
+   "010d1caef0a1",
+   "111968a43852",
    "140bcf1bb63f",
    "1761d1554ef7",
    "1ea689253ea8",
    "2d98c7e48d13",
    "371d6e875d60",
    "462d49853191",
+   "465e475f6b39",
    "47354b74fa48",
    "572996f8804d",
-   "66e5fa67b0f2",
    "82e546763d99",
    "837976611b24",
    "8e4c2125c3e7",
    "a4dd3410b9bd",
-   "b31f1b8f29cb",
-   "c51c752bea00",
-   "ed5ec6eb42d6"
+   "b31f1b8f29cb"
   ]
  },
  "agent-tokens": {
