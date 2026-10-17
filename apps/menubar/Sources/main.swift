@@ -19,10 +19,13 @@ struct Status: Decodable {
             if servers[o.agent] == nil { order.append(o.agent) }
             servers[o.agent, default: []].append(o)
         }
+        let now = Date().timeIntervalSince1970
         return order.map { agent in
-            let xs = servers[agent]!
-            let since = xs.map { ago(Int(Date().timeIntervalSince1970 - $0.started_at)) }.joined(separator: ", ")
-            return (agent, "its recall predates \(xs.last!.installed) · started \(since)")
+            let xs = servers[agent]!  // oldest first
+            let oldest = ago(Int(now - xs.first!.started_at)), newest = ago(Int(now - xs.last!.started_at))
+            let when = xs.count == 1 ? "started \(oldest)" : oldest == newest ? "all started \(oldest)" : "started \(oldest) to \(newest)"
+            let what = xs.count == 1 ? "its recall server" : "\(xs.count) recall servers"
+            return (agent, "\(what) predate\(xs.count == 1 ? "s" : "") \(xs.last!.installed) · \(when)")
         }
     }
 }
@@ -553,12 +556,14 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-mark"
     exit(0)
 }
 
-// `Recall --render-panel out.png [demo]` draws the panel in dark and light, with live data or
-// the demo, to judge it without opening the menu bar.
+// `Recall --render-panel out.png [demo | status.json]` draws the panel in dark and light, with
+// live data, the demo or a saved `recall status --json`, to judge it without opening the menu bar.
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--render-panel" {
     var status: Status?
     if CommandLine.arguments.count > 3, CommandLine.arguments[3] == "demo" {
         status = try? JSONDecoder().decode(Status.self, from: Data(demoStatus.utf8))
+    } else if CommandLine.arguments.count > 3 {
+        status = try? JSONDecoder().decode(Status.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[3])))
     } else if case .success(let s) = App.fetch() {
         status = s
     }

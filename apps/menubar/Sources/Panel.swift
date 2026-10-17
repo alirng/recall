@@ -365,17 +365,18 @@ struct RepoGraph: View {
     let repo: String
     let chats: [Session]
     @Environment(\.colorScheme) var scheme
+    static let tail: CGFloat = 10  // room under the last row for a branch to curve into the trunk
 
     var body: some View {
         let p = Palette.of(scheme)
         let branches = lanes()
-        let rows = chats.sorted { (branches.firstIndex(of: $0.branch ?? "?") ?? 0, $0.age_seconds) < (branches.firstIndex(of: $1.branch ?? "?") ?? 0, $1.age_seconds) }
-        let width = WorkingNow.lane * CGFloat(max(branches.count, 1)) + 4
+        let rows = chats.sorted { $0.age_seconds < $1.age_seconds }  // newest at the top, like git log
+        let width = WorkingNow.lane * CGFloat(branches.count) + 4
         VStack(alignment: .leading, spacing: 4) {
             Text(repo).font(PaperMono.font(12.5, 520)).foregroundStyle(p.ink)
             ZStack(alignment: .topLeading) {
                 Canvas { ctx, _ in draw(ctx, p, branches, rows) }
-                    .frame(width: width, height: WorkingNow.row * CGFloat(rows.count))
+                    .frame(width: width, height: WorkingNow.row * CGFloat(rows.count) + Self.tail)
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(rows, id: \.id) { s in
                         VStack(alignment: .leading, spacing: 2) {
@@ -391,10 +392,12 @@ struct RepoGraph: View {
         }
     }
 
-    /// The default branch first, then the others in order of their newest chat.
+    /// Lane 0 is the trunk: the default branch, there even when no chat is on it, since the other
+    /// branches fork off it. Then each other branch in order of its newest chat.
     func lanes() -> [String] {
-        var out: [String] = []
-        for b in ["main", "master"] where chats.contains(where: { $0.branch == b }) { out.append(b) }
+        let named = chats.compactMap(\.branch)
+        let trunk = ["main", "master"].first { named.contains($0) } ?? (named.isEmpty ? "?" : "main")
+        var out = [trunk]
         for s in chats.sorted(by: { $0.age_seconds < $1.age_seconds }) where !out.contains(s.branch ?? "?") {
             out.append(s.branch ?? "?")
         }
@@ -403,26 +406,20 @@ struct RepoGraph: View {
 
     func draw(_ ctx: GraphicsContext, _ p: Palette, _ branches: [String], _ rows: [Session]) {
         let h = WorkingNow.row, x = { (i: Int) in 4 + CGFloat(i) * WorkingNow.lane }
-        let trunk = branches.first.map { ["main", "master"].contains($0) } ?? false
-        for (i, b) in branches.enumerated() {
+        let bottom = CGFloat(rows.count) * h + Self.tail
+        var trunk = Path()
+        trunk.move(to: CGPoint(x: x(0), y: 0))
+        trunk.addLine(to: CGPoint(x: x(0), y: bottom))
+        ctx.stroke(trunk, with: .color(p.lane), lineWidth: 1)
+        for (i, b) in branches.enumerated().dropFirst() {
             let ys = rows.enumerated().filter { ($0.element.branch ?? "?") == b }.map { CGFloat($0.offset) * h + h / 2 }
             guard let first = ys.first, let last = ys.last else { continue }
+            // The branch runs down from its newest chat and, below its oldest, curves into the trunk it forked from.
+            let start = last + 6, end = min(last + h * 0.8, bottom), mid = (start + end) / 2
             var line = Path()
-            if i == 0 && trunk {
-                line.move(to: CGPoint(x: x(0), y: 0))
-                line.addLine(to: CGPoint(x: x(0), y: CGFloat(rows.count) * h))
-            } else {
-                // A branch forks off the default branch's lane in an S-curve above its first chat.
-                let start = max(first - h * 0.8, 0), end = first - 7
-                if trunk {
-                    let mid = (start + end) / 2
-                    line.move(to: CGPoint(x: x(0), y: start))
-                    line.addCurve(to: CGPoint(x: x(i), y: end), control1: CGPoint(x: x(0), y: mid), control2: CGPoint(x: x(i), y: mid))
-                } else {
-                    line.move(to: CGPoint(x: x(i), y: start))
-                }
-                line.addLine(to: CGPoint(x: x(i), y: last))
-            }
+            line.move(to: CGPoint(x: x(i), y: first))
+            line.addLine(to: CGPoint(x: x(i), y: start))
+            line.addCurve(to: CGPoint(x: x(0), y: end), control1: CGPoint(x: x(i), y: mid), control2: CGPoint(x: x(0), y: mid))
             ctx.stroke(line, with: .color(p.lane), lineWidth: 1)
         }
         for (r, s) in rows.enumerated() {
