@@ -5,6 +5,32 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-17
+
+### Added
+
+- **Benchmark figures live in one store.** Every figure in the README, `docs/benchmarks.md` and on
+  rererecall.com, and every other system's figure they compare against, is a row of
+  `docs/benchmarks/results.jsonl`: a benchmark and metric from `docs/benchmarks/registry.json`, the
+  value with its interval, repeats and date, the code it measured (release, commit and product-code
+  hash), the model, judge, harness and conditions, and the run folders it came from. Rows are
+  appended and never edited. `uv run python docs/benchmarks/store.py record RUN_DIR` turns a
+  finished run into rows, and `check` validates the store in CI. The charts draw from the store
+  through `docs/benchmarks/charts.json`, and `docs/benchmarks/figures.json` replaces `results.json`
+  for anyone drawing the same figures. See `docs/benchmarks/README.md`.
+
+### Changed
+
+- **Benchmarks re-checked for 0.5.0.** On the v0.5.0 tag, search and retrieval give 0.4.1's figures
+  at every cutoff. Run side by side with 0.4.2 on the same day, three runs each, agents do as well
+  (78.7% of my questions about past work against 79.4%; MemoryCode with notes at session start 85.5%
+  against 85.0%), while a call to recall's tools takes 65 ms instead of 258 ms at the median and
+  none failed. The figures are in docs/benchmarks.md and docs/benchmarks/results.jsonl.
+- **The README shows the release and 0.5.0's speed.** A PyPI badge gives the current version, the
+  SWE-ContextBench chart carries 0.5.0's label (its re-check gave the same figures), and the results
+  add that a call to recall's tools takes 65 ms at the median, against 258 ms in 0.4.2, with agents
+  as accurate.
+
 ## [0.5.0] - 2026-10-16
 
 ### Upgrading
@@ -619,7 +645,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/alirng/recall/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/alirng/recall/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/alirng/recall/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/alirng/recall/compare/v0.4.0...v0.4.1
