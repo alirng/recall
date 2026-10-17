@@ -183,7 +183,7 @@ folder where one exists, and recorded from that folder through the recorder; eve
 value matched the published one. Where a figure predates the run ledger (9 October), or the runs
 were not pinned to folders, it was added by hand with `runs: []` and a note. Tracing corrected
 two labels: the MemoryCode "0.2.1" notes run and its "0.3.0 tools only" agent run ran commit
-fe843c2, which is neither release, and the store says so. The 16 October MemoryCode agent token
+760f1b8, which is neither release, and the store says so. The 16 October MemoryCode agent token
 and call figures (61k and 36k tokens, 7.3 and 2.2 calls) do not match their runs' summaries
 (62.5k and 35.3k, 7.7 and 2.1); they are stored as published with both in the note. The 0.5.0
 recheck and the 17 October 0.4.2-against-0.5.0 pair were then added the ordinary way, with

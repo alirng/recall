@@ -438,27 +438,42 @@ def _tags() -> list[tuple[str, str, str]]:
     return [(t, prod_hash(t), prod_hash(t, blind=True)) for t in tags]
 
 
+def _main_ref() -> str:
+    """The published branch: origin/main when there is one, else HEAD."""
+    ok = subprocess.run(["git", "-C", REPO, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True)
+    return "origin/main" if ok.returncode == 0 else "HEAD"
+
+
 @functools.cache
 def resolve_code(prod: str | None, before: str | None = None) -> dict:
-    """A run's code identity from its prod hash: a commit with exactly this product code (a
-    release tag's, else the newest commit before the run that has it), and the oldest release
-    whose tag holds the same code apart from __version__, since release runs measure the commit
-    before the version bump. Unknown: just the hash."""
+    """A run's code identity from its prod hash. git: a commit on the published branch with
+    exactly this product code (a release tag's first), so anyone can look it up; release: the
+    oldest tag whose product code is the same apart from __version__, since release runs
+    measure the commit before the version bump. A commit found only on local branches (a
+    feature branch, history from before a rewrite) still gives the release, but no git.
+    Unknown: just the hash."""
     out = {"release": None, "git": None, "prod": prod}
     if not prod:
         return out
     for tag, exact, _ in _tags():
         if exact == prod:
             return {**out, "release": tag[1:], "git": _git("rev-parse", "--short=7", f"{tag}^{{commit}}").strip()}
-    # every commit, nearest the run's date first: code often runs before it is committed
-    commits = [line.split() for line in _git("log", "--all", "--format=%H %ct").splitlines()]
     when = datetime.fromisoformat(before).timestamp() if before else 0
-    for sha, _ in sorted(commits, key=lambda c: abs(int(c[1]) - when) if before else -int(c[1])):
+
+    def nearest(*refs: str) -> list[str]:
+        """Commits of refs, nearest the run's date first: code often runs before it is committed."""
+        commits = [line.split() for line in _git("log", *refs, "--format=%H %ct").splitlines()]
+        return [c[0] for c in sorted(commits, key=lambda c: abs(int(c[1]) - when) if before else -int(c[1]))]
+
+    published = nearest(_main_ref())
+    seen = set(published)
+    for sha in published + [c for c in nearest("--all") if c not in seen]:
         if prod_hash(sha) != prod:
             continue
-        out["git"] = sha[:7]
-        blind = prod_hash(sha, blind=True)
+        if sha in seen:
+            out["git"] = sha[:7]
         # the oldest tag with this code; not an ancestry test, which history rewrites break
+        blind = prod_hash(sha, blind=True)
         out["release"] = next((tag[1:] for tag, _, tag_blind in _tags() if tag_blind == blind), None)
         return out
     return out
