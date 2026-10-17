@@ -1,0 +1,2 @@
+# results.jsonl is append-only: when two branches each add rows, a merge keeps both sides
+docs/benchmarks/results.jsonl merge=union

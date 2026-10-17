@@ -3,6 +3,8 @@
 # What it checks:
 #   - Style: ruff format and ruff lint over src/.
 #   - Changelog: fragments in changes/ are valid, and a PR edits CHANGELOG.md only on a release-* branch.
+#   - Benchmark results: docs/benchmarks/results.jsonl matches its schema and registry, holds nothing
+#     private, every chart resolves, figures.json is current, and a PR edits or removes no row.
 #   - Packaging: the sdist and wheel build, and the wheel installs into a fresh venv.
 #   - Smoke test, run from outside the checkout so only the installed wheel is tested:
 #     every module imports, both memory prompts load, and the core commands
@@ -48,6 +50,18 @@ jobs:
 
       - name: Changelog fragments
         run: python3 tools/changelog.py --check
+
+      - name: Benchmark results store
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          base=""
+          if [ -n "$BASE" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+            base="--base origin/$BASE"
+          fi
+          uv run --no-project --with "jsonschema>=4.20" python docs/benchmarks/store.py check $base
 
       - name: CHANGELOG.md is edited by releases only
         if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'

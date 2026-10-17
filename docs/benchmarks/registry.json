@@ -1,0 +1,438 @@
+{
+  "_about": "Every benchmark results.jsonl holds figures for. A benchmark: what it measures, its corpus (public, or the maintainer's private chats), the command that runs it, the eval names of its run folders (regexes whose named groups fill conditions), the conditions a figure can carry, which fields must match for two figures to compare (comparable_on, plus the date when same_day is true), and its metrics. A metric: unit (fraction 0-1, tokens, usd, minutes, ms, seconds, count), which way is better, and where store.py record finds it in a run's summary (key, a dotted path; by_repeat; breakdown into rows by a condition). Metrics with no key are derived or third-party, added with store.py add. See README.md.",
+  "benchmarks": {
+    "swecb-lite-retrieval": {
+      "title": "SWE-ContextBench Lite: past-fix retrieval",
+      "description": "Query: a related GitHub issue's full text. Hit: a gold experience session (the earlier fix) in the top k of the 300 Claude Code sessions, or of the issue's own repo. Deterministic.",
+      "corpus": "public",
+      "dataset": {"name": "SWE-ContextBench Lite", "url": "https://arxiv.org/html/2602.08316v3", "cases": "99 related issues (59 train, 40 test), 300 Claude Code sessions"},
+      "run": "uv run --with pyarrow recall eval swe-contextbench --data DIR --scope all --hybrid --split all",
+      "evals": ["swecb-lite-(?P<scope>all|repo)-(?P<search>hybrid|keyword)"],
+      "conditions": {
+        "scope": {"values": ["all", "repo"], "about": "all 300 sessions, or only the issue's own repo"},
+        "search": {"values": ["hybrid", "keyword"], "about": "hybrid adds nomic-embed-text through Ollama"},
+        "query": {"values": ["full", "title"], "about": "the related issue's full text (default) or its title"},
+        "k": {"about": "third-party rows: the cutoff the product's figure is reported at"},
+        "method": {"about": "third-party rows: how the system was queried, as the source says"}
+      },
+      "comparable_on": ["split", "conditions.scope", "conditions.search", "conditions.query"],
+      "same_day": false,
+      "metrics": {
+        "hit@1": {"unit": "fraction", "better": "higher", "key": "hit@1", "about": "a gold session ranked first"},
+        "hit@3": {"unit": "fraction", "better": "higher", "key": "hit@3"},
+        "hit@5": {"unit": "fraction", "better": "higher", "key": "hit@5"},
+        "hit@10": {"unit": "fraction", "better": "higher", "key": "hit@10"},
+        "hit@15": {"unit": "fraction", "better": "higher", "key": "hit@15"},
+        "mrr": {"unit": "fraction", "better": "higher", "key": "mrr"},
+        "overall_matched": {"unit": "fraction", "better": "higher", "about": "third-party: the paper's Table 5 'Overall Matched (%)' at the product's own k (conditions.k); the paper does not define it"},
+        "ingest_usd": {"unit": "usd", "better": "lower", "about": "LLM spend to take in the 300 sessions"},
+        "ingest_minutes": {"unit": "minutes", "better": "lower", "about": "time to take in the 300 sessions"},
+        "ingest_tokens": {"unit": "tokens", "better": "lower", "about": "LLM tokens to take in the 300 sessions"}
+      }
+    },
+    "swecb-lite-agent": {
+      "title": "SWE-ContextBench Lite: an agent names the past fix",
+      "description": "Claude Code headless with only recall's MCP tools gets a held-out related issue and must name the session where the earlier fix was made. Model-dependent: compare within a day.",
+      "corpus": "public",
+      "dataset": {"name": "SWE-ContextBench Lite", "url": "https://arxiv.org/html/2602.08316v3", "cases": "40 held-out related issues"},
+      "run": "uv run --with pyarrow recall eval swe-contextbench --data DIR --hybrid --agent claude-haiku-5-5 --split test",
+      "evals": ["swecb-lite-agent-(?P<model>.+)-(?P<search>hybrid|keyword)"],
+      "conditions": {"search": {"values": ["hybrid", "keyword"]}},
+      "comparable_on": ["split", "model", "harness", "conditions.search"],
+      "same_day": true,
+      "metrics": {
+        "hit": {"unit": "fraction", "better": "higher", "key": "hit", "about": "named a gold session"},
+        "top1": {"unit": "fraction", "better": "higher", "key": "top1"},
+        "precision": {"unit": "fraction", "better": "higher", "key": "precision"},
+        "context_tokens": {"unit": "tokens", "better": "lower", "about": "Claude tokens of recall output an agent takes in per question, tool definitions included: docs/benchmarks/agent_tokens.py over the runs' transcripts"},
+        "tokens_in": {"unit": "tokens", "better": "lower", "key": "tokens_in", "about": "Claude Code's input tokens a question, as the harness counts them"},
+        "tool_calls": {"unit": "count", "better": null, "key": "tool_calls"}
+      }
+    },
+    "swecb-resolved": {
+      "title": "SWE-ContextBench: issues resolved",
+      "description": "Third-party: the benchmark paper's end-to-end runs, an agent fixing related issues with and without past experience, graded by the SWE-bench tests.",
+      "corpus": "public",
+      "dataset": {"name": "SWE-ContextBench", "url": "https://arxiv.org/html/2602.08316v3", "cases": "Lite: 99 tasks; full: 376 tasks"},
+      "run": null,
+      "evals": [],
+      "conditions": {
+        "set": {"values": ["lite", "full"]},
+        "context": {"about": "no context, oracle summary, or a memory product's results"}
+      },
+      "comparable_on": ["model", "conditions.set"],
+      "same_day": false,
+      "metrics": {
+        "resolved": {"unit": "fraction", "better": "higher"}
+      }
+    },
+    "memorycode-notes": {
+      "title": "MemoryCode: notes after each history",
+      "description": "recall's nightly pipeline writes notes from synthetic mentor histories that set and change coding conventions; the notes are checked against the benchmark's labels, with a judge where a convention has no exact token.",
+      "corpus": "public",
+      "dataset": {"name": "MemoryCode", "url": "https://arxiv.org/html/2502.13791v2", "cases": "test split; 40 held-out histories (25 short, 15 long)"},
+      "run": "uv run --with pyarrow recall eval memorycode --data DIR --split test --limit 40 --repeats 3 --fresh --model MODEL",
+      "evals": ["memorycode-extract"],
+      "conditions": {
+        "subset": {"values": ["first-40", "other-40", "other-20"], "about": "first-40: the first 40 test histories (--limit 40), the set since 0.4.1; other-40: an earlier 40-history test subset, none in common; other-20: 20 of those (12 short, 8 long)"},
+        "length": {"values": ["short", "long"], "about": "short: 1 to 15 sessions; long: 20 to 100"},
+        "consolidation": {"about": "a second model for consolidation, when there is one"}
+      },
+      "comparable_on": ["split", "model", "judge", "judge_version", "conditions.subset", "conditions.length"],
+      "same_day": true,
+      "metrics": {
+        "recall": {"unit": "fraction", "better": "higher", "key": "recall", "by_repeat": "variance.recall_by_repeat", "breakdown": {"length": {"short": "by_length.short.recall", "long": "by_length.long.recall"}}, "about": "each convention in its latest form is stated by an active note"},
+        "updates": {"unit": "fraction", "better": "higher", "key": "updates", "about": "a changed convention has its latest form and no replaced form"},
+        "stale": {"unit": "fraction", "better": "lower", "key": "stale", "about": "a replaced form still stated as current"},
+        "filler_notes": {"unit": "fraction", "better": "lower", "key": "filler_notes", "about": "notes learned only from filler sessions"},
+        "model_calls": {"unit": "count", "better": "lower", "key": "model_calls.calls", "about": "all repeats"},
+        "tokens_in": {"unit": "tokens", "better": "lower", "key": "model_calls.tokens_in", "about": "all repeats"},
+        "tokens_out": {"unit": "tokens", "better": "lower", "key": "model_calls.tokens_out", "about": "all repeats"},
+        "cost_usd": {"unit": "usd", "better": "lower", "about": "all repeats at list price, from the run's tokens"}
+      }
+    },
+    "memorycode-consolidation": {
+      "title": "MemoryCode: consolidation replay",
+      "description": "Consolidation only: the same extracted facts replayed through each code version's consolidation.",
+      "corpus": "public",
+      "dataset": {"name": "MemoryCode", "url": "https://arxiv.org/html/2502.13791v2", "cases": "test histories"},
+      "run": "uv run --with pyarrow recall eval memorycode --data DIR --split test --from-candidates RUN_DIR",
+      "evals": ["memorycode-consolidate"],
+      "conditions": {
+        "subset": {"values": ["first-40", "other-40", "other-20"], "about": "as memorycode-notes"},
+        "consolidation": {"about": "a second model for consolidation, when there is one"}
+      },
+      "comparable_on": ["split", "model"],
+      "same_day": true,
+      "metrics": {
+        "facts_lost": {"unit": "fraction", "better": "lower", "about": "facts lost when notes merge"},
+        "recall": {"unit": "fraction", "better": "higher", "key": "recall"},
+        "stale": {"unit": "fraction", "better": "lower", "key": "stale"}
+      }
+    },
+    "memorycode-agent": {
+      "title": "MemoryCode: an agent's code follows the latest conventions",
+      "description": "Claude Code writes code for each history's closing requests, 3 a history, graded by the benchmark's own checks. Arms: none (no memory), tools (recall's search alone), hook (notes at session start plus the tools), full (the whole history in the prompt). Model-dependent: compare within a day.",
+      "corpus": "public",
+      "dataset": {"name": "MemoryCode", "url": "https://arxiv.org/html/2502.13791v2", "cases": "40 held-out histories, or training histories"},
+      "run": "uv run --with pyarrow recall eval memorycode --data DIR --agent --arm hook --notes RUN_DIR --hybrid --split test --limit 40 --repeats 3",
+      "evals": ["memorycode-agent-(?P<arm>tools|hook|notes|none|full|placebo|jit-notes)(?:-(?P<search>hybrid|keyword))?-(?P<model>claude.+)"],
+      "conditions": {
+        "arm": {"values": ["none", "tools", "hook", "full", "notes", "placebo", "jit-notes"]},
+        "search": {"values": ["hybrid", "keyword"]},
+        "notes": {"about": "hook arm: whose notes sit at session start, as release and model"},
+        "length": {"values": ["short", "long"], "about": "short: 1 to 15 sessions; long: 20 to 100"}
+      },
+      "comparable_on": ["split", "model", "harness", "conditions.arm", "conditions.search", "conditions.notes", "conditions.length"],
+      "same_day": true,
+      "metrics": {
+        "accuracy": {"unit": "fraction", "better": "higher", "key": "accuracy", "by_repeat": "variance.accuracy_by_repeat", "breakdown": {"length": {"short": "short", "long": "long"}}},
+        "checks_updated": {"unit": "fraction", "better": "higher", "key": "checks_updated", "about": "checks on conventions that changed"},
+        "tokens_in": {"unit": "tokens", "better": "lower", "key": "tokens_in", "about": "input tokens a request, mean"},
+        "tokens_in_median": {"unit": "tokens", "better": "lower", "key": "tokens_in.median", "about": "input tokens a request, median"},
+        "recall_calls": {"unit": "count", "better": null, "about": "calls to recall's tools a request, mean"}
+      }
+    },
+    "my-search": {
+      "title": "Search over my chats (search_v2)",
+      "description": "Hand-written questions about the maintainer's own ~2,800 chats, each with the chat(s) that answer it. Deterministic.",
+      "corpus": "private",
+      "dataset": {"name": "search_v2 cases", "url": null, "cases": "150: 90 train, 60 test"},
+      "run": "uv run recall eval search --v2 --split test",
+      "evals": ["search_v2"],
+      "conditions": {"search": {"values": ["hybrid", "keyword"], "from": "summary.mode"}},
+      "comparable_on": ["split", "conditions.search", "corpus.chat_schema"],
+      "same_day": false,
+      "metrics": {
+        "hit@1": {"unit": "fraction", "better": "higher", "key": "hit@1"},
+        "hit@5": {"unit": "fraction", "better": "higher", "key": "hit@5"},
+        "hit@10": {"unit": "fraction", "better": "higher", "key": "hit@10"},
+        "mrr": {"unit": "fraction", "better": "higher", "key": "mrr"},
+        "latency_p50_ms": {"unit": "ms", "better": "lower", "key": "latency_ms.p50"},
+        "latency_p95_ms": {"unit": "ms", "better": "lower", "key": "latency_ms.p95"}
+      }
+    },
+    "search-latency": {
+      "title": "Search latency on my chats",
+      "description": "50 known-item queries (the first 50 of recall eval search's sample, seed 7), store.search limit 10, after 5 warm-ups, on a copy of the eval index; hybrid includes embedding the query with nomic-embed-text through Ollama. Machine- and load-dependent.",
+      "corpus": "private",
+      "dataset": {"name": "recall eval search sample", "url": null, "cases": "50 queries"},
+      "run": null,
+      "evals": [],
+      "conditions": {"search": {"values": ["hybrid", "keyword"]}},
+      "comparable_on": ["conditions.search", "corpus.chat_schema"],
+      "same_day": true,
+      "metrics": {
+        "p50_ms": {"unit": "ms", "better": "lower"},
+        "p95_ms": {"unit": "ms", "better": "lower"}
+      }
+    },
+    "my-qa": {
+      "title": "An agent answers my questions about past work (qa_v2)",
+      "description": "Claude Code headless with recall's tools answers hand-written questions about the maintainer's past work, graded against checkable claims by a judge. Model-dependent: compare within a day.",
+      "corpus": "private",
+      "dataset": {"name": "qa_v2 cases", "url": null, "cases": "47 held-out questions"},
+      "run": "uv run recall eval agent --split test --repeats 3",
+      "evals": ["qa_v2"],
+      "conditions": {},
+      "comparable_on": ["split", "model", "judge", "judge_version", "harness", "corpus.chat_schema"],
+      "same_day": true,
+      "metrics": {
+        "accuracy": {"unit": "fraction", "better": "higher", "key": "accuracy", "by_repeat": "variance.accuracy_by_repeat"},
+        "accuracy_answerable": {"unit": "fraction", "better": "higher", "key": "accuracy_answerable"},
+        "accuracy_unanswerable": {"unit": "fraction", "better": "higher", "key": "accuracy_unanswerable"},
+        "context_tokens": {"unit": "tokens", "better": "lower", "about": "Claude tokens of recall output per question, tool definitions included: docs/benchmarks/agent_tokens.py"},
+        "tokens_in": {"unit": "tokens", "better": "lower", "key": "tokens_in"},
+        "tool_calls": {"unit": "count", "better": null, "key": "tool_calls"},
+        "tool_latency_p50_ms": {"unit": "ms", "better": "lower", "about": "median time of a call to recall's MCP tools"}
+      }
+    },
+    "my-notes": {
+      "title": "Notes on my chats (memory_v2)",
+      "description": "recall's nightly pipeline writes notes from the maintainer's chats; graded against hand-labelled memories that should and should not be kept. The holdout split has never been tuned on.",
+      "corpus": "private",
+      "dataset": {"name": "memory_v2 cases", "url": null, "cases": "holdout: 20 cases (14 scorable for recall, 16 for precision)"},
+      "run": "uv run recall eval memory --v2 --split holdout --repeats 3 --fresh --model MODEL",
+      "evals": ["memory_v2"],
+      "conditions": {},
+      "comparable_on": ["split", "model", "judge", "judge_version", "corpus.chat_schema"],
+      "same_day": true,
+      "metrics": {
+        "recall": {"unit": "fraction", "better": "higher", "key": "recall", "by_repeat": "variance.recall_by_repeat", "about": "expected memories found"},
+        "precision": {"unit": "fraction", "better": "higher", "key": "precision", "by_repeat": "variance.precision_by_repeat", "about": "stored memories worth keeping"},
+        "updates": {"unit": "fraction", "better": "higher", "key": "update_correctness"},
+        "leaks": {"unit": "count", "better": "lower", "key": "forbidden_leaks", "about": "memories the labels forbid"},
+        "model_calls": {"unit": "count", "better": "lower", "key": "model_calls.calls"}
+      }
+    },
+    "tool-definitions": {
+      "title": "recall's MCP tool definitions",
+      "description": "Claude tokens of recall's tool definitions: Claude Code's first-call input with recall's MCP server connected minus without, tools loaded up front.",
+      "corpus": "public",
+      "dataset": {"name": "none", "url": null, "cases": "one measurement per release"},
+      "run": null,
+      "evals": [],
+      "conditions": {},
+      "comparable_on": ["model"],
+      "same_day": false,
+      "metrics": {
+        "tokens": {"unit": "tokens", "better": "lower"}
+      }
+    },
+    "longmemeval-retrieval": {
+      "title": "LongMemEval: session retrieval",
+      "description": "Does the top k hold a session that answers the question (recall_any) or every one that does (recall_all). recall indexes both sides of each chat unless turns is user. Deterministic.",
+      "corpus": "public",
+      "dataset": {"name": "LongMemEval", "url": "https://arxiv.org/html/2410.10813v2", "cases": "S: 470 non-abstention questions, ~50 sessions each; M: ~475 sessions each"},
+      "run": "uv run recall eval longmemeval --cases longmemeval_s_cleaned.json --hybrid",
+      "evals": ["longmemeval(?:-(?P<search>hybrid))?"],
+      "n_key": "questions",
+      "conditions": {
+        "dataset": {"values": ["S", "M"], "from": "cmd", "pattern": "longmemeval_([sm])_", "map": {"s": "S", "m": "M"}},
+        "subset": {"values": ["470", "official-419", "test-343", "every-24th-19", "embedded-164"], "from": "summary.official_subset", "map": {"True": "official-419", "False": "470"}, "about": "470: the non-abstention questions; official-419: the benchmark's official retrieval subset; test-343: engram's split"},
+        "turns": {"values": ["both", "user"], "from": "summary.user_turns_only", "map": {"True": "user", "False": "both"}},
+        "search": {"values": ["hybrid", "keyword"], "default": "keyword"},
+        "method": {"about": "third-party rows: the retriever, as the source names it"}
+      },
+      "comparable_on": ["conditions.dataset", "conditions.subset", "conditions.turns", "conditions.search"],
+      "same_day": false,
+      "metrics": {
+        "recall_any@5": {"unit": "fraction", "better": "higher", "key": "recall_any@5"},
+        "recall_all@5": {"unit": "fraction", "better": "higher", "key": "recall_all@5"},
+        "recall_all@10": {"unit": "fraction", "better": "higher", "key": "recall_all@10"},
+        "ndcg_any@10": {"unit": "fraction", "better": "higher", "key": "ndcg_any@10"},
+        "recall@5": {"unit": "fraction", "better": "higher", "about": "third-party: a session Recall@5 the source does not define as any or all answer sessions"}
+      }
+    },
+    "longmemeval-qa": {
+      "title": "LongMemEval: answers judged correct",
+      "description": "End to end: retrieve, then a model answers with the benchmark's reading prompt and a judge grades with its per-type prompts. Third-party figures use their own answer models and judges.",
+      "corpus": "public",
+      "dataset": {"name": "LongMemEval_S", "url": "https://arxiv.org/html/2410.10813v2", "cases": "500 questions, or a sample"},
+      "run": "uv run recall eval longmemeval --cases longmemeval_s_cleaned.json --hybrid --qa claude:claude-haiku-5-5 --qa-sample 500 --context sessions --top-k 10",
+      "evals": ["longmemeval-qa-(?P<context>sessions|windows)"],
+      "n_key": "questions",
+      "conditions": {
+        "context": {"values": ["top10-chats", "top5-windows", "top5-chats", "top20-chats", "answer-sessions", "full-history", "own"], "map": {"sessions": "top10-chats", "windows": "top5-windows"}, "about": "what the answer model reads: recall's top k chats in full or matched windows of them, only the sessions holding the answer, the whole history, or a product's own retrieval"},
+        "sample": {"values": ["500", "stratified-200", "39"], "about": "500: all questions; stratified-200: a 200-question stratified sample"},
+        "question_type": {"values": ["single-session-user", "single-session-assistant", "single-session-preference", "multi-session", "knowledge-update", "temporal-reasoning", "abstention"]},
+        "method": {"about": "third-party rows: the system's setting, as the source names it"}
+      },
+      "comparable_on": ["model", "judge", "conditions.context", "conditions.sample", "conditions.question_type"],
+      "same_day": false,
+      "metrics": {
+        "accuracy": {"unit": "fraction", "better": "higher", "key": "accuracy", "breakdown": {"question_type": "accuracy_by_type.*"}},
+        "prompt_tokens": {"unit": "tokens", "better": "lower", "about": "measured prompt tokens a question"},
+        "context_tokens": {"unit": "tokens", "better": "lower", "about": "third-party: context the answer model reads a question, as the source reports it"},
+        "cost_usd": {"unit": "usd", "better": "lower", "about": "list price to answer one question"},
+        "answer_seconds": {"unit": "seconds", "better": "lower", "key": "answer_seconds_median", "about": "median"}
+      }
+    },
+    "locomo-retrieval": {
+      "title": "LoCoMo: session retrieval",
+      "description": "Categories 1 to 4 (1,536 questions). Deterministic.",
+      "corpus": "public",
+      "dataset": {"name": "LoCoMo", "url": "https://github.com/snap-research/locomo", "cases": "1,536 questions, categories 1 to 4"},
+      "run": "uv run recall eval locomo --cases locomo10.json --hybrid",
+      "evals": ["locomo(?:-(?P<search>hybrid))?"],
+      "n_key": "questions",
+      "conditions": {
+        "search": {"values": ["hybrid", "keyword"], "default": "keyword"},
+        "method": {"about": "third-party rows: the retriever, as the source names it"}
+      },
+      "comparable_on": ["conditions.search"],
+      "same_day": false,
+      "metrics": {
+        "recall_any@5": {"unit": "fraction", "better": "higher", "key": "recall_any@5"},
+        "recall_all@5": {"unit": "fraction", "better": "higher", "key": "recall_all@5"},
+        "recall_all@10": {"unit": "fraction", "better": "higher", "key": "recall_all@10"},
+        "recall@5": {"unit": "fraction", "better": "higher", "about": "third-party: a session Recall@5 the source does not define as any or all answer sessions"}
+      }
+    },
+    "locomo-qa": {
+      "title": "LoCoMo: answers judged correct",
+      "description": "Third-party end-to-end figures, each with its own answer model and judge. LoCoMo's answer key is wrong on 6.4% of questions, so differences above about 90 are noise.",
+      "corpus": "public",
+      "dataset": {"name": "LoCoMo", "url": "https://github.com/snap-research/locomo", "cases": "as each source ran it"},
+      "run": null,
+      "evals": [],
+      "conditions": {"method": {"about": "the system's setting, as the source names it"}},
+      "comparable_on": ["model", "judge"],
+      "same_day": false,
+      "metrics": {
+        "accuracy": {"unit": "fraction", "better": "higher"},
+        "context_tokens": {"unit": "tokens", "better": "lower", "about": "context the answer model reads a query, as the source reports it"}
+      }
+    },
+    "beam-1m": {
+      "title": "BEAM 1M: answers judged correct",
+      "description": "Third-party end-to-end figures on BEAM's 1M-token setting.",
+      "corpus": "public",
+      "dataset": {"name": "BEAM", "url": null, "cases": "1M-token conversations"},
+      "run": null,
+      "evals": [],
+      "conditions": {},
+      "comparable_on": ["model", "judge"],
+      "same_day": false,
+      "metrics": {"accuracy": {"unit": "fraction", "better": "higher"}}
+    },
+    "halumem": {
+      "title": "HaluMem Medium: memory extraction and updates",
+      "description": "Third-party: the paper's authors ran each product's memory API over synthetic personal-life sessions with gold memory points.",
+      "corpus": "public",
+      "dataset": {"name": "HaluMem Medium", "url": "https://arxiv.org/html/2511.03506v3", "cases": "20 users, ~70 sessions each, 14,948 gold memory points, 3,467 questions"},
+      "run": null,
+      "evals": [],
+      "conditions": {},
+      "comparable_on": [],
+      "same_day": false,
+      "metrics": {
+        "extraction_recall": {"unit": "fraction", "better": "higher"},
+        "target_precision": {"unit": "fraction", "better": "higher"},
+        "f1": {"unit": "fraction", "better": "higher"},
+        "update_correct": {"unit": "fraction", "better": "higher"},
+        "qa_correct": {"unit": "fraction", "better": "higher"}
+      }
+    },
+    "stale": {
+      "title": "STALE: noticing a fact went stale",
+      "description": "Third-party: personal chats where a fact silently goes stale; overall accuracy, run by the authors on GPT-4o-mini.",
+      "corpus": "public",
+      "dataset": {"name": "STALE", "url": "https://arxiv.org/html/2605.06527v1", "cases": "400 scenarios of 50 sessions"},
+      "run": null,
+      "evals": [],
+      "conditions": {},
+      "comparable_on": ["model"],
+      "same_day": false,
+      "metrics": {"accuracy": {"unit": "fraction", "better": "higher"}}
+    },
+    "memoryagentbench-forgetting": {
+      "title": "MemoryAgentBench: selective forgetting",
+      "description": "Third-party: later facts overriding earlier ones, synthetic counterfactual triples, substring match.",
+      "corpus": "public",
+      "dataset": {"name": "MemoryAgentBench", "url": "https://arxiv.org/html/2507.05257v4", "cases": "single-hop and multi-hop"},
+      "run": null,
+      "evals": [],
+      "conditions": {"hops": {"values": ["single", "multi"]}},
+      "comparable_on": ["conditions.hops"],
+      "same_day": false,
+      "metrics": {"accuracy": {"unit": "fraction", "better": "higher"}}
+    },
+    "amb-success": {
+      "title": "agent-memory-bench (AMB): task success",
+      "description": "Third-party: Claude Code sessions with planted decisions; executable checkers. official-003 ran deepseek-v4-flash, one seed per cell; other rows were joined to it in the repo's STATUS.md without stated models.",
+      "corpus": "public",
+      "dataset": {"name": "agent-memory-bench", "url": "https://github.com/GiulioDER/agent-memory-bench/tree/c1b15726f1153b02dda0490ca1936bb86a809514", "cases": "as each run"},
+      "run": null,
+      "evals": [],
+      "conditions": {"run": {"values": ["official-003", "status-joined"]}},
+      "comparable_on": ["model", "conditions.run"],
+      "same_day": false,
+      "metrics": {"success": {"unit": "fraction", "better": "higher"}}
+    },
+    "amb-retrieval": {
+      "title": "agent-memory-bench (AMB): retrieval",
+      "description": "recall's search over AMB's Claude Code sessions with planted decisions and distractors. Deterministic.",
+      "corpus": "public",
+      "dataset": {"name": "agent-memory-bench", "url": "https://github.com/GiulioDER/agent-memory-bench/tree/c1b15726f1153b02dda0490ca1936bb86a809514", "cases": "as the corpus ships"},
+      "run": "uv run recall eval amb --data DIR",
+      "evals": ["amb-(?P<search>hybrid|keyword)"],
+      "conditions": {"search": {"values": ["hybrid", "keyword"]}},
+      "comparable_on": ["split", "conditions.search"],
+      "same_day": false,
+      "metrics": {
+        "hit@1": {"unit": "fraction", "better": "higher", "key": "hit@1"},
+        "hit@5": {"unit": "fraction", "better": "higher", "key": "hit@5"},
+        "mrr": {"unit": "fraction", "better": "higher", "key": "mrr"}
+      }
+    },
+    "vibemembench": {
+      "title": "VibeMemBench: issues resolved",
+      "description": "Third-party: earlier same-repo agent trajectories as memory, graded by repo tests.",
+      "corpus": "public",
+      "dataset": {"name": "VibeMemBench", "url": "https://arxiv.org/html/2609.23570v1", "cases": "not released"},
+      "run": null,
+      "evals": [],
+      "conditions": {},
+      "comparable_on": ["model"],
+      "same_day": false,
+      "metrics": {"resolved": {"unit": "fraction", "better": "higher"}}
+    },
+    "dreambench-swe": {
+      "title": "DreamBench-SWE: S3 pass rate",
+      "description": "Third-party: three-session coding traps (conventions, stale architecture, reviewer preferences) with hidden executable oracles.",
+      "corpus": "public",
+      "dataset": {"name": "DreamBench-SWE", "url": "https://arxiv.org/html/2608.20664v1", "cases": "oracles withheld"},
+      "run": null,
+      "evals": [],
+      "conditions": {"fold": {"values": ["primary", "v2.1-audit"]}},
+      "comparable_on": ["model", "conditions.fold"],
+      "same_day": false,
+      "metrics": {"s3_pass": {"unit": "fraction", "better": "higher"}}
+    },
+    "memtrack": {
+      "title": "MEMTRACK: correctness",
+      "description": "Third-party: Slack, Linear and Git event timelines, gpt-4o judge.",
+      "corpus": "public",
+      "dataset": {"name": "MEMTRACK", "url": "https://arxiv.org/html/2510.01353v1", "cases": "47 instances"},
+      "run": null,
+      "evals": [],
+      "conditions": {},
+      "comparable_on": ["model"],
+      "same_day": false,
+      "metrics": {"correctness": {"unit": "fraction", "better": "higher"}}
+    },
+    "aml-coding": {
+      "title": "Agent Memory Leaderboard, Coding: taskSolve",
+      "description": "Third-party: a hosted challenge with a locked answer model. Entries marked Evaluated were run by the platform, Submitted by the entrant.",
+      "corpus": "private",
+      "dataset": {"name": "AML Coding", "url": "https://agentmemoryleaderboard.ai/docs", "cases": "earlier engineering tasks in the same repos (private)"},
+      "run": null,
+      "evals": [],
+      "conditions": {},
+      "comparable_on": [],
+      "same_day": false,
+      "metrics": {"task_solve": {"unit": "fraction", "better": "higher"}}
+    }
+  }
+}
