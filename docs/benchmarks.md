@@ -44,6 +44,33 @@ more Cursor builds, left the index locked and made many of an agent's calls to r
 agent figures on my own chats are 0.4.2's. Its re-runs of search, SWE-ContextBench and
 LongMemEval retrieval match 0.4.1.
 
+Re-checked for 0.5.0: search is unchanged, and agents do as well while recall answers them
+faster. The model-free runs on the v0.5.0 tag give 0.4.1's figures at every cutoff
+(SWE-ContextBench Lite in the all-sessions scope with hybrid search, LongMemEval_S hybrid and
+keywords, LongMemEval_M keywords, LoCoMo hybrid, and search over my chats' 60 held-out
+questions). The agent evals ran on 17 October on both release tags side by side, three runs
+each, each tag on its own copy of the eval index (2,798 chats) and its own Ollama:
+
+| 17 October, both tags the same day, three runs each | 0.4.2 | 0.5.0 |
+| --- | --- | --- |
+| My questions about past work answered correctly (47 held-out) | 79.4% | 78.7% |
+| Input tokens a question, median | 48.6k | 49.8k |
+| A call to recall's tools, median (95th percentile) | 258 ms (723 ms) | **65 ms (506 ms)** |
+| `memory_search`, median | 409 ms | **66 ms** |
+| `read_chat`, median | 74 ms | **30 ms** |
+| Calls to recall that failed | 2 of 490 | **0 of 493** |
+| MemoryCode, notes at session start plus search: code that follows the latest conventions | 85.0% | 85.5% |
+| MemoryCode, long histories (20 to 100 sessions) | 74.1% | 74.8% |
+| MemoryCode, changed conventions followed | 76.5% | 79.9% |
+| MemoryCode input tokens a request, median | 32.0k | 31.3k |
+
+Accuracy is level: on my questions 0.5.0 got 10 answers right that 0.4.2 missed and missed 11
+that 0.4.2 got, across the three runs, and the MemoryCode arms sit inside each other's
+confidence intervals. Both MemoryCode arms load the notes Claude Haiku 5.5 wrote in the 0.4.1
+notes run. Call times are as the agents' tool calls saw them, two evals running at once on a
+laptop. Compare this table only with itself: the same 0.4.2 code answered 84.4% of my questions
+on 16 October and 79.4% on 17 October, a change on the model or service side.
+
 ## Finding past work
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/swecb-dark.svg"><img src="benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.4.1 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.4.1 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.4.1 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
@@ -284,7 +311,8 @@ On my ~2,800 chats: on 0.4.1, search finds the intended chat in the top five for
 held-out hand-written questions, as 0.3.0 did, and 91.1% of the 90 training questions (0.3.0:
 92.2%; hybrid, one deterministic run each). Claude Haiku 5.5 with recall's tools answers 84.4%
 of 47 held-out questions about past work correctly on 0.4.2 (three runs; 0.3.0's code, run the
-same day, 86.5%). On a fresh hand-labelled holdout, notes written by gpt-6-luna find 69% of the
+same day, 86.5%); on 17 October, 0.5.0 answered 78.7% and 0.4.2 79.4%, run side by side
+([re-checked for 0.5.0](#benchmarks)). On a fresh hand-labelled holdout, notes written by gpt-6-luna find 69% of the
 memories, 88% of what they store worth keeping, and notes written by Haiku 5.5 57% and 83%
 (three runs each, on 0.4.1). Model-based evals vary from run to run and from day to day, so
 compare averages of several, run on the same day.
