@@ -1097,5 +1097,109 @@
         }
       }
     ]
+  },
+  "rechecked_0_5_0": {
+    "about": "Model-free runs on the v0.5.0 tag, the same as rechecked_0_4_1 at every cutoff: SWE-ContextBench Lite all scope hybrid, LongMemEval_S hybrid and keywords, LongMemEval_M keywords, LoCoMo hybrid (2026-10-16); and search over my chats (60 held-out questions, hybrid hit@5 0.867, the same as its v0.4.2 control run that day; 2026-10-17). The other rechecked_0_4_1 rows were not re-run on 0.5.0.",
+    "same_as": "rechecked_0_4_1",
+    "runs": [
+      "20261016-232352-release-swecb-050",
+      "20261016-232405-release-locomo-hyb-050",
+      "20261016-232423-release-lme-s-hyb-050",
+      "20261016-232520-release-lme-s-kw-050",
+      "20261016-232600-release-lme-m-kw-050",
+      "20261017-114239-rel050tag-sv2-test-v042",
+      "20261017-114243-rel050tag-sv2-test-v050"
+    ]
+  },
+  "same_day_0_4_2_vs_0_5_0": {
+    "about": "2026-10-17, both release tags (v0.4.2, v0.5.0) the same day, side by side, three runs each, Claude Haiku 5.5 in Claude Code with recall's tools (toolsearch harness), each tag on its own copy of the eval index (2,798 chats; v0.5.0's restored from the archive after its chat schema rebuild) and its own Ollama (nomic-embed-text). qa_v2: my 47 held-out questions about past work, judged by Claude Sonnet 5.5. MemoryCode: 40 held-out histories, --arm hook with the notes Claude Haiku 5.5 wrote in the 0.4.1 notes run. Call times are the agents' MCP calls as logged by recall, two evals running at once on a laptop. Compare only within this pair: 0.4.2's qa_v2 was 0.844 on 2026-10-16.",
+    "date": "2026-10-17",
+    "repeats": 3,
+    "model": "claude-haiku-5-5",
+    "judge": "claude-sonnet-5-5",
+    "qa_v2_test": {
+      "0.4.2": {
+        "accuracy": 0.794,
+        "ci": [
+          0.702,
+          0.879
+        ],
+        "n": 47,
+        "tokens_in_median": 48630
+      },
+      "0.5.0": {
+        "accuracy": 0.787,
+        "ci": [
+          0.695,
+          0.872
+        ],
+        "n": 47,
+        "tokens_in_median": 49784
+      },
+      "paired": {
+        "better": 10,
+        "worse": 11,
+        "cases": 141
+      }
+    },
+    "mcp_call_ms": {
+      "0.4.2": {
+        "all_p50": 258,
+        "all_p95": 723,
+        "memory_search_p50": 409,
+        "read_chat_p50": 74,
+        "search_chats_p50": 448,
+        "calls": 492,
+        "failed": 2,
+        "timed": 490
+      },
+      "0.5.0": {
+        "all_p50": 65,
+        "all_p95": 506,
+        "memory_search_p50": 66,
+        "read_chat_p50": 30,
+        "search_chats_p50": 384,
+        "calls": 493,
+        "failed": 0,
+        "timed": 493
+      },
+      "about": "Calls as recall's usage log records them (via=mcp, 11:43-12:06); failed calls carry no time, so the timings cover the timed ones. Counted from the agents' transcripts, 0.4.2 also had two project_memory calls the MCP layer rejected before recall ran (4 of 494 against 0 of 493)."
+    },
+    "memorycode_hook_test": {
+      "0.4.2": {
+        "accuracy": 0.85,
+        "ci": [
+          0.809,
+          0.892
+        ],
+        "long": 0.741,
+        "short": 0.916,
+        "updated": 0.765,
+        "tokens_in_median": 32017.5,
+        "n": 40
+      },
+      "0.5.0": {
+        "accuracy": 0.855,
+        "ci": [
+          0.816,
+          0.894
+        ],
+        "long": 0.748,
+        "short": 0.918,
+        "updated": 0.799,
+        "tokens_in_median": 31287.0,
+        "n": 40
+      }
+    },
+    "runs": {
+      "qa_v2": [
+        "20261017-114304-rel050tag-qa2-v042",
+        "20261017-114324-rel050tag-qa2-v050"
+      ],
+      "memorycode_hook": [
+        "20261017-120516-rel050tag-mc-v042",
+        "20261017-120537-rel050tag-mc-v050"
+      ]
+    }
   }
 }
