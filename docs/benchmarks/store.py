@@ -20,9 +20,11 @@ Commands, from the repo root:
 
     python docs/benchmarks/store.py show [--benchmark B] [--metric M] [--system S] [--release R]
     python docs/benchmarks/store.py pairs
-    python docs/benchmarks/store.py record RUN_DIR [RUN_DIR ...] [--public] [--pair P --role R]
-    python docs/benchmarks/store.py add ROWS.json
+    uv run python docs/benchmarks/store.py record RUN_DIR [RUN_DIR ...] [--public] [--pair P --role R]
+    uv run python docs/benchmarks/store.py add ROWS.json
     uv run python docs/benchmarks/store.py check [--base origin/main]
+
+record and add check the store with their rows before appending, so they need jsonschema too.
 
 Only aggregates go in. A row names its run folders by basename, a pointer into the private runs
 folder (RECALL_EVAL_RUNS), and never copies anything else from them.
@@ -38,6 +40,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -812,14 +815,24 @@ def check(path: str = STORE, base: str | None = None) -> list[str]:
 
 
 def _append(rows: list[dict]) -> None:
+    """Append rows the store does not hold yet, after checking the store with them added."""
     have = {r["id"] for r in load(superseded=True)} if os.path.exists(STORE) else set()
     new = [r for r in rows if r["id"] not in have]
+    with open(STORE, encoding="utf-8") as f:
+        text = f.read()
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", encoding="utf-8", delete=False) as f:
+        f.write(text + "".join(dumps(r) + "\n" for r in new))
+    try:
+        errors = check(f.name)
+    finally:
+        os.unlink(f.name)
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        sys.exit("nothing appended: the store would fail check")
     with open(STORE, "a", encoding="utf-8") as f:
         f.writelines(dumps(r) + "\n" for r in new)
-    print(
-        f"appended {len(new)} rows to {os.path.relpath(STORE)}"
-        + (f" ({len(rows) - len(new)} already there)" if len(new) < len(rows) else "")
-    )
+    skipped = f" ({len(rows) - len(new)} already there)" if len(new) < len(rows) else ""
+    print(f"appended {len(new)} rows to {os.path.relpath(STORE)}{skipped}")
 
 
 def _show(rows: list[dict]) -> None:
@@ -894,10 +907,6 @@ def main() -> None:
             print(dumps(row))
         if not args.dry_run:
             _append(rows)
-            errors = check()
-            if errors:
-                print("\n".join(errors), file=sys.stderr)
-                sys.exit("the store now fails check: fix the rows above")
     elif args.cmd == "check":
         errors = check(base=args.base)
         print("\n".join(errors) or f"ok: {len(load(superseded=True))} rows, {len(chart_specs())} charts")

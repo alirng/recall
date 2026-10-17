@@ -201,10 +201,10 @@ the averages.
 ## Benchmark results
 
 A figure in the README, `docs/` or on rererecall.com is a row in `docs/benchmarks/results.jsonl`,
-recorded from its run folder with `python docs/benchmarks/store.py record RUN_DIR`, and the charts
-take their numbers from there. A new benchmark is one entry in `docs/benchmarks/registry.json`.
-Only aggregates go in. How to record a run, add a benchmark and draw a chart:
-[docs/benchmarks/README.md](docs/benchmarks/README.md).
+recorded from its run folder with `uv run python docs/benchmarks/store.py record RUN_DIR`, and
+the charts take their numbers from there. A new benchmark is one entry in
+`docs/benchmarks/registry.json`. Only aggregates go in. How to record a run, add a benchmark and
+draw a chart: [docs/benchmarks/README.md](docs/benchmarks/README.md).
 
 ## Privacy
 

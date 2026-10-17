@@ -88,8 +88,8 @@ and `python docs/benchmarks/store.py pairs`.
 After an eval finishes (its `meta.txt` has an `exit=0` line):
 
 ```bash
-python docs/benchmarks/store.py record ~/.agents/recall-eval/runs/RUN --dry-run    # look first
-python docs/benchmarks/store.py record ~/.agents/recall-eval/runs/RUN --public
+uv run python docs/benchmarks/store.py record ~/.agents/recall-eval/runs/RUN --dry-run    # look first
+uv run python docs/benchmarks/store.py record ~/.agents/recall-eval/runs/RUN --public
 ```
 
 It reads `summary.json` (or the JSON an older eval printed to `output.txt`, or the harness folder
@@ -120,7 +120,7 @@ go in with `add`, from a JSON object or a list of them. `id`, missing fields and
 filled in, and the store is checked after appending:
 
 ```bash
-python docs/benchmarks/store.py add - <<'EOF'
+uv run python docs/benchmarks/store.py add - <<'EOF'
 {"kind": "third_party", "date": "2026-10-17", "benchmark": "longmemeval-qa", "metric": "accuracy",
  "system": "Example", "value": 0.901, "reported": "90.1", "model": "GPT-5", "judge": "GPT-5",
  "conditions": {"context": "own"}, "source": "https://example.com/paper", "source_detail": "Table 2",
@@ -185,4 +185,6 @@ were not pinned to folders, it was added by hand with `runs: []` and a note. Tra
 two labels: the MemoryCode "0.2.1" notes run and its "0.3.0 tools only" agent run ran commit
 fe843c2, which is neither release, and the store says so. The 16 October MemoryCode agent token
 and call figures (61k and 36k tokens, 7.3 and 2.2 calls) do not match their runs' summaries
-(62.5k and 35.3k, 7.7 and 2.1); they are stored as published with both in the note.
+(62.5k and 35.3k, 7.7 and 2.1); they are stored as published with both in the note. The 0.5.0
+recheck and the 17 October 0.4.2-against-0.5.0 pair were then added the ordinary way, with
+`record` on their run folders and `add` for the MCP call times from recall's usage log.

@@ -288,8 +288,8 @@ Each run writes a folder with every case's transcript, the scores with bootstrap
 intervals, and a results page; `--against RUN` adds a paired comparison with an earlier run.
 Every figure on this page, and every other system's, is a row in
 [docs/benchmarks/results.jsonl](benchmarks/results.jsonl) with the code, settings and run it came
-from; the charts draw from it, and `python docs/benchmarks/store.py record RUN_DIR` adds a run
-([how the store works](benchmarks/README.md)).
+from; the charts draw from it, and `uv run python docs/benchmarks/store.py record RUN_DIR` adds a
+run ([how the store works](benchmarks/README.md)).
 
 ## On your own chats
 
