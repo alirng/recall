@@ -1,0 +1,1 @@
+**The README shows the release and 0.5.0's speed.** A PyPI badge gives the current version, the SWE-ContextBench chart carries 0.5.0's label (its re-check gave the same figures), and the results add that a call to recall's tools takes 65 ms at the median, against 258 ms in 0.4.2, with agents as accurate.

@@ -82,7 +82,7 @@ did, with the new issue's full text.
 
 | SWE-ContextBench Lite, all 300 sessions: past fix in the top k | Top 1 | Top 3 | Top 5 | Top 10 | Top 15 | To take in the 300 sessions |
 | --- | --- | --- | --- | --- | --- | --- |
-| **recall 0.4.1** | **58.6%** | **76.8%** | **79.8%** | **92.9%** | **97.0%** | **no LLM calls** |
+| **recall 0.5.0** | **58.6%** | **76.8%** | **79.8%** | **92.9%** | **97.0%** | **no LLM calls** |
 | recall 0.4.1, keywords only | 53.5% | 68.7% | 77.8% | 86.9% | 90.9% | no LLM calls |
 | recall 0.2.1 | 35.4% | 44.4% | 46.5% | 73.7% | 86.9% | no LLM calls |
 | LangMem | | | | 73.3% | | LLM calls: $0.98, 58 minutes |
