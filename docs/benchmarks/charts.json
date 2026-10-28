@@ -81,20 +81,20 @@
   "accuracy": {
     "kind": "bars",
     "title": "LongMemEval_S: answers judged correct",
-    "subtitle": "End to end: retrieve, then answer. Vendor figures are self-reported, with their own answer models and judges.",
+    "subtitle": "End to end: retrieve, then answer. Vendor figures are self-reported, with their own answer models and judges. recall's run was graded by its own reader.",
     "where": {"benchmark": "longmemeval-qa", "metric": "accuracy"},
     "ceiling": {"label": "Haiku 5.5 given only the answer sessions", "where": {"system": "answer sessions only", "conditions.context": "answer-sessions", "conditions.sample": "500"}},
     "groups": [
       {"rows": [
-        {"name": "Mastra", "note": "gpt-5-mini", "where": {"system": "Mastra"}},
-        {"name": "Mem0 (platform)", "note": "GPT-5", "where": {"system": "Mem0 (platform)", "grade": "vendor"}},
-        {"name": "Hindsight", "note": "Gemini-3 Pro", "where": {"system": "Hindsight"}},
+        {"name": "Hindsight", "note": "reader not named", "where": {"system": "Hindsight"}},
+        {"name": "Mem0 (platform)", "note": "reader not named", "where": {"system": "Mem0 (platform)", "grade": "vendor"}},
+        {"name": "Mastra", "note": "gpt-5-mini, per question", "where": {"system": "Mastra"}},
         {"name": "Honcho", "note": "Claude Haiku 4.5", "where": {"system": "Honcho"}},
-        {"name": "recall 0.4.1", "style": "ours", "note": "Claude Haiku 5.5", "where": {"system": "recall", "release": "0.4.1", "conditions.context": "top10-chats", "conditions.sample": "500"}},
+        {"name": "Zep", "note": "gpt-5.4, grades itself", "where": {"system": "Zep"}},
+        {"name": "recall 0.4.1", "style": "ours", "note": "Claude Haiku 5.5, grades itself", "where": {"system": "recall", "release": "0.4.1", "conditions.context": "top10-chats", "conditions.sample": "500"}},
         {"name": "Supermemory", "note": "Gemini-3", "where": {"system": "Supermemory", "model": "Gemini-3"}},
         {"name": "EverMemOS", "note": "GPT-4.1-mini", "where": {"system": "EverMemOS"}},
         {"name": "ICM folders", "note": "{self.model}, {self.n} questions", "where": {"system": "ICM folders"}},
-        {"name": "Zep", "note": "GPT-4o", "where": {"system": "Zep"}},
         {"name": "Full history, no memory", "note": "Claude Haiku 4.5", "where": {"system": "full context (Honcho baseline)"}}
       ]}
     ]
