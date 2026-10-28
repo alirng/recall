@@ -121,6 +121,23 @@ answered 84.4% and 86.5% correctly (within run noise). 0.4.1 is not shown there:
 questions hit an MCP server bug, fixed in 0.4.2, that left the index locked, so recall's tools
 returned errors instead of results.
 
+Per task, with the tool definitions split out (the same 16 October runs; Claude tokens added to the
+agent's context):
+
+| Task | Releases | Total | Tool definitions | Everything else |
+| --- | --- | --- | --- | --- |
+| SWE-ContextBench Lite, 40 held-out issues | 0.4.1 | 7.8k | 3.3k | 4.6k |
+| | 0.3.0 | 7.3k | 2.5k | 4.8k |
+| My questions about past work, 47 held out | 0.4.2 | 13.6k | 3.3k | 10.3k |
+| | 0.3.0 | 13.4k | 2.5k | 10.9k |
+
+The definitions are a fixed cost of the tool set, counted once at the start of a task; "everything
+else" is what the agent's searches and reads returned, and it grows with the question. The other
+products' figures are the context handed to their answer model for a question, which carries no
+tool definitions, so recall's total is not comparable with theirs; its "everything else" column is
+the nearer match, though an agent usually makes several calls (7.3 a question in MemoryCode with
+tools only, 2.2 with the notes in its prompt).
+
 Compare these figures only within a day. On 12 October, 0.3.0's release runs took in 9.0k and
 16.0k tokens; on 16 October the same code took in 7.3k and 13.4k, because the agent called the
 same tools less. Something on the model's side changed in between, as with MemoryCode below.
@@ -133,8 +150,12 @@ so the releases in one comparison share it.
 
 Memory products report the context they give their answer model on chat benchmarks: Mem0 6,956
 tokens a query on LoCoMo (its own figure), EverMemOS 2.8k (its paper's token column, which it
-does not define) and Zep 1.6k on LongMemEval. Those are other benchmarks and setups, so they
-place recall's figure rather than rank it.
+does not define) and Zep a median of 4.4k on LongMemEval (its page, with gpt-5.4 as reader and
+judge). Those are other benchmarks and setups, so they place recall's figure rather than rank it.
+recall's own LongMemEval prompts are heavier: 44k tokens a question reading the top 10 chats, 17.5k
+reading matched windows of the top 5, which is 4 to 10 times Zep's. Those are whole prompts (the history
+alone is 31.8k and 11.8k, 7 and 2.7 times Zep's median); the tool definitions in the table above come
+on top of an agent's tokens, not of these.
 
 ## Notes that keep up
 
@@ -198,6 +219,21 @@ measured on 13 October; the same code, re-run on 16 October, scores 66.8%, the s
 the model or the service behind it changed in between. On 13 October, 0.3.0's notes written by
 gpt-6-luna lifted long histories from 39.5% to 61.9%.
 
+**Figures of record.** MemoryCode moves with the model and the day, so these are the runs the
+page quotes, all on 0.4.1 on 16 October, over the same 40 held-out test histories, three fresh
+runs each:
+
+- **Notes written, by Haiku 5.5 through the API:** conventions held in their latest form 90.6%,
+  a replaced form still stated as current 1.7%. "Held" counts conventions, averaged over a
+  history; the three runs are one row in the store.
+- **Agent, notes at session start plus search:** 83.3%. "Follows" is, for each coding request, the
+  share of conventions followed among those whose object the code contains, averaged over a
+  history's requests and then over histories. It is a share of instructions, not of tasks.
+
+Other numbers for the same measures are not figures of record: the earlier one-run notes figures
+below (80.9%, 94.6%, 97.6%) and 4.8% stale is the consolidation replay
+below, a different measurement from the 1.7% above.
+
 ## Which model writes your notes
 
 The notes are written by whichever model you pick, and the choice matters. On 0.4.1, the same
@@ -238,31 +274,42 @@ their chats have no titles. Retrieval is deterministic (one run); each answer-ac
 one run.
 
 - **Finds a conversation that answers the question 98.7% of the time, and every one that does
-  90.6% of the time** (top five, LongMemEval_S, 470 questions): among the highest session-retrieval
-  scores published for the benchmark.
-- **88.4% of answers correct with Claude Haiku 5.5** across all 500 questions on 0.4.1, reading
+  90.6% of the time** (top five, LongMemEval_S, hybrid search, both speakers' turns indexed): the
+  denominator is the 470 questions that have an answer session, so the 30 abstention questions,
+  which have none, are left out. On the 419 questions of the benchmark's official retrieval
+  evaluation, which indexes the user's turns only, the figures are the ones in the
+  [retrieval chart](#chat-memory-benchmarks). Other systems' retrieval figures use their own
+  subsets (engram's is a 343-question test split) and are not all on the same denominator, so read
+  them as ballpark.
+- **88.4% of answers correct with Claude Haiku 5.5** across all 500 questions on 0.4.1, graded by
+  Claude Haiku 5.5 itself (the reader was also the judge; see below), reading
   recall's top 10 chats (about 44k tokens a question; 87.4% when first measured on 0.2.0).
   Reading only matched windows of the top 5 chats, it scores 84.2% on about 17.5k tokens. Handed
   exactly the right sessions, the same model scored 92.0% (measured on 9 October; that figure
   does not depend on recall). On 0.2.0, reading the top 20 chats reached 90.5% for under a cent
   a question, on a 200-question sample where the right sessions alone scored 91.0%.
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/accuracy-dark.svg"><img src="benchmarks/accuracy-light.svg" alt="Bar chart of LongMemEval_S answer accuracy: Mastra 94.9%, Mem0 94.4%, Hindsight 91.4%, Honcho 90.4%, recall 0.4.1 88.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, Zep 71.2%, full history with no memory (Honcho's run with Haiku 4.5) 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/accuracy-dark.svg"><img src="benchmarks/accuracy-light.svg" alt="Bar chart of LongMemEval_S answer accuracy: Hindsight 94.6%, Mem0 94.4%, Mastra 93.6%, Honcho 90.4%, Zep 90.2%, recall 0.4.1 88.4%, Supermemory 85.2%, EverMemOS 83.0%, ICM folders 74.4%, full history with no memory (Honcho's run with Haiku 4.5) 62.6%; a dashed line marks 92%, Haiku 5.5 given only the answer sessions" width="760"></picture></p>
 
 | Session retrieval | Answer session in top 5 | Every answer session in top 5 |
 | --- | --- | --- |
 | recall 0.4.1, LongMemEval_S (470 questions) | **98.7%** | **90.6%** |
 | recall 0.4.1, LongMemEval_S, keywords only | 97.4% | 87.2% |
 | recall 0.4.1, LongMemEval_M (~475 sessions a question), keywords only | 90.9% | 72.1% |
-| LongMemEval paper's best setup, LongMemEval_M | | 73.2% |
+| LongMemEval paper's best setup, LongMemEval_M (Stella 1.5B with LLM-written facts) | | 73.2% |
 | recall 0.4.1, LoCoMo (1,536 questions) | **92.1%** | **80.1%** |
 | AgentIR, LoCoMo (BM25 / hybrid) | 87.5% / 79.7% | |
 | memini, LongMemEval (BM25 / hybrid) | 97.6% / 98.4% | |
 
 The other systems' figures are their own, measured with their own answer models and judges; a
 one-harness rerun of five other memory products (none of those charted here) moved their scores
-by +3 to −28 points. recall's
-runs use Claude Haiku 5.5 as the judge, with the benchmark's prompts. Answer models, context
+by +3 to −28 points. Several
+of the charted vendor figures were graded by the model that read the answers (Zep's page says so
+for gpt-5.4), and so was recall's 88.4%: those runs used Claude Haiku 5.5 as both reader and
+judge, with the benchmark's prompts. Since this change `recall eval longmemeval --qa` and
+`recall eval beam` grade with a fixed Claude Opus 5.5 unless `--judge` names another model, refuse a
+judge that is the reader, and print the judge's name in the results and the ledger line. The
+benchmark's own judge is gpt-4o, which needs an OpenAI key, so no recall figure is on it yet. Answer models, context
 read per question, costs, question types and confidence intervals:
 [docs/research/retrieval-benchmarks.md](research/retrieval-benchmarks.md).
 
@@ -281,6 +328,7 @@ uv run --with pyarrow recall eval memorycode --data DIR --agent --arm hook --not
 uv run recall eval amb --data DIR                                                                 # agent-memory-bench retrieval
 uv run recall eval longmemeval --cases longmemeval_s_cleaned.json --hybrid [--qa claude:claude-haiku-5-5]
 uv run recall eval locomo --cases locomo10.json --hybrid
+uv run --with pyarrow recall eval beam --cases 100K-00000-of-00001.parquet --hybrid --qa claude:claude-haiku-5-5   # BEAM 100K; --judge defaults to claude:claude-opus-5-5
 python docs/benchmarks/agent_tokens.py 0.3.0=2480 RUN_DIR ... 0.4.1=3260 RUN_DIR ...   # Claude tokens per question, one release per group
 ```
 

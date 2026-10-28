@@ -859,7 +859,7 @@ def cmd_eval(a) -> None:
         return
     if a.kind == "agent" or a.v2:
         _eval_v2(a)
-    elif a.kind in ("longmemeval", "locomo"):
+    elif a.kind in ("longmemeval", "locomo", "beam"):
         if not a.cases:
             sys.exit(f"recall eval {a.kind} needs --cases pointing at the dataset's JSON file")
         embedder = cache = None
@@ -874,6 +874,14 @@ def cmd_eval(a) -> None:
             cache = sqlite3.connect(os.path.join(paths.HOME, "eval-vectors.db"), timeout=60)
         if a.kind == "locomo":
             evals.run_locomo(a.cases, embedder=embedder, cache=cache)
+        elif a.kind == "beam":
+            if not a.qa:
+                sys.exit("recall eval beam needs --qa MODEL, the reader (--judge defaults to a different, fixed model)")
+            from . import evals_beam
+
+            evals_beam.run_beam_qa(
+                a.cases, a.qa, a.judge, top_k=a.top_k, embedder=embedder, cache=cache, out_path=a.out, limit=a.limit
+            )
         elif a.qa:
             evals.run_longmemeval_qa(
                 a.cases,
@@ -1128,6 +1136,7 @@ def _parser() -> argparse.ArgumentParser:
         "agent",
         "longmemeval",
         "locomo",
+        "beam",
         "swe-contextbench",
         "memorycode",
         "amb",
@@ -1151,7 +1160,8 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--judge",
         metavar="MODEL",
-        help="--qa, agent, memory --v2: grade with MODEL (v2 default claude:claude-sonnet-5-5)",
+        help="--qa, beam: grade with MODEL, never the reader (default claude:claude-opus-5-5); "
+        "agent, memory --v2: default claude:claude-sonnet-5-5",
     )
     sp.add_argument(
         "--context", choices=["sessions", "windows", "oracle"], default="sessions", help="--qa: what it reads"

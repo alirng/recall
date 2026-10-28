@@ -293,7 +293,7 @@ def run_longmemeval_qa(
     out_path: str | None = None,
 ) -> dict:
     """End-to-end LongMemEval: retrieve with recall, answer with `model`, judge with `judge`
-    (by default the same model) using the benchmark's own prompts. This is the number memory
+    (by default a fixed model that is not the reader) using the benchmark's own prompts. This is the number memory
     vendors headline. Token counts are kept apart for answering and judging, so the cost of
     answering can be read off on its own.
 
@@ -306,8 +306,10 @@ def run_longmemeval_qa(
     import random
     from concurrent.futures import ThreadPoolExecutor
 
+    from .evals_harness import qa_judge
     from .llm import Client, from_spec
 
+    judge = qa_judge(model, judge)
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     rng = random.Random(7)
@@ -324,7 +326,7 @@ def run_longmemeval_qa(
         jobs.append((q, history, sessions))
     settings = config.load()["model"]
     client = Client(from_spec(model, settings), db_path=db_path or paths_db())
-    grader = Client(from_spec(judge or model, settings), db_path=db_path or paths_db())
+    grader = Client(from_spec(judge, settings), db_path=db_path or paths_db())
     calls: list[dict] = []
 
     def one(job):
@@ -349,13 +351,28 @@ def run_longmemeval_qa(
             "cached": (client.tokens_in, client.tokens_out) == before,
         }
 
+    def safe(job):
+        try:
+            return one(job)
+        except Exception as e:  # a refused or failed question is counted, not fatal to the run
+            q = job[0]
+            kind = "abstention" if q["question_id"].endswith("_abs") else q["question_type"]
+            return {
+                "question_id": q["question_id"],
+                "type": kind,
+                "correct": None,
+                "error": f"{type(e).__name__}: {e}"[:300],
+            }
+
     with ThreadPoolExecutor(workers) as pool:
-        calls = list(pool.map(one, jobs))
+        rows = list(pool.map(safe, jobs))
+    failed = [r for r in rows if r.get("error")]
+    calls = [r for r in rows if not r.get("error")]
     for c in calls:
         log_case(f"longmemeval-qa-{context}", {"id": c["question_id"], "tags": [c["type"]], "correct": c["correct"]})
     if out_path:
         with open(out_path, "w") as f:
-            f.writelines(json.dumps(c) + "\n" for c in calls)
+            f.writelines(json.dumps(c) + "\n" for c in rows)
     n = len(calls)
     by: dict[str, list[bool]] = {}
     for c in calls:
@@ -366,6 +383,8 @@ def run_longmemeval_qa(
         "judge": grader.provider.label,
         "context": context,
         "questions": n,
+        "failed": len(failed),
+        "failed_ids": [r["question_id"] for r in failed],
         "accuracy": round(sum(c["correct"] for c in calls) / n, 3),
         "accuracy_by_type": {t: round(sum(v) / len(v), 3) for t, v in sorted(by.items())},
         "evidence_in_context": round(sum(c["evidence_in_context"] for c in calls) / n, 3),
@@ -380,7 +399,27 @@ def run_longmemeval_qa(
         "judge_tokens_out": grader.tokens_out,
     }
     print(json.dumps(result, indent=2))
+    ledger_qa("longmemeval-qa", f"{context} n={n}", f"accuracy={result['accuracy']}", result)
     return result
+
+
+def ledger_qa(name: str, label: str, headline: str, result: dict) -> None:
+    """Ledger line for a question-answering run, naming the reader and the judge."""
+    from . import evals_harness as h
+
+    meta = {"judge": result["judge"]}
+    note = f"reader={result['model']}; failed={result['failed']}"
+    run_dir = os.environ.get("RECALL_RUN_DIR", "")
+    h.append_ledger(
+        h.RUNS,
+        os.environ.get("RECALL_EVAL_WHO") or "harness",
+        f"{name} {label}",
+        h.code_id(),
+        headline,
+        run_dir,
+        note,
+        meta,
+    )
 
 
 def _qa_history(q, context, top_k, max_tokens, embedder, cache) -> tuple[str, list[str]]:

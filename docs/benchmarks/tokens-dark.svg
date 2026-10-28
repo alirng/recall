@@ -46,20 +46,20 @@ text{fill:rgb(232,230,223)}
 <text x="396.0" y="438.0" class="lbl" text-anchor="middle">TOKENS OF HISTORY READ PER QUESTION, LOG SCALE</text>
 <path class="dia" d="M611.1 350.1L616.6 355.6L611.1 361.1L605.6 355.6Z"/>
 <path class="dia" d="M664.6 199.7L670.1 205.2L664.6 210.7L659.1 205.2Z"/>
-<path class="dia" d="M125.4 297.5L130.9 303.0L125.4 308.5L119.9 303.0Z"/>
+<path class="dia" d="M240.5 181.4L246.0 186.9L240.5 192.4L235.0 186.9Z"/>
 <path class="dia" d="M261.8 277.9L267.3 283.4L261.8 288.9L256.3 283.4Z"/>
 <path class="dia" d="M189.0 225.4L194.5 230.9L189.0 236.4L183.5 230.9Z"/>
-<path class="dia" d="M458.4 152.7L463.9 158.2L458.4 163.7L452.9 158.2Z"/>
+<path class="dia" d="M458.4 160.6L463.9 166.1L458.4 171.6L452.9 166.1Z"/>
 <path class="dia" d="M292.4 155.7L297.9 161.2L292.4 166.7L286.9 161.2Z"/>
 <rect class="rx" x="392.7" y="219.1" width="9" height="9"/>
 <rect class="rx" x="498.4" y="193.4" width="9" height="9"/>
 <text x="490.9" y="202.3" class="b" font-size="12.5" text-anchor="end">recall, top 10 chats 88.4%</text>
 <text x="409.2" y="227.9" class="b" font-size="12.5">recall, matched windows 84.2%</text>
-<text x="284.4" y="179.7" class="body" font-size="12.5" text-anchor="end">Mem0 (tokens: LoCoMo) 94.4%</text>
-<text x="470.4" y="162.5" class="body" font-size="12.5">Mastra 94.9%</text>
+<text x="282.4" y="165.7" class="body" font-size="12.5" text-anchor="end">Mem0 (tokens: LoCoMo) 94.4%</text>
+<text x="470.4" y="170.5" class="body" font-size="12.5">Mastra 93.6%</text>
 <text x="201.0" y="235.3" class="body" font-size="12.5">EverMemOS 83.0%</text>
 <text x="273.8" y="287.8" class="body" font-size="12.5">ICM folders 74.4%</text>
-<text x="137.4" y="307.4" class="body" font-size="12.5">Zep 71.2%</text>
-<text x="654.6" y="189.2" class="body" font-size="12.5" text-anchor="end">Full history, Sonnet 5 87.2%</text>
+<text x="228.5" y="191.3" class="body" font-size="12.5" text-anchor="end">Zep 90.2%</text>
+<text x="656.6" y="195.2" class="body" font-size="12.5" text-anchor="end">Full history, Sonnet 5 87.2%</text>
 <text x="599.1" y="359.9" class="body" font-size="12.5" text-anchor="end">Full history, Haiku 4.5 62.6%</text>
 </svg>
