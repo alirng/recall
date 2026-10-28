@@ -14,9 +14,11 @@ How recall reads chats, writes notes, and hands them to agents.
 1. **Index.** Each agent's history is parsed into your turns and the agent's turns. Tool
    output and text the tools inject (system reminders, plan-mode boilerplate) are dropped
    (a failed tool call keeps one redacted, searchable line saying what went wrong),
-   and secrets are redacted before anything is stored. Headless runs and Codex subagents stay
-   searchable but are never mined for memory; Claude Code's subagent transcripts are not
-   indexed. Clones and worktrees of one repo share a
+   and secrets are redacted before anything is stored. Headless runs and subagents stay
+   searchable but are never mined for memory; a subagent's chat holds the brief its parent
+   agent wrote and the report it sent back. A Claude Code subagent ranks above another chat
+   only by matching better, its siblings from the same run step aside for each other, and
+   `recent_chats` leaves subagents out. Clones and worktrees of one repo share a
    project, keyed on the git remote. recall keeps its own compressed copy of every chat it
    indexes, so a chat stays searchable after its agent deletes or rewrites the file (see
    [Retention and forgetting](reference.md#retention-and-forgetting)). Tool calls read the chats

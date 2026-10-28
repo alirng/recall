@@ -197,7 +197,7 @@ copy after the agent deletes the file, including when you set a short `cleanupPe
 yourself; only an organisation's managed settings limit it, and then recall keeps those chats no
 longer than the policy allows. `recall forget <chat id>` (or `--project NAME`) removes a chat
 from recall's index, archive, embeddings, extraction records and exploration reports, and from
-the cached model answers that quote it; it lists the notes that cite the chat but leaves them to
+the cached model answers that quote it (a Claude Code chat takes its subagents with it); it lists the notes that cite the chat but leaves them to
 you, and the usage log keeps only the words you asked and chat ids. The short-lived notes between chats
 about a shared file (`cache/mail.jsonl`) can quote up to 140 characters of what a chat was
 asked; forget leaves them to age out.
