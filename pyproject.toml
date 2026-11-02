@@ -28,6 +28,8 @@ Changelog = "https://github.com/alirng/recall/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 anthropic = ["anthropic>=1"]
 embeddings = ["numpy>=2"]
+# Late interaction (one vector per token, scored by MaxSim), a local ColBERT model; see late.py.
+late = ["numpy>=2", "pylate>=1.6"]
 # Codex compresses week-old chats with zstd. Python 3.14+ reads them without this, and so does the `zstd` command.
 zstd = ["zstandard>=0.23; python_version < '3.14'"]
 

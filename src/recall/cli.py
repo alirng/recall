@@ -52,12 +52,13 @@ def cmd_index(a) -> None:
 
 
 def cmd_embed(a) -> None:
-    from . import embeddings, power
+    from . import embeddings, late, power
     from .chats import store
 
     power.lower_priority()  # a backfill, mostly started by a tool call: everything else gets the CPU first
     embedder = embeddings.configured()
-    if embedder is None:
+    rank = (lateset := late.settings()) and lateset["mode"] == "rank"
+    if embedder is None and not rank:
         sys.exit(
             "embeddings are off: add an [embeddings] table to config.toml and install the extra "
             "(uv tool install 'recall-agents[embeddings]'); see embeddings.py"
@@ -67,6 +68,14 @@ def cmd_embed(a) -> None:
             print("another recall embed is running", file=sys.stderr)
             return
         con = store.connect()
+        if rank:  # late interaction's rank mode scores stored token vectors (late.py)
+            started = time.time()
+            n = late.index_messages(
+                con, lateset, log=lambda m: print(m, file=sys.stderr), deadline=started + embeddings.EMBED_DEADLINE
+            )
+            print(f"late interaction: encoded {n} messages in {time.time() - started:.0f}s")
+        if embedder is None:
+            return
         todo = embeddings.pending(con, embedder)
         print(f"{len(todo)} messages to embed with {embedder.model}", file=sys.stderr)
         started = time.time()

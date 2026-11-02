@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 from datetime import datetime
 
@@ -553,9 +554,9 @@ def session_row(r: sqlite3.Row) -> dict:
 
 # Reciprocal rank fusion (Cormack et al., 2009) of up to five rankings of each chat: its best
 # message, the summed BM25 of its best few messages, the title an agent gave it, a message
-# holding every query word, and, when embeddings are on, its message closest in meaning.
-# Weights were tuned on LongMemEval and on personal search evals together; see
-# docs/research/retrieval-benchmarks.md.
+# holding every query word, and, when embeddings are on, its message closest in meaning
+# (late interaction, off by default, adds one more: late.py). Weights were tuned on LongMemEval
+# and on personal search evals together; see docs/research/retrieval-benchmarks.md.
 FUSION_K = 20
 # Claude Code subagents' chats (a workflow runs dozens, with much the same words) must not crowd out
 # the other chats: in each ranking those are ranked among themselves, so a subagent takes a place
@@ -651,15 +652,27 @@ def search(
 
         by_dense = embeddings.ranking(con, vector, fsql, fargs, msql, margs, 200)
     weights = dict(WEIGHTS, title=WEIGHTS["title"] * min(1.0, TITLE_WORDS / (q.count(" OR ") + 1)) ** 4)
+    rankings = [("best", by_best), ("sum", by_sum), ("title", by_title), ("all", by_all), ("dense", by_dense)]
+    # Late interaction (late.py), off unless [late] or RECALL_LATE turns it on: "rank" is one more
+    # ranking of every chat, "rerank" ranks the fused top chats again once the others are in.
+    from .. import late
+
+    if lateset := late.settings():
+        weights["late"] = lateset["weight"]
+        if lateset["mode"] == "rank":
+            rankings.append(("late", _late(late.ranking, con, query, fsql, fargs, msql, margs, 200, lateset)))
     scores: dict[str, float] = {}
-    rankings = (("best", by_best), ("sum", by_sum), ("title", by_title), ("all", by_all), ("dense", by_dense))
     threads = _subagent_threads(con)
     for name, ranking in rankings:
-        own = 0  # the place among the chats that are not subagents'
-        for rank, sid in enumerate(ranking):
-            at = rank if sid in threads else own
-            own += sid not in threads
-            scores[sid] = scores.get(sid, 0) + weights[name] / (FUSION_K + at + 1)
+        _fuse(scores, ranking, weights[name], threads)
+    if lateset and lateset["mode"] == "rerank":
+        by_late = _late(late.rerank, con, query, scores, hits, vector, msql, margs, lateset)
+        rankings.append(("late", by_late))
+        if lateset["reorder"]:  # the candidates above every other chat, in MaxSim order
+            top_score = max(scores.values(), default=0)
+            scores.update({sid: top_score + len(by_late) - i for i, sid in enumerate(by_late)})
+        else:
+            _fuse(scores, by_late, weights["late"], threads)
     top = _spread(scores, threads, limit)
     if explain is not None:
         explain.update(
@@ -685,6 +698,23 @@ def search(
         d["hits"] = found
         out.append(d)
     return out
+
+
+def _fuse(scores: dict[str, float], ranking: list[str], weight: float, threads: dict[str, str]) -> None:
+    own = 0  # the place among the chats that are not subagents'
+    for rank, sid in enumerate(ranking):
+        at = rank if sid in threads else own
+        own += sid not in threads
+        scores[sid] = scores.get(sid, 0) + weight / (FUSION_K + at + 1)
+
+
+def _late(fn, *args) -> list[str]:
+    """A late-interaction ranking, or none when the model fails: it must never break a search."""
+    try:
+        return fn(*args)
+    except Exception as e:
+        print(f"recall: late interaction unavailable, ranking without it ({error_name(e)}: {e})", file=sys.stderr)
+        return []
 
 
 def _subagent_threads(con) -> dict[str, str]:

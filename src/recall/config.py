@@ -12,6 +12,7 @@ DEFAULTS = {
     "sources": [],  # agents to import from; empty means every agent found
     "model": {},  # provider, name, and for some providers base_url / api_key / effort
     "embeddings": {},  # optional semantic search: provider, name, base_url; see embeddings.py
+    "late": {},  # optional late interaction (a local ColBERT model): mode = "rerank" or "rank"; see late.py
     # max_calls caps a plan's or local model's calls; on an API key max_usd (dollars) caps a run.
     "dream": {"max_minutes": 120, "max_calls": 80, "max_usd": 1.0},
     "contexts": {},  # name -> folders, e.g. work = ["~/Projects/Acme"]; see contexts.py
