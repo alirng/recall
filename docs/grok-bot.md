@@ -11,7 +11,7 @@ Both directions are opt-in, and both stay inside one context (see [projects](pro
 ```toml
 [grokbot]
 enabled = true
-skip = ["Post"]            # bot names or ids, never read
+skip = ["a bot that posts publicly"]   # bot names or ids, never read
 
 [contexts]
 personal = ["~/Documents/Projects/Personal", "~/Library/Application Support/Grok Bot"]
@@ -30,7 +30,7 @@ The nightly notes do not read these chats unless you set `[roots.grokbot] mine =
 A bot runs commands on your Mac under the app's local execution policy, with your approval per command. Give it recall's read commands with `--context`, which limits what comes back to one context whatever folder the command runs from. What a bot is told goes to its model provider, so keep the context to the one you are happy to share with it:
 
 ```bash
-recall search --context personal "wedding venue shortlist"
+recall search --context personal "trip planning notes"
 recall show <chat id> --context personal --query "venue"
 recall memory search --context personal "coffee recipe"
 recall recent --context personal
