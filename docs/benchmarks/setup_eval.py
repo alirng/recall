@@ -32,8 +32,17 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from agent_fixtures import families
+
+from recall.integrations.agents import TARGETS
+from recall.roots import OTHERS, expand
+
 DARWIN = sys.platform == "darwin"
 ROOT_FILES = {"settings.json", "hooks.json", "config.toml", "mcp.json", ".claude.json"}
+# The MCP config files of the agents beyond the main three (integrations/agents.py TARGETS).
+ROOT_FILES |= {"mcp_config.json", "mcp-config.json", "opencode.json", "kilo.json", "crush.json", ".mcp.json"}
+ROOT_FILES |= {"cline_mcp_settings.json"}
 HISTORY = ("/projects/", "/sessions/", "/archived_sessions/", "state.vscdb")
 REAL_HOME = os.path.expanduser("~")
 TRIPWIRE = [
@@ -193,7 +202,9 @@ def turn_on(sb: str, on: bool = True) -> None:
 
 
 def sandbox_env(sb: str, extra: dict | None = None) -> dict:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("CODEX_", "CLAUDE", "CURSOR_", "RECALL_"))}
+    # XDG_* and each agent's relocation variable would point the readers at the real machine's folders
+    gone = ("CODEX_", "CLAUDE", "CURSOR_", "RECALL_", "XDG_", *(o.env[0] for o in OTHERS.values() if o.env))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(gone)}
     env |= {
         "HOME": sb,
         "RECALL_HOME": os.path.join(sb, ".agents", "recall"),
@@ -1338,6 +1349,140 @@ def skill_check(sb: str, ctx: dict) -> list[str]:
     return []
 
 
+# --- the agents beyond Claude Code, Codex and Cursor: one scenario per format family --------------------
+# build: each agent's synthetic store, and an MCP config of the person's own where the agent has one.
+# act: index, search, install, uninstall. check: the search finds each chat by its word and under the agent's
+# name and folder, nothing injected was indexed, the stores are byte for byte as they were, install kept the
+# person's config and a backup of it, and uninstall left it as it was.
+
+
+def _target(key: str):
+    return next((t for t in TARGETS if t.key == key), None)
+
+
+def _own_config(key: str) -> str | None:
+    """Where this agent's first MCP config sits, relative to the sandbox, when it is plain JSON."""
+    t = _target(key)
+    if t is None or key == "opencode-jsonc":
+        return None
+    path = expand(t.configs[0])
+    return os.path.relpath(path, os.path.expanduser("~")) if path else None
+
+
+def agents_build(family: str):
+    def build(sb: str) -> None:
+        for key, fx in families()[family].items():
+            fx.build(sb)
+            rel, t = _own_config(key), _target(key)
+            if rel and t:
+                jput(os.path.join(sb, rel), {t.servers: {"other": {"command": "other-server"}}, "keepMe": key})
+
+    return build
+
+
+def _files(sb: str, family: str) -> dict[str, bytes | str]:
+    """The agents' stores: everything in the sandbox that recall does not write."""
+    return {k: v for k, v in snap(sb).items() if not k.startswith(".agents") and not k.endswith(".recall-backup")}
+
+
+def agents_act(family: str):
+    def act(sb: str, ctx: dict) -> None:
+        ctx["stores"] = _files(sb, family)
+        seg(sb, ctx, "index", lambda: run(sb, "index")[1])
+        ctx["search"] = {
+            key: run(sb, "search", fx.query, "--agent", key, "--limit", "20")[1]
+            for key, fx in families()[family].items()
+        }
+        ctx["messages"] = _db_rows(sb, "select text from messages")
+        ctx["sessions"] = _db_rows(sb, "select root, project, n_messages from sessions")
+        ctx["before_install"] = _files(sb, family)
+        seg(sb, ctx, "install", lambda: run(sb, "install", "--only", "mcp")[1])
+        ctx["installed"] = {
+            key: _read_json(os.path.join(sb, rel)) for key in families()[family] if (rel := _own_config(key))
+        }
+        ctx["install_again"] = run(sb, "install", "--only", "mcp")[1]
+        seg(sb, ctx, "uninstall", lambda: run(sb, "uninstall", "--only", "mcp")[1], judged=False)
+        ctx["after_uninstall"] = _files(sb, family)
+
+    return act
+
+
+def _db_rows(sb: str, sql: str) -> list[tuple]:
+    db = os.path.join(sb, ".agents", "recall", "recall.db")
+    if not os.path.exists(db):
+        return []
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    return con.execute(sql).fetchall()
+
+
+def _read_json(path: str):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def agents_check(family: str):
+    def check(sb: str, ctx: dict) -> list[str]:
+        errs = []
+        fixtures = families()[family]
+        for key, fx in fixtures.items():
+            out = ctx["search"][key]
+            if f"{key}:" not in out:
+                errs.append(f"{key}: search for {fx.query!r} found no {key} chat")
+            elif fx.project and fx.project not in out:
+                errs.append(f"{key}: the chat is not attributed to {fx.project}")
+            n = sum(1 for r, _, _ in ctx["sessions"] if r == key)
+            if n != fx.chats:
+                errs.append(f"{key}: {n} chats indexed, expected {fx.chats}")
+            if not any(f"({key})" in line or f"[{key}]" in line for line in out.splitlines()):
+                errs.append(f"{key}: the result is not labelled with the agent")
+        if any("INJECTEDNOISE" in t for (t,) in ctx["messages"]):
+            errs.append("text the agent injected (tool output, reasoning, system prompt) was indexed")
+        if ctx["stores"] != ctx["before_install"]:
+            errs.append("indexing changed the agents' own files")
+        for key, config in ctx["installed"].items():
+            t = _target(key)
+            if config is None or "recall" not in (config.get(t.servers) or {}) or config.get("keepMe") != key:
+                errs.append(f"{key}: install did not add recall beside the person's own config")
+            elif "other" not in config[t.servers]:
+                errs.append(f"{key}: install dropped the person's other MCP server")
+        if "added" in ctx["install_again"]:
+            errs.append("a second install added something again")
+        for path, was in ctx["before_install"].items():
+            now = ctx["after_uninstall"].get(path)
+            if now is None:
+                errs.append(f"uninstall deleted {path}")
+            elif now != was and not (path.endswith(".json") and _same_json(was, now)):
+                errs.append(f"uninstall did not restore {path}")
+        for path in ctx["after_uninstall"]:
+            if path not in ctx["before_install"] and not path.startswith(".agents"):
+                errs.append(f"uninstall left {path}")
+        return errs
+
+    return check
+
+
+def _same_json(a, b) -> bool:
+    try:
+        return json.loads(a) == json.loads(b)
+    except (TypeError, ValueError):
+        return False
+
+
+def _agent_roots(family: str) -> set[str]:
+    """The top-level folders an agent of the family may create a config in."""
+    home = os.path.expanduser("~")
+    out = set()
+    for key in families()[family]:
+        t = _target(key)
+        for template in (t.configs if t else ()) + (t.used if t else ()) + ((t.skills,) if t and t.skills else ()):
+            if path := expand(template):
+                out.add(os.path.relpath(path, home).split(os.sep)[0])
+    return out
+
+
 SCENARIOS = {
     "fresh-claude": ("Claude Code installed, nothing connected", *fresh("claude")),
     "fresh-codex": ("Codex installed, nothing connected", *fresh("codex")),
@@ -1402,6 +1547,17 @@ SCENARIOS = {
     "cursor-data-only": ("Cursor's data folder but no ~/.cursor", cursor_data_build, connect_act, cursor_data_check),
     "edited-skill": ("an edited SKILL.md is kept before it is replaced", fresh("claude")[0], skill_act, skill_check),
 }
+SCENARIOS.update(
+    {
+        f"agents-{f}": (
+            f"the agents of the {f} family: index, search, install and uninstall",
+            agents_build(f),
+            agents_act(f),
+            agents_check(f),
+        )
+        for f in families()
+    }
+)
 # Per scenario: roots (top-level folders of the agent roots it has besides the defaults: any other new
 # config file fails), nothing_changes (autopilot is off: no file may change), no_index, no_connected (the
 # scenario ends with recall removed or withheld), no_readback, indexed (what the index must hold).
@@ -1440,6 +1596,9 @@ OPTIONS = {
     "cursor-data-only": {"no_readback": True},
     "edited-skill": {},
 }
+OPTIONS.update(
+    {f"agents-{f}": {"roots": _agent_roots(f), "no_connected": True, "no_readback": True} for f in families()}
+)
 
 
 def scenario(name: str) -> dict:

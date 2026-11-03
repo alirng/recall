@@ -16,10 +16,12 @@ class Fixture:
     build: Callable[[str], None]  # write the agent's store under this HOME (two chats, one with `query`)
     query: str  # a word only the first chat holds, so a search for it must find that chat
     project: str | None = None  # the folder the first chat is attributed to, when the agent records one
+    chats: int = 2  # how many chats the store holds
 
 
-def all_fixtures() -> dict[str, Fixture]:
-    out: dict[str, Fixture] = {}
-    for info in pkgutil.iter_modules(__path__):
-        out.update(importlib.import_module(f"{__name__}.{info.name}").FIXTURES)
-    return out
+def families() -> dict[str, dict[str, Fixture]]:
+    """Family module name -> its agents' fixtures."""
+    return {
+        info.name: importlib.import_module(f"{__name__}.{info.name}").FIXTURES
+        for info in sorted(pkgutil.iter_modules(__path__), key=lambda i: i.name)
+    }
