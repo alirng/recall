@@ -280,7 +280,7 @@
  "accuracy": {
   "kind": "bars",
   "title": "LongMemEval_S: answers judged correct",
-  "subtitle": "End to end: retrieve, then answer. Vendor figures are self-reported, with their own answer models and judges.",
+  "subtitle": "End to end: retrieve, then answer. Vendor figures are self-reported, with their own answer models and judges. recall's run was graded by its own reader.",
   "ceiling": {
    "value": 92.0,
    "label": "Haiku 5.5 given only the answer sessions",
@@ -288,25 +288,25 @@
   },
   "rows": [
    {
-    "name": "Mastra",
-    "value": 94.9,
-    "note": "gpt-5-mini",
-    "row": "2e4aeef1c301",
-    "source": "https://mastra.ai/research/observational-memory"
+    "name": "Hindsight",
+    "value": 94.6,
+    "note": "reader not named",
+    "row": "afda0fe0445f",
+    "source": "https://hindsight.vectorize.io/blog/2026/03/23/agent-memory-benchmark"
    },
    {
     "name": "Mem0 (platform)",
     "value": 94.4,
-    "note": "GPT-5",
-    "row": "6a839b32b6c2",
-    "source": "https://github.com/mem0ai/memory-benchmarks/tree/4b61c5d31b9c668a12b4f5e78064248a02c82d2b"
+    "note": "reader not named",
+    "row": "4fbad9b8494c",
+    "source": "https://mem0.ai/blog/state-of-ai-agent-memory-2026"
    },
    {
-    "name": "Hindsight",
-    "value": 91.4,
-    "note": "Gemini-3 Pro",
-    "row": "30b58ccca46f",
-    "source": "https://arxiv.org/html/2512.12818v1"
+    "name": "Mastra",
+    "value": 93.6,
+    "note": "gpt-5-mini, per question",
+    "row": "37e17b2c14af",
+    "source": "https://mastra.ai/research/observational-memory"
    },
    {
     "name": "Honcho",
@@ -316,10 +316,17 @@
     "source": "https://honcho.dev/evals/"
    },
    {
+    "name": "Zep",
+    "value": 90.2,
+    "note": "gpt-5.4, grades itself",
+    "row": "11eb4c1c795f",
+    "source": "https://www.getzep.com/research"
+   },
+   {
     "name": "recall 0.4.1",
     "value": 88.4,
     "ours": true,
-    "note": "Claude Haiku 5.5",
+    "note": "Claude Haiku 5.5, grades itself",
     "row": "7887dfa791be"
    },
    {
@@ -344,13 +351,6 @@
     "source": "https://github.com/RinDig/cost-of-remembering"
    },
    {
-    "name": "Zep",
-    "value": 71.2,
-    "note": "GPT-4o",
-    "row": "55d5f9dbab6e",
-    "source": "https://arxiv.org/html/2501.13956v1"
-   },
-   {
     "name": "Full history, no memory",
     "value": 62.6,
     "note": "Claude Haiku 4.5",
@@ -359,12 +359,12 @@
    }
   ],
   "rows_used": [
-   "2e4aeef1c301",
-   "30b58ccca46f",
-   "55d5f9dbab6e",
-   "6a839b32b6c2",
+   "11eb4c1c795f",
+   "37e17b2c14af",
+   "4fbad9b8494c",
    "7887dfa791be",
    "aab6a83b2b3c",
+   "afda0fe0445f",
    "b47671f51a2d",
    "ce656d256973",
    "d5accc6334d3",
@@ -405,20 +405,20 @@
     "label_dx": -10,
     "rows": [
      "8c69229fbfbd",
-     "6a839b32b6c2"
+     "4fbad9b8494c"
     ],
     "sources": [
      "https://mem0.ai/research",
-     "https://github.com/mem0ai/memory-benchmarks/tree/4b61c5d31b9c668a12b4f5e78064248a02c82d2b"
+     "https://mem0.ai/blog/state-of-ai-agent-memory-2026"
     ]
    },
    {
     "name": "Mastra",
     "tokens": 30000.0,
-    "value": 94.9,
+    "value": 93.6,
     "rows": [
      "648b68ee5452",
-     "2e4aeef1c301"
+     "37e17b2c14af"
     ],
     "sources": [
      "https://mastra.ai/research/observational-memory",
@@ -453,15 +453,15 @@
    },
    {
     "name": "Zep",
-    "tokens": 1600.0,
-    "value": 71.2,
+    "tokens": 4408.0,
+    "value": 90.2,
     "rows": [
-     "71983d294dd0",
-     "55d5f9dbab6e"
+     "493bef7aaa47",
+     "11eb4c1c795f"
     ],
     "sources": [
-     "https://arxiv.org/html/2501.13956v1",
-     "https://arxiv.org/html/2501.13956v1"
+     "https://www.getzep.com/research",
+     "https://www.getzep.com/research"
     ]
    },
    {
@@ -497,16 +497,16 @@
    }
   ],
   "rows_used": [
+   "11eb4c1c795f",
    "240630ad1a5b",
-   "2e4aeef1c301",
+   "37e17b2c14af",
    "3d9d0cd9db53",
    "47fc6a4192c4",
+   "493bef7aaa47",
    "4dc7ff73295b",
-   "55d5f9dbab6e",
+   "4fbad9b8494c",
    "5fcfb3c801a4",
    "648b68ee5452",
-   "6a839b32b6c2",
-   "71983d294dd0",
    "7887dfa791be",
    "8c69229fbfbd",
    "a7f7af467b5f",

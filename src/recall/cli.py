@@ -481,6 +481,14 @@ def cmd_rules(a) -> None:
         )
 
 
+def cmd_ledger(a) -> None:
+    from . import ledger
+    from .chats import store
+
+    r = ledger.report(store.parse_since(a.since), a.top)
+    print(json.dumps(r, indent=2) if a.json else ledger.render(r))
+
+
 def cmd_usage(a) -> None:
     from . import usage
     from .chats import store
@@ -859,7 +867,7 @@ def cmd_eval(a) -> None:
         return
     if a.kind == "agent" or a.v2:
         _eval_v2(a)
-    elif a.kind in ("longmemeval", "locomo"):
+    elif a.kind in ("longmemeval", "locomo", "beam"):
         if not a.cases:
             sys.exit(f"recall eval {a.kind} needs --cases pointing at the dataset's JSON file")
         embedder = cache = None
@@ -874,6 +882,14 @@ def cmd_eval(a) -> None:
             cache = sqlite3.connect(os.path.join(paths.HOME, "eval-vectors.db"), timeout=60)
         if a.kind == "locomo":
             evals.run_locomo(a.cases, embedder=embedder, cache=cache)
+        elif a.kind == "beam":
+            if not a.qa:
+                sys.exit("recall eval beam needs --qa MODEL, the reader (--judge defaults to a different, fixed model)")
+            from . import evals_beam
+
+            evals_beam.run_beam_qa(
+                a.cases, a.qa, a.judge, top_k=a.top_k, embedder=embedder, cache=cache, out_path=a.out, limit=a.limit
+            )
         elif a.qa:
             evals.run_longmemeval_qa(
                 a.cases,
@@ -887,7 +903,9 @@ def cmd_eval(a) -> None:
                 out_path=a.out,
             )
         else:
-            evals.run_longmemeval(a.cases, a.limit, a.user_only, embedder=embedder, cache=cache, official=a.official)
+            evals.run_longmemeval(
+                a.cases, a.limit, a.user_only, embedder=embedder, cache=cache, official=a.official, profiles=a.profiles
+            )
     elif a.kind == "session":
         cases = a.cases or os.path.join(paths.EVALS, "session_cases.json")
         if not os.path.exists(cases):
@@ -958,8 +976,10 @@ def _eval_v2(a) -> None:
 
         con = harness.corpus()
         settings["keyword_only"] = a.keyword
+        if a.profiles:
+            settings["profiles"] = True
         run = harness.Run(kinds[a.kind], a.split, settings, a.who, a.runs_dir)
-        evals_search.run(con, cases, run, a.against, keyword_only=a.keyword)
+        evals_search.run(con, cases, run, a.against, keyword_only=a.keyword, profiles=a.profiles)
 
 
 # --- arguments ----------------------------------------------------------------
@@ -1088,6 +1108,10 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--error", help="a failed command's output: past chats with the same error")
     sp.add_argument("--agent", default="claude", help="which agent: claude, codex or cursor")
     sp.add_argument("--json", action="store_true", help="also print each match's features")
+    sp = command("ledger", cmd_ledger, "what recall delivered, joined to what happened next in the session")
+    sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
+    sp.add_argument("--top", type=int, default=15, help="how many notes to list (default 15)")
+    sp.add_argument("--json", action="store_true")
     sp = command("usage", cmd_usage, "how recall itself gets used, from its local log")
     sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
     sp.add_argument("--json", action="store_true")
@@ -1128,6 +1152,7 @@ def _parser() -> argparse.ArgumentParser:
         "agent",
         "longmemeval",
         "locomo",
+        "beam",
         "swe-contextbench",
         "memorycode",
         "amb",
@@ -1145,13 +1170,20 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--official", action="store_true", help="longmemeval: only the questions its own script scores")
     sp.add_argument("--hybrid", action="store_true", help="longmemeval, locomo: also rank by meaning ([embeddings])")
     sp.add_argument(
+        "--profiles",
+        action="store_true",
+        help="search --v2, longmemeval, swe-contextbench: also score per query profile (P1 literal, P2 concept, "
+        "P3 conjunction)",
+    )
+    sp.add_argument(
         "--qa", metavar="MODEL", help="longmemeval: answer and judge with MODEL, e.g. claude:claude-haiku-5-5"
     )
     sp.add_argument("--qa-sample", type=int, default=200, help="--qa: questions in the stratified sample")
     sp.add_argument(
         "--judge",
         metavar="MODEL",
-        help="--qa, agent, memory --v2: grade with MODEL (v2 default claude:claude-sonnet-5-5)",
+        help="--qa, beam: grade with MODEL, never the reader (default claude:claude-opus-5-5); "
+        "agent, memory --v2: default claude:claude-sonnet-5-5",
     )
     sp.add_argument(
         "--context", choices=["sessions", "windows", "oracle"], default="sessions", help="--qa: what it reads"

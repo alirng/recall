@@ -7,6 +7,7 @@ task's problem statement is the query; a hit is any gold experience task in the 
 
   recall eval swe-contextbench --data <download> [--subset lite|full] [--corpus transcripts|records]
       [--query problem|title] [--scope repo|all] [--hybrid] [--split train|test|all] [--against RUN]
+      [--profiles]
 
 --data is a folder holding the GitHub repo (repo/cases/...) and the Hugging Face dataset
 (hf/data/*.parquet); see github.com/jiayuanz3/SWEContextBench. Reading the gold links needs
@@ -20,6 +21,9 @@ own project would; "all" searches every repo at once.
 
 The train/test split is computed here: a seeded 60/40 split of the related tasks, stratified
 by repo (Lite tasks keep their Lite split in Full). Test tasks are only reported in aggregate.
+
+--profiles labels each task P1 literal, P2 concept or P3 conjunction (evals_profiles.py) and
+adds MRR and Recall@R per profile; the other scores stay as they are.
 
 With --agent MODEL, Claude Code (recall's MCP tools only) gets each problem statement and is
 asked to name the past chats it would rely on; see run_agent.
@@ -37,6 +41,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import evals_harness as h
+from . import evals_profiles
 from .chats import store
 from .chats.transcript import Message, Session
 
@@ -105,8 +110,10 @@ def from_args(a) -> dict:
         run = h.Run(f"{name}-agent-{model}-{search}", a.split, settings, a.who, a.runs_dir)
         return run_agent(bench, tasks, run, model, a.query, embedder, cache, a.workers, a.timeout, a.against)
     settings["scope"] = a.scope
+    if a.profiles:
+        settings["profiles"] = True
     run = h.Run(f"{name}-{a.scope}-{search}", a.split, settings, a.who, a.runs_dir)
-    return run_search(bench, tasks, run, a.query, a.scope, embedder, cache, a.against)
+    return run_search(bench, tasks, run, a.query, a.scope, embedder, cache, a.against, a.profiles)
 
 
 # --- the data -------------------------------------------------------------------------
@@ -231,9 +238,12 @@ def _query(task: dict, kind: str) -> str:
 # --- retrieval (M1) ---------------------------------------------------------------------
 
 
-def run_search(bench: Bench, tasks: list[dict], run: h.Run, query: str, scope: str, embedder, cache, against=None):
+def run_search(
+    bench: Bench, tasks: list[dict], run: h.Run, query: str, scope: str, embedder, cache, against=None, profiles=False
+):
     """Rank the experience chats for each task with store.search, in an in-memory index of
-    the task's repo (scope "repo") or of every repo ("all")."""
+    the task's repo (scope "repo") or of every repo ("all"). profiles: label each task by
+    query profile against the pool it was searched in, less its own chat, and score per profile."""
     pools: dict[str, list[str]] = {}
     for iid in bench.sessions:
         pools.setdefault(bench.repo_of[iid] if scope == "repo" else "all", []).append(iid)
@@ -263,6 +273,11 @@ def run_search(bench: Bench, tasks: list[dict], run: h.Run, query: str, scope: s
         row = {"status": h.OK, "repo": t["repo"], "rank": rank, "gold": sorted(gold)}
         row.update({f"hit@{k}": rank is not None and rank <= k for k in KS})
         row["rr"] = 1 / rank if rank else 0.0
+        if profiles:
+            agent = bench.sessions[pool[0]].agent
+            ids = {f"{agent}:{i}" for i in pool} - {own}
+            row.update(evals_profiles.label(con, q, {f"{agent}:{g}" for g in gold}, ids))
+            row["r@r"] = evals_profiles.recall_at_r(ranked, gold)
         results = [
             {"rank": i, "expected": x in gold, **{k: r.get(k) for k in ("chat_id", "title", "snippet")}}
             for i, (x, r) in enumerate(zip(ranked, rows, strict=True), 1)
@@ -281,6 +296,8 @@ def run_search(bench: Bench, tasks: list[dict], run: h.Run, query: str, scope: s
     if train:
         hits, mrr = h.by_tag(train, lambda r: float(r["hit@5"])), h.by_tag(train, lambda r: r["rr"])
         summary["by_repo_train"] = {t: {"hit@5": hits[t], "mrr": mrr[t]} for t in hits}
+    if profiles:
+        summary["by_profile"] = evals_profiles.breakdown(scored, {"mrr": "rr", "r@r": "r@r", "hit@5": "hit@5"})
     summary["plumbing"] = h.plumbing(run.rows)
     summary["warnings"] = h.headroom(metrics)
     if against:
@@ -294,6 +311,8 @@ def run_search(bench: Bench, tasks: list[dict], run: h.Run, query: str, scope: s
     if against:
         headline += f" Δhit@5={h.fmt(summary['against']['hit@5'], signed=True)}"
     columns = [("repo", "repo"), ("rank", "rank"), ("hit@5", "hit@5"), ("gold", "gold")]
+    if profiles:
+        columns.insert(1, ("profile", "profile"))
     return run.finish(summary, headline, columns, note=run.meta.get("note", ""))
 
 

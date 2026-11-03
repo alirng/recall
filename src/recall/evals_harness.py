@@ -35,6 +35,9 @@ from .llm.agent_cli import CLAUDE_MODELS
 RUNS = os.path.expanduser(os.environ.get("RECALL_EVAL_RUNS", "~/.agents/recall-eval/runs"))
 CASES = os.path.expanduser(os.environ.get("RECALL_EVAL_CASES", "~/.agents/recall/evals/v2"))
 JUDGE = "claude:claude-sonnet-5-5"  # must differ from the model under test
+# The question-answering evals (longmemeval --qa, beam) grade with this unless --judge says otherwise:
+# a different model from the reader, and the strongest one the readers (Haiku, Sonnet) are not.
+QA_JUDGE = "claude:claude-opus-5-5"
 SEED = 7
 RESAMPLES = 2000
 HEADROOM = 0.95  # a score this high has little left to show; the cases need to get harder
@@ -251,6 +254,16 @@ def same_model(a: str, b: str) -> bool:
     return norm(a) == norm(b)
 
 
+def qa_judge(reader: str, judge: str | None) -> str:
+    """The judge for a question-answering eval: --judge as given, else QA_JUDGE (Sonnet 5.5 when
+    the reader is Opus 5.5). Never the reader, because a model grading its own answers is lenient."""
+    if judge is None:
+        judge = QA_JUDGE if not same_model(reader, QA_JUDGE) else JUDGE
+    if same_model(reader, judge):
+        sys.exit(f"the judge ({judge}) must differ from the reader ({reader})")
+    return judge
+
+
 # --- run folder -------------------------------------------------------------------
 
 
@@ -342,15 +355,21 @@ class Run:
         if test:
             with open(os.path.join(self.dir, "test", "index.html"), "w", encoding="utf-8") as f:
                 f.write(_results_page(self.meta, summary, test, columns, n_test=0))
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        line = (
-            f"- {stamp} | {self.who} | {self.name} {self.split} | code={self.code} | {headline} | {self.dir} | {note}"
-        )
-        with open(os.path.join(os.path.dirname(self.runs), "LEDGER.md"), "a", encoding="utf-8") as f:
-            f.write(line.rstrip(" |") + "\n")
+        append_ledger(self.runs, self.who, f"{self.name} {self.split}", self.code, headline, self.dir, note, self.meta)
         show(summary)
         print(f"\n{headline}\nresults: {os.path.join(self.dir, 'index.html')}")
         return summary
+
+
+def append_ledger(runs: str, who: str, label: str, code: str, headline: str, run_dir: str, note: str = "", meta=None):
+    """One line in the ledger beside the runs folder. A run that has a judge names it."""
+    judge = (meta or {}).get("judge")
+    if judge:
+        headline = f"{headline} | judge={judge}"
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    line = f"- {stamp} | {who} | {label} | code={code} | {headline} | {run_dir} | {note}"
+    with open(os.path.join(os.path.dirname(runs), "LEDGER.md"), "a", encoding="utf-8") as f:
+        f.write(line.rstrip(" |") + "\n")
 
 
 def show(summary: dict) -> None:
