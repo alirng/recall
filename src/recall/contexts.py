@@ -98,6 +98,54 @@ def of_folder(folder: str | None, table: dict[str, list[str]] | None = None) -> 
     return best
 
 
+def place(cfg: dict, name: str, folder: str) -> str:
+    """Put a folder in a context of cfg (the caller saves it) and say what changed. With no [contexts]
+    table everything is one context, so there is nothing to place. A folder that is already inside one
+    of the context's folders stays as it is."""
+    table = cfg.get("contexts")
+    if not isinstance(table, dict) or not table:
+        return "no contexts are set, so everything is one context: nothing to place"
+    if of_folder(folder, {name: roots_of(table.get(name))}) == name:
+        return f"{folder} is already in the {name} context"
+    table[name] = [*roots_of(table.get(name)), folder]
+    return f"added {folder} to the {name} context in config.toml"
+
+
+def roots_of(folders) -> list[str]:
+    folders = [folders] if isinstance(folders, str) else folders if isinstance(folders, list) else []
+    return [os.path.normpath(os.path.expanduser(f)) for f in folders if isinstance(f, str) and f.strip()]
+
+
+def chat_scope(con, name: str) -> tuple[str, list]:
+    """SQL (starting with "and", over `sessions s`) and its parameters for the chats of one context:
+    what a personal agent such as a Grok Bot may be shown, whatever folder it runs from. A config.toml
+    that cannot be read leaves none."""
+    import functools
+
+    table, now = read()
+    if now == UNKNOWN:
+        return " and 0", []
+
+    @functools.cache
+    def context_of(folder: str | None) -> str:
+        try:
+            return of_folder(folder, table) or ""
+        except Exception:
+            return "\0"
+
+    con.create_function("recall_context", 1, context_of, deterministic=True)
+    return " and recall_context(s.project) = ?", [name]
+
+
+def chats_all_in(chat_ids, name: str) -> bool:
+    """Whether there are chats and every one ran in this context: a note distilled from them may be shown
+    to an agent that is limited to it."""
+    table = roots()
+    ids = list(chat_ids)
+    rows = _chats(ids)
+    return bool(ids) and len(rows) == len(set(ids)) and all(of_folder(folder, table) == name for _, folder in rows)
+
+
 def of_chats(chat_ids, table: dict[str, list[str]] | None = None) -> set[str]:
     """The contexts a set of chats ran in, from the folders the chat index recorded."""
     table = roots() if table is None else table

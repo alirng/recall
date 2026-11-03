@@ -217,6 +217,13 @@ A second account's chats are searchable at once, and become memory only when you
 recall can also keep every folder connected on its own, but only once you say yes to that.
 More in [docs/accounts.md](docs/accounts.md).
 
+## Grok Bot
+
+Grok Bot's personal agents keep their chats on your Mac too. If you opt in during `recall setup`,
+recall reads that cache read-only into your `personal` context, so your coding agents can find what
+you told a bot, and a bot can run `recall search --context personal` for what you told them. Work
+sessions never get them. More in [docs/grok-bot.md](docs/grok-bot.md).
+
 ## Choosing a model
 
 recall writes its notes with a language model. Pick the one that fits your privacy and budget:

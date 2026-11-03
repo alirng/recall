@@ -82,16 +82,22 @@ def cmd_embed(a) -> None:
 
 
 def cmd_search(a) -> None:
-    from . import usage
+    from . import contexts, usage
     from .chats import indexer, store
 
     con = store.connect()
     indexer.index(con, max_age=60)
     args = {"query": " ".join(a.query) if a.cmd == "search" else None, "agent": a.agent, "project": a.project}
+    if a.context:
+        args["context"] = a.context
     if a.cmd == "search":
-        rows = store.search(con, " ".join(a.query), a.agent, a.project, a.since, a.limit, a.until)
+        where = contexts.chat_scope(con, a.context) if a.context else None
+        rows = store.search(con, " ".join(a.query), a.agent, a.project, a.since, a.limit, a.until, where=where)
     else:
-        rows = store.recent(con, a.agent, a.project, a.since, a.limit, a.until)
+        rows = store.recent(con, a.agent, a.project, a.since, 5000 if a.context else a.limit, a.until)
+        if a.context:  # recent has no scope of its own: keep this context's, newest first
+            table = contexts.roots()
+            rows = [r for r in rows if contexts.of_folder(r.get("project"), table) == a.context][: a.limit]
     usage.record("cli", a.cmd, args, rows)
     if a.json:
         print(json.dumps(rows, indent=2))
@@ -107,10 +113,13 @@ def cmd_search(a) -> None:
 
 
 def cmd_show(a) -> None:
-    from . import usage
+    from . import contexts, usage
     from .chats import store
 
-    chat = store.read(store.connect(), a.chat_id, a.query, a.offset, a.limit, max_chars=4000)
+    con = store.connect()
+    chat = store.read(con, a.chat_id, a.query, a.offset, a.limit, max_chars=4000)
+    if chat and a.context and contexts.of_folder(chat.get("project")) != a.context:
+        chat = None  # an agent limited to a context is told nothing of a chat outside it
     usage.record("cli", "show", {"chat_id": a.chat_id, "query": a.query}, chat or {"error": "not found"})
     if not chat:
         sys.exit(f"no chat {a.chat_id!r}")
@@ -272,6 +281,7 @@ def cmd_dream(a) -> None:
 
 
 def cmd_memory(a) -> None:
+    from . import contexts
     from .chats import store
     from .memory import context
     from .memory.notes import NoteStore
@@ -282,7 +292,9 @@ def cmd_memory(a) -> None:
     if a.action == "search":
         from . import usage
 
-        found = context.search(con, " ".join(a.terms), a.project)
+        found = context.search(con, " ".join(a.terms), a.project, 30 if a.context else 10)
+        if a.context:  # only notes distilled wholly from this context's chats
+            found = [r for r in found if contexts.chats_all_in(notes[r["note_id"]].sources, a.context)][:10]
         usage.record("cli", "memory search", {"query": " ".join(a.terms), "project": a.project}, found)
         for r in found:
             where = f"/{r['project']}" if r["project"] else ""
@@ -292,6 +304,8 @@ def cmd_memory(a) -> None:
         from . import usage
 
         note = context.read_note(a.terms[0] if a.terms else "")
+        if note and a.context and not contexts.chats_all_in(note["source_chats"], a.context):
+            note = None
         usage.record("cli", "memory show", {"note_id": a.terms[0] if a.terms else None}, note)
         print(json.dumps(note, indent=2) if note else "no such note")
     elif a.action == "link":
@@ -985,6 +999,12 @@ def _eval_v2(a) -> None:
 # --- arguments ----------------------------------------------------------------
 
 
+_CONTEXT_HELP = (
+    "only this context's chats and notes (a name from [contexts] in config.toml), whatever folder this runs "
+    "from: for an agent that must see only that part of your life, such as a Grok Bot"
+)
+
+
 def _parser() -> argparse.ArgumentParser:
     from . import roots
 
@@ -1019,8 +1039,9 @@ def _parser() -> argparse.ArgumentParser:
         sp = command(name, cmd_search, help_text)
         if name == "search":
             sp.add_argument("query", nargs="+")
-        sp.add_argument("--agent", choices=["claude", "codex", "cursor", *roots.OTHERS])
+        sp.add_argument("--agent", choices=["claude", "codex", "cursor", "grokbot", *roots.OTHERS])
         sp.add_argument("--project")
+        sp.add_argument("--context", help=_CONTEXT_HELP)
         sp.add_argument("--since", help="e.g. 7d, 2w, 3m or 2026-09-01")
         sp.add_argument("--until", help="end of the window, e.g. 2026-09-30 or 7d (up to a week ago)")
         sp.add_argument("--limit", type=int, default=8)
@@ -1031,6 +1052,7 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--query")
     sp.add_argument("--offset", type=int)
     sp.add_argument("--limit", type=int, default=30)
+    sp.add_argument("--context", help=_CONTEXT_HELP)
     command("stats", cmd_stats, "what's in the index")
     sp = command("forget", cmd_forget, "remove a chat, or a project's chats, from recall's index and archive")
     sp.add_argument("chat_id", nargs="?")
@@ -1070,6 +1092,7 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("action", nargs="?", choices=["stats", "search", "show", "link"], default="stats")
     sp.add_argument("terms", nargs="*")
     sp.add_argument("--project")
+    sp.add_argument("--context", help=_CONTEXT_HELP)
     sp = command("context", cmd_context, "print the memory block agents load at session start")
     sp.add_argument("--cwd", help="project folder (default: the current directory)")
     sp.add_argument("--hook", action="store_true", help="old hook entry; same as `recall hook`")

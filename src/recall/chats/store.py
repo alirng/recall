@@ -37,6 +37,7 @@ _PARTS = (
     "sources.codex",
     "sources.compressed",
     "sources.cursor",
+    "sources.grokbot",
     "transcript",
 )
 

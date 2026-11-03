@@ -30,6 +30,9 @@ DEFAULTS = {
     # Which chats produced which commits, kept in recall's index on this machine and never
     # written to a repo; see commits.py. false stops linking and drops the stored links.
     "links": {"enabled": True},
+    # Grok Bot's chat cache (chats/sources/grokbot.py): read only when enabled = true (`recall setup` asks);
+    # skip = ["bot name or id", ...] are bots never read.
+    "grokbot": {"enabled": False, "skip": []},
     # On battery the nightly run and background jobs wait for power ("defer"); "run" lets them run.
     # See power.py.
     "power": {"on_battery": "defer"},
