@@ -1827,3 +1827,37 @@ Sources: `neon-solutions/add-mcp@ad92a01` (README table of agent project/global 
 - Cline/Roo/Continue: legacy-to-SDK session id mapping and which VS Code windows run the SDK bundle; the Roo release that introduced `history_item.json`; whether `cn` loads `.continue/mcpServers/` and skills.
 - Zed: `threads.db` journal mode and leftover `conversations/*.zed`; live ACP-agent behaviour. Warp: real-row verification (TCC), `oz agent run` persistence, Markdown export shape.
 - Kiro: the CLI version that began writing JSONL, the IDE 1.x event schema, whether CLI V3 still writes SQLite. Amp: exact `amp threads export` payload and any remaining local cache. Droid: Factory App session store and the real `transcript_path`. Goose: Desktop `CFBundleIdentifier` and the conflicting macOS default-root statements in its docs. Pi: whether agent-dir `AGENTS.md` and `CLAUDE.md` are both loaded. Crush: hooks inside `crushrc`. Aider: project enumeration without a scan.
+
+---
+
+# Appendix: agents added on 3 November 2026
+
+Agents that competitors read but the October pass did not cover. Each row names where recall reads, the
+format, and the third-party source it rests on (`dv` deja-vu `docs/registry/<id>.md` and `internal/sources`,
+MIT; `av` agentsview `internal/parser`, MIT; `ss` SpecStory `*-FORMAT.md`, Apache-2.0; `fad`
+franken_agent_detection, MIT). All are `[3p]` in the notation above: none of these agents is installed on the
+research machine, and no format was checked against a live install. cass and cass_memory_system (an
+OpenAI/Anthropic licence rider) were not read. The reader for each is in `src/recall/chats/sources/` and is
+described in [docs/agents.md](../agents.md).
+
+| Agent | History (macOS and Linux) | Format | Source | MCP config |
+|---|---|---|---|---|
+| Qwen Code | `~/.qwen/projects/*/chats/*.jsonl`, `subagents/` | Gemini CLI fork, JSONL | dv qwen, ss QWEN-FORMAT | `~/.qwen/settings.json` `mcpServers` |
+| iFlow | `~/.iflow/projects/*/session-*.jsonl` | Claude-like JSONL (uuid / parentUuid) | av iflow | none found |
+| Grok Build | `~/.grok/sessions/**/chat_history.jsonl`, `updates.jsonl` | ACP update JSONL | dv grok, ss GROK-FORMAT, av | `~/.grok/config.toml` `[mcp_servers.<name>]` |
+| Kimi Code | `~/.kimi-code/sessions/*/*/agents/*/wire.jsonl` | per-agent wire JSONL | dv kimi, av | `$KIMI_CODE_HOME/mcp.json` `mcpServers` |
+| Pi forks: Oh My Pi, Prime Agent, OMO, StepCode, Senpi, gajae-code, Kimchi | `~/.omp/agent/sessions`, `~/.prime/agent/sessions`, `~/.omo/agent/sessions`, `~/.stepcode/agent/sessions`, `~/.senpi/agent/sessions`, `~/.gjc/agent/sessions`, `~/.config/kimchi/harness/sessions` | Pi's session JSONL entry tree | dv omp, prime, senpi, gjc, kimchi; av pi | none documented (Pi has no MCP client) |
+| OpenClaw | `~/.openclaw/agents/*/sessions/*.jsonl`, `agents/*/agent/openclaw-agent.sqlite` | Pi-format JSONL, and SQLite since 2026.8 | dv openclaw, av | `openclaw.json` `mcp.servers` |
+| Hermes Agent | `~/.hermes/state.db`, `profiles/*/state.db`, `sessions/` | SQLite, legacy JSON | dv hermes, av | `~/.hermes/config.yaml` `mcp_servers` (YAML) |
+| Devin CLI | `~/.local/share/devin/cli/sessions.db` | SQLite message tree | dv devin, av | `~/.config/devin/mcp_config.json` `mcpServers` |
+| Muse Code | `~/.local/share/muse/sessions/YYYY/MM/DD/<id>/session.jsonl` | event-sourced JSONL | dv muse, ss MUSE-CODE-FORMAT, av | `~/.config/muse/settings.json` `mcpServers` |
+| Mistral Vibe | `~/.vibe/logs/session` | JSONL | fad vibe, av | none found |
+| Command Code | `~/.commandcode/projects/*/*.jsonl` | JSONL envelopes | dv commandcode, av | `~/.commandcode/mcp.json` |
+| Junie | `~/.junie/sessions/<id>/events.jsonl` | event JSONL, blocks folded by step | dv junie, av | `~/.junie/mcp/mcp.json` `mcpServers` |
+| DeepSeek Harness, DeepSeek TUI, ZCode, Cortex Code, Qoder, Codebuff, gptme, Poolside, Reasonix, MiniMax Code, CodeBuddy | see `7/competitors-reading.md` in the plan notes | JSON, JSONL or SQLite | dv, av | not covered (not built) |
+| Windsurf Cascade | `~/.codeium/windsurf/cascade/*.pb` | AES-GCM protobuf; one competitor decrypts it | dv windsurf | `~/.codeium/windsurf/mcp_config.json` (registered, history not read) |
+
+Corrections to the October entries from this pass: Antigravity's current builds write plaintext transcripts
+under `brain/<id>/.system_generated/logs/`, but an install that predates them (June 2026) has only the
+encrypted `.pb` and Markdown artifacts; Copilot CLI's MCP path is `~/.copilot/mcp-config.json` in
+agentmemory and Hindsight and `~/.github/copilot/mcp.json` with a `servers` key in claude-mem (unresolved).
