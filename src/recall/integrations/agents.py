@@ -468,6 +468,16 @@ TARGETS = (
     Target("devin", "Devin CLI", ("{config}/devin",), ("{config}/devin/mcp_config.json",)),
     Target("windsurf", "Windsurf", ("~/.codeium/windsurf",), ("~/.codeium/windsurf/mcp_config.json",)),
     Target("warp", "Warp", ("~/.warp",), ("~/.warp/.mcp.json",)),
+    Target(
+        "vscode",
+        "VS Code",
+        ("{support}/Code/User",),
+        ("{support}/Code/User/mcp.json",),
+        shape="stdio",
+        servers="servers",
+    ),
+    Target("amp", "Amp", ("{config}/amp",), ("{config}/amp/settings.json",), servers="amp.mcpServers"),
+    Target("junie", "Junie", ("~/.junie",), ("~/.junie/mcp/mcp.json",)),
 )
 # Grok Build lists its servers as TOML tables, like Codex.
 GROK_CONFIG = "~/.grok/config.toml"

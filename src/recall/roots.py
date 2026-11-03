@@ -534,7 +534,11 @@ OTHERS: dict[str, Other] = {
             tuple(f"{{support}}/{e}/User" for e in ("Code", "Code - Insiders", "VSCodium")),
         ),
         Other("zed", "Zed", ("{support}/Zed", "{data}/zed")),
-        Other("amp", "Amp", ("{data}/amp",)),
+        Other("amp", "Amp", ("{data}/amp",), ("AMP_DATA_DIR", "")),
+        Other("muse", "Muse Code", ("{data}/muse",)),
+        Other("vibe", "Mistral Vibe", ("{home}/.vibe",)),
+        Other("commandcode", "Command Code", ("{home}/.commandcode",)),
+        Other("junie", "Junie", ("{home}/.junie",), ("JUNIE_HOME", "")),
         Other(
             "cline",
             "Cline",
