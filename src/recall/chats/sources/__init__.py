@@ -114,15 +114,27 @@ def agents(found=None):
 # lists its agents in AGENTS: key -> (display name, detect, items). detect() and items() take no
 # arguments: each agent's folders come from roots.other_dirs(key). Their chats carry the agent's key as
 # Session.root, which keeps them out of `recall dream` unless [roots.<key>] mine = true.
-FAMILIES = ("antigravity", "opencode")
+FAMILIES = ("antigravity", "copilot", "droid", "gemini", "grok", "kimi", "opencode", "pi")
+
+
+def family_modules() -> list:
+    """The family modules that exist. A name in FAMILIES with no file yet is skipped; a module that is
+    there but does not import is an error, not a skip."""
+    import importlib
+
+    out = []
+    for name in FAMILIES:
+        try:
+            out.append(importlib.import_module(f"{__name__}.{name}"))
+        except ModuleNotFoundError as e:
+            if e.name != f"{__name__}.{name}":
+                raise
+    return out
 
 
 def other_agents() -> dict:
-    import importlib
-
     out = {}
-    for name in FAMILIES:
-        module = importlib.import_module(f"{__name__}.{name}")
+    for module in family_modules():
         for key, (label, detect, items) in module.AGENTS.items():
             out[key] = (label, detect, {key: items})
     return out

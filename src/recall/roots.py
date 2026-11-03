@@ -490,6 +490,7 @@ class Other:
     key: str
     label: str
     dirs: tuple[str, ...]  # where its chats live, with the placeholders above
+    env: tuple[str, str] | None = None  # (variable, subfolder): the agent's relocation variable, when it has one
 
 
 OTHERS: dict[str, Other] = {
@@ -497,6 +498,22 @@ OTHERS: dict[str, Other] = {
     for o in (
         Other("opencode", "OpenCode", ("{data}/opencode",)),
         Other("kilo", "Kilo Code", ("{data}/kilo",)),
+        Other("gemini", "Gemini CLI", ("{home}/.gemini",), ("GEMINI_CLI_HOME", ".gemini")),
+        Other("qwen", "Qwen Code", ("{home}/.qwen",)),
+        Other("iflow", "iFlow", ("{home}/.iflow",)),
+        Other("grok", "Grok Build", ("{home}/.grok",), ("GROK_HOME", "")),
+        Other("kimi", "Kimi Code", ("{home}/.kimi-code", "{home}/.kimi"), ("KIMI_CODE_HOME", "")),
+        Other("pi", "Pi", ("{home}/.pi/agent",), ("PI_CODING_AGENT_DIR", "")),
+        Other("omp", "Oh My Pi", ("{home}/.omp/agent",)),
+        Other("prime", "Prime Agent", ("{home}/.prime/agent",)),
+        Other("omo", "OMO", ("{home}/.omo/agent",)),
+        Other("stepcode", "StepCode", ("{home}/.stepcode/agent",)),
+        Other("senpi", "Senpi", ("{home}/.senpi/agent",), ("SENPI_CODING_AGENT_DIR", "")),
+        Other("gjc", "gajae-code", ("{home}/.gjc/agent",), ("GJC_CODING_AGENT_DIR", "")),
+        Other("kimchi", "Kimchi Coding", ("{config}/kimchi/harness",)),
+        Other("openclaw", "OpenClaw", ("{home}/.openclaw", "{home}/.kimi_openclaw"), ("OPENCLAW_STATE_DIR", "")),
+        Other("copilot", "GitHub Copilot CLI", ("{home}/.copilot",), ("COPILOT_HOME", "")),
+        Other("droid", "Factory Droid", ("{home}/.factory",)),
         Other(
             "antigravity",
             "Antigravity",
@@ -521,12 +538,17 @@ def other_dirs(key: str) -> list[str]:
     """The folders of this agent that exist: stat calls only, so detecting it costs nothing when it is
     not installed. A relative XDG_DATA_HOME is ignored, as the XDG spec says."""
     places = {k: v for k, v in _places().items() if os.path.isabs(v)}
-    out = []
-    for template in OTHERS[key].dirs:
+    other = OTHERS[key]
+    candidates = []
+    if other.env and os.path.isabs(value := os.environ.get(other.env[0], "")):
+        candidates.append(os.path.join(value, other.env[1]).rstrip(os.sep))
+    for template in other.dirs:
         try:
-            path = os.path.expanduser(template.format(**places))
+            candidates.append(os.path.expanduser(template.format(**places)))
         except KeyError:
             continue
+    out = []
+    for path in candidates:
         if os.path.isdir(path) and path not in out:
             out.append(path)
     return out

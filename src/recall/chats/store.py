@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 
 from .. import __version__, paths, roots
-from . import archive, scrub
+from . import archive, scrub, sources
 from .errors import ToolError, anchor, identity, reclean_errors
 from .projects import resolve
 from .redact import Chat, redact
@@ -33,12 +33,10 @@ _PARTS = (
     "projects",
     "redact",
     "sources",
-    "sources.antigravity",
     "sources.claude",
     "sources.codex",
     "sources.compressed",
     "sources.cursor",
-    "sources.opencode",
     "transcript",
 )
 
@@ -46,6 +44,8 @@ _PARTS = (
 def chat_schema_version() -> str:
     """A short stable hash of every part's CHAT_SCHEMA, sorted by module name."""
     parts = [(name, importlib.import_module(f"{__package__}.{name}").CHAT_SCHEMA) for name in _PARTS]
+    # One module per format family of the agents beyond the main three (sources/__init__.py FAMILIES).
+    parts += [(m.__name__.removeprefix(f"{__package__}."), m.CHAT_SCHEMA) for m in sources.family_modules()]
     parts.append(("store", CHAT_SCHEMA))
     return "p-" + hashlib.sha1(json.dumps(sorted(parts)).encode()).hexdigest()[:10]
 
