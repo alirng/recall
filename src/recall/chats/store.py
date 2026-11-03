@@ -563,6 +563,16 @@ FUSION_K = 20
 # parent and the parent's other subagents) placed above it halves its score.
 SIBLING_DECAY = 0.5
 WEIGHTS = {"best": 0.5, "sum": 1.0, "title": 2.0, "all": 1.0, "dense": 1.0}
+# The dense ranking counts for more once a query is long enough to describe something instead of
+# naming it. A query of up to LOOKUP_WORDS content words is a lookup, often words copied from the
+# chat, where the keyword rankings are the better evidence and the dense weight stays 1: at 4 it
+# cost 0.136 of known-item MRR over 3-word queries. Longer queries get DENSE_BOOST times that
+# weight, which gained 4 to 5 points on search_v2 and 20 on SWE-ContextBench titles. Both numbers
+# were chosen on the train splits; see docs/research/query-gate.md. Code-like tokens, paths,
+# quotes and rare terms were tried as extra lookup signs and did not help: SWE-ContextBench's
+# queries are full of them, and they are the ones that gain most.
+LOOKUP_WORDS = 3
+DENSE_BOOST = 4
 TOP_HITS = 3  # messages per chat summed, and returned as hits
 POOL = 2000  # matching messages considered per query
 # A title is strong evidence for a query about as long as a title, and weak evidence for a
@@ -650,7 +660,10 @@ def search(
         from .. import embeddings
 
         by_dense = embeddings.ranking(con, vector, fsql, fargs, msql, margs, 200)
-    weights = dict(WEIGHTS, title=WEIGHTS["title"] * min(1.0, TITLE_WORDS / (q.count(" OR ") + 1)) ** 4)
+    words = q.count(" OR ") + 1
+    weights = dict(WEIGHTS, title=WEIGHTS["title"] * min(1.0, TITLE_WORDS / words) ** 4)
+    if words > LOOKUP_WORDS:
+        weights["dense"] *= DENSE_BOOST
     scores: dict[str, float] = {}
     rankings = (("best", by_best), ("sum", by_sum), ("title", by_title), ("all", by_all), ("dense", by_dense))
     threads = _subagent_threads(con)
