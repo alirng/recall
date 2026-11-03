@@ -22,6 +22,16 @@ A Claude Sonnet judge, which also reads the chats, scores:
   type/scope   on the matches, against the expected type and scope ("any" matches all)
   updates      after folding, an active note states the new claim, none states the old as current
   leaks        memories or notes stating something forbidden
+
+An item may also hold rules the developer states with `recall remember` while its chats are folded:
+  "remember": [{"rule": "...", "key": "deploys", "before": 1, "at": "2026-10-01T09:00", "scope": "project"}]
+`before` is the chat the rule is remembered ahead of (default: after the last chat, with one more
+folding pass for its candidate), `at` when (default: an hour apart, after the item's last chat),
+and `key` names a rule over time: the last remembered rule of a key is its latest form. Scored
+without a judge:
+  gold         each key's latest form is an active rule, in the developer's words and marked as
+               theirs; no earlier form of it is still active; and no other active rule says the
+               same (said.supports both ways)
 """
 
 import json
@@ -37,8 +47,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import config, paths
 from . import evals_harness as h
+from .chats.projects import Project
 from .llm import Client, FatalError, LLMError, from_spec
-from .memory import consolidate, digest, extract, links, routing
+from .memory import consolidate, digest, extract, links, remember, routing, said
 from .memory.notes import NoteStore
 
 # Bump when the judge's prompts or rubric change: scores graded by different versions do not compare.
@@ -124,6 +135,7 @@ def run(
         "scope_accuracy": h.ratio_ci([(p["scope_ok"], p["found"]) for p in pooled.values()]),
         "update_correctness": h.ratio_ci([(p["updates_ok"], p["updates"]) for p in pooled.values()]),
         "note_recall": h.ratio_ci([(p["note_found"], p["expected"]) for p in pooled.values() if p["folded"]]),
+        "gold": h.ratio_ci([(p["gold_ok"], p["gold_keys"]) for p in pooled.values() if p["gold_keys"]]),
     }
     negatives = [r["memories"] for r in scored if r.get("negative")]
     summary = {
@@ -164,6 +176,8 @@ def run(
         f"recall={h.fmt(metrics['recall'])} precision={h.fmt(metrics['precision'])} "
         f"updates={metrics['update_correctness']['mean']} leaks={summary['forbidden_leaks']} model={provider.label}"
     )
+    if any(p["gold_keys"] for p in pooled.values()):
+        headline += f" gold={h.fmt(metrics['gold'])}"
     if against:
         headline += f" Δrecall={h.fmt(summary['against']['recall'], signed=True)}"
     columns = [
@@ -172,6 +186,7 @@ def run(
         ("memories", "memories"),
         ("updates ok", "updates_ok"),
         ("leaks", "leaks"),
+        ("gold", "gold_ok"),
     ]
     return run.finish(summary, headline, columns, note=run.meta.get("note", ""))
 
@@ -255,10 +270,11 @@ def _load(path: str) -> dict:
         return {}
 
 
-def fold(chats: list[str], sessions: dict, found: dict, client: Client) -> dict:
+def fold(chats: list[str], sessions: dict, found: dict, client: Client, events: list[dict] | None = None) -> dict:
     """Fold each chat's candidates into a temporary copy of the notes, one chat at a time
-    and in order, as dream._fold_notes does on successive nights. Returns the notes the run
-    created or changed."""
+    and in order, as dream._fold_notes does on successive nights, with the item's remembered
+    rules saved between them. Returns the notes the run created or changed, and the remembered
+    rules' gold verdicts."""
     tmp = tempfile.mkdtemp(prefix="recall-eval-notes-")
     try:
         root = os.path.join(tmp, "memory")
@@ -275,9 +291,21 @@ def fold(chats: list[str], sessions: dict, found: dict, client: Client) -> dict:
         extract.ensure_tables(db)
         log: list[str] = []
         stats: Counter = Counter()
-        for cid in chats:
-            candidates, digest_hash = found[cid]
-            extract.store(db, sessions[cid], "done", candidates, digest_hash, client.provider.label)
+        events = _events(events or [], chats, sessions)
+        saved: list[tuple[dict, tuple[str, str]]] = []  # (event, (note id, rule id))
+        for k, cid in enumerate([*chats, None]):
+            for e in (e for e in events if e["before"] == k):
+                done = remember.remember(
+                    notes_store, e["rule"], e["folder"], e["scope"], now=e["at"], project=e["project"]
+                )
+                remember.candidate(db, done)
+                saved.append((e, (done.note.id, done.rule.id)))
+            if cid is None:
+                if not any(e["before"] == len(chats) for e in events):
+                    break
+            else:
+                candidates, digest_hash = found[cid]
+                extract.store(db, sessions[cid], "done", candidates, digest_hash, client.provider.label)
             db.commit()
             notes = notes_store.load()
             notes_store.reconcile(notes)
@@ -297,9 +325,67 @@ def fold(chats: list[str], sessions: dict, found: dict, client: Client) -> dict:
             "stats": dict(stats),
             "log": log,
             "left_out_notes": forgotten,
+            "gold": _gold(saved, list(after)),
         }
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _events(events: list[dict], chats: list[str], sessions: dict) -> list[dict]:
+    """An item's remembered rules with their defaults filled in (see the module docstring)."""
+    from datetime import datetime, timedelta
+
+    first = sessions[chats[0]]
+    last = max(sessions[c]["updated_at"] or 0 for c in chats)
+    project = Project(first["project_key"], first["project_name"], None) if first["project_key"] else None
+    out = []
+    for i, e in enumerate(events, 1):
+        at = datetime.fromisoformat(e["at"]) if e.get("at") else datetime.fromtimestamp(last) + timedelta(hours=i)
+        scope = e.get("scope", "project" if project else "global")
+        before = e.get("before", len(chats))
+        folder = first["project"] or "/"  # a global rule routes to the context the chats ran in
+        out.append({**e, "at": at, "scope": scope, "before": before, "project": project, "folder": folder})
+        out[-1]["key"] = e.get("key", str(i))
+    return out
+
+
+def _gold(saved: list, notes: list) -> list[dict]:
+    """Per key: does its latest remembered form hold, alone and in the developer's words?"""
+    rules = {(n.id, r.id): (n, r) for n in notes for r in n.rules}
+    live = [(n, r) for n in notes if n.status == "active" for r in n.active_rules]
+    out = []
+    for key in dict.fromkeys(e["key"] for e, _ in saved):
+        forms = [(e, ids) for e, ids in saved if e["key"] == key]
+        e, ids = forms[-1]
+        note, rule = rules.get(ids, (None, None))
+        kept = bool(
+            note
+            and note.status == "active"
+            and rule.active
+            and rule.said_by == "developer"
+            and said._norm(rule.text) == said._norm(e["rule"])
+        )
+        older = [
+            i
+            for _, i in forms[:-1]
+            if i != ids and i in rules and rules[i][1].active and rules[i][0].status == "active"
+        ]
+        twins = [
+            (n.id, r.id)
+            for n, r in live
+            if (n.id, r.id) != ids and said.supports(e["rule"], r.text) and said.supports(r.text, e["rule"])
+        ]
+        out.append(
+            {
+                "key": key,
+                "rule": e["rule"],
+                "kept": kept,
+                "older_active": older,
+                "twins": twins,
+                "ok": kept and not older and not twins,
+            }
+        )
+    return out
 
 
 def _forget(notes_store: NoteStore, chats: set[str]) -> int:
@@ -358,11 +444,11 @@ def _score_item(item, repeat, run, client, grader, sessions, digests, found, fai
     memories = [dict(m, chat=c) for c in chats for m in found[c][0]]
     transcript["memories"] = memories
     expect = item.get("expect") or []
-    folds = len(chats) > 1 or bool(item.get("supersedes"))
+    folds = len(chats) > 1 or bool(item.get("supersedes")) or bool(item.get("remember"))
     step = "fold"
     try:
         if folds:
-            transcript["notes"] = fold(chats, sessions, found, client)
+            transcript["notes"] = fold(chats, sessions, found, client, item.get("remember"))
         step = "judge"
         verdict = transcript["judge"] = grade(grader, item, memories, [digests[c] for c in chats])
         if folds:
@@ -402,6 +488,8 @@ def _score_item(item, repeat, run, client, grader, sessions, digests, found, fai
         updates_ok=0,
         note_found=0,
         note_leaks=0,
+        gold_keys=0,
+        gold_ok=0,
     )
     if folds:
         u = transcript["update_judge"]
@@ -411,6 +499,8 @@ def _score_item(item, repeat, run, client, grader, sessions, digests, found, fai
             note_found=sum(1 for e in u["expected"] if 1 <= e["note"] <= len(transcript["notes"]["active"])),
             note_leaks=len(u["forbidden_notes"]),
             notes=len(transcript["notes"]["active"]),
+            gold_keys=len(transcript["notes"]["gold"]),
+            gold_ok=sum(g["ok"] for g in transcript["notes"]["gold"]),
         )
     return {
         "row": run.record(item, row, transcript),
@@ -613,11 +703,12 @@ def _short(row: dict) -> str:
 def _pool(rows: list[dict]) -> dict[str, dict]:
     """Per item, sums over repeats, so each item counts once in a bootstrap."""
     keys = ("found", "expected", "good", "memories", "type_ok", "scope_ok", "updates_ok", "updates", "note_found")
+    keys += ("gold_ok", "gold_keys")
     out: dict[str, dict] = {}
     for r in rows:
         p = out.setdefault(r["id"], {**dict.fromkeys(keys, 0), "folded": r["folded"], "tags": r["tags"]})
         for k in keys:
-            p[k] += r[k]
+            p[k] += r.get(k, 0)
     return out
 
 

@@ -152,6 +152,7 @@ recall starts in the background run at low priority.
 | `recall embed` | embed messages for semantic search (needs `[embeddings]` in config.toml) |
 | `recall dream [--max-minutes N] [--max-calls N] [--max-usd X] [--no-batch] [--on-battery run]` | update memory now; unlike the nightly run, it has no budget unless you give one; on battery, outside a terminal, it waits for power unless told to run |
 | `recall memory [search <words> \| show <id> \| link]` | browse notes; `link` recomputes links now |
+| `recall remember "<rule>" [--global] [--project PATH]` | save a rule you state into the notes now ([rules you state](how-it-works.md#rules-you-state)) |
 | `recall projects [suggest \| show <name>] [--months N] [--all]` | your projects as lanes; `suggest` drafts projects.yaml |
 | `recall rules [project \| folder] [--write]` | which agent reads which instructions; `--write` closes the gaps |
 | `recall usage [--since 7d]` | how recall itself gets used, from its local log |

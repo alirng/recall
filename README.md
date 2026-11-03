@@ -144,7 +144,8 @@ the audit tables. Why: two hand-run migrations left staging without audit rows.
 
 The files are the source of truth. Edit a note and recall keeps your edit; delete one and it
 is never learned again. `git log` shows what each night changed, and `git revert` undoes it.
-Newer chats supersede older notes, and work and personal memory can be kept apart. How notes
+Newer chats supersede older notes, and work and personal memory can be kept apart. A rule you
+state with `/recall remember` is written at once and kept in your words. How notes
 are written and loaded: [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Projects and rules

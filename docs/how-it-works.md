@@ -126,6 +126,35 @@ wrote, or in a line you added by hand, is cut out of the rule. Whoever said a ru
 convention never authorizes a network, destructive or exfiltrating action. No reader shows the
 mark yet.
 
+### Rules you state
+
+`recall remember "<rule>"` writes a rule into the notes at once, as a note of its own, instead
+of waiting for the nightly run to find it in a chat. It is for the current project, or with
+`--global` for every project in the `[contexts]` context of the folder it ran in (a rule stated
+in a work folder never loads in personal ones; one stated outside every context's folders is
+searchable but loads nowhere by itself). The same words remembered again are the same rule. In
+an agent, `/recall remember <rule>` (Claude Code, Cursor) or `$recall remember <rule>` (Codex)
+runs it through the `recall` skill; the MCP tools stay read-only.
+
+Who said it is decided by recall, not by the agent:
+
+- typed at your own terminal: `said_by: developer`;
+- run by an agent: `said_by: developer` only when `--quote`, your words, is found in your latest
+  messages in that chat, read from the agent's own transcript (Claude Code and Codex name the
+  chat; for Cursor it is the folder's transcript written in the last minutes), and the rule
+  says what the quote says;
+- anything else an agent runs is saved as `said_by: agent`, a candidate that no session is
+  handed unasked and that fades unless the nightly run finds you typed it;
+- an agent cannot save a rule with a command, a URL or a network, destructive or exfiltrating
+  step at all; type those yourself.
+
+This is the guard against prompt injection: a web page, file or tool result that tells an agent
+to remember something cannot put words in your messages, so it gets at most an agent candidate.
+The nightly run keeps your words. It retires an older rule that a remembered one replaces, and
+folds in a rule that says the same thing. Only a later chat in which you typed something else
+can change a remembered rule: not an older chat read late, not the chat you remembered it in,
+and not the agent. Editing or deleting the note by hand works as for any note.
+
 Each note ends with wikilinks to its closest notes, which recall rewrites after every run.
 Two notes are linked when they share distinctive words, more strongly when they came from
 the same chat or project; no model call is involved. A `[[note-id]]` you write in a note's
