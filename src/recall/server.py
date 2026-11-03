@@ -20,7 +20,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 
-from . import __version__, paths, projects, usage
+from . import __version__, latest, paths, projects, usage
 from .chats import indexer, store
 from .memory import context
 
@@ -230,7 +230,11 @@ def search_chats(
         depth = n if len(queries) == 1 else max(n, 20)  # deeper lists fuse into a better top n
         with _db() as con:
             note = _incomplete(con)
-            return _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])[:n]
+            ranking: dict = {}  # the chats each phrasing ranked, beyond the n shown
+            found = _merge(
+                [store.search(con, q, agent, project, since, depth, until, exclude, explain=ranking) for q in queries]
+            )
+            return latest.annotate_search(con, found[:n], queries, found, ranking)  # who wrote each hit; newer chats
 
     rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
     # Claude Code and Codex show the model structuredContent when a result has it; Cursor reads
@@ -288,9 +292,15 @@ def _result_block(row: dict) -> str:
     where = (row.get("project") or "") + (f" ({row['branch']})" if row.get("branch") else "")
     size = f"{row['messages']} messages" + (f", {row['matches']} matching" if row.get("matches") else "")
     head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
-    lines = [f"[{h['seq']}] {' '.join(h['snippet'].split())}" for h in row.get("hits") or []]
+    labels, newer = latest.search_lines(row)
+    lines = [
+        f"[{h['seq']}{label}] {' '.join(h['snippet'].split())}"
+        for h, label in zip(row.get("hits") or [], labels, strict=True)
+    ]
     if not lines and row.get("snippet"):
         lines = [f"opening message: {' '.join(row['snippet'].split())}"]
+    if newer:
+        lines.append(newer)
     return head + "".join(f"\n  {line}" for line in lines) + "\n"
 
 
@@ -314,6 +324,8 @@ def read_chat(
         with _db() as con:
             result = store.read(con, chat_id, query, offset, max(1, min(limit, 80)), max_chars=store.MAX_MESSAGE_CHARS)
             note = None if result else _incomplete(con)
+            if result:  # who wrote each message; on a first read, a newer chat and where this one ended
+                latest.annotate_read(con, result, query, first=offset is None)
         if not result:
             return {"error": f"no chat with id {chat_id!r}; use search_chats first" + (f". {note}" if note else "")}
         budget = store.MAX_MESSAGE_CHARS if limit == 1 else CLIP_CHARS
