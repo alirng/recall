@@ -524,7 +524,7 @@ OTHERS: dict[str, Other] = {
         Other("droid", "Factory Droid", ("{home}/.factory",)),
         Other("goose", "Goose", ("{data}/goose", "{support}/Block/goose"), ("GOOSE_PATH_ROOT", "data")),
         Other("crush", "Crush", ("{data}/crush",)),
-        Other("kiro", "Kiro", ("{home}/.kiro", "{support}/kiro-cli", "{data}/kiro-cli")),
+        Other("kiro", "Kiro", ("{home}/.kiro", "{support}/kiro-cli", "{data}/kiro-cli"), ("KIRO_HOME", "")),
         Other("devin", "Devin CLI", ("{data}/devin", "{support}/devin")),
         Other("hermes", "Hermes Agent", ("{home}/.hermes",), ("HERMES_HOME", "")),
         Other("continue", "Continue", ("{home}/.continue",), ("CONTINUE_GLOBAL_DIR", "")),
