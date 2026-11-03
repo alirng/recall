@@ -226,7 +226,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuild()
         refresh()
         // Opening the menu always refreshes; the timer only keeps the icon honest, so it can be slow.
-        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.refresh() }
+        // Each refresh is a `recall status` run (about 1.5 s of CPU, mostly git), so every 15 minutes, with
+        // slack that lets macOS fold it into other wakeups.
+        let timer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in self?.refresh() }
+        timer.tolerance = 120
     }
 
     func menuWillOpen(_ menu: NSMenu) { refresh() }
@@ -240,7 +243,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func refresh() {
         guard !running else { again = true; return }
         running = true
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .utility).async {
             let result = Self.fetch()
             DispatchQueue.main.async {
                 self.running = false
