@@ -11,6 +11,9 @@ nothing here calls a model.
   shared words, the guess was wrong about as often as right.
 - who said each line, and when: the person, the agent, or, in a subagent's chat, the parent
   agent that briefed it.
+- refs: where to go next, as ids with a date and one line each (references, deeper_thread): other
+  chats on the same thread, the chats just before and after it, the notes it fed, its commits and
+  chats that edited the same files. An agent can follow a decision across chats hop by hop.
 
 "Covers the same ground" is measured on words. A chat's fingerprint is its distinctive words:
 the ones it uses most, weighted by how rare they are across every indexed message. A later chat
@@ -61,9 +64,7 @@ ANNOTATED = 8  # search results checked for a newer chat, from the top
 
 # Next-hop references (references()).
 REFS_READ = 5  # references on a read_chat window
-REFS_HITS = 3  # search results that carry references, from the top
-REFS_PER_HIT = 2
-REFS_SEARCH = 6  # references across one search's results
+REFS_SEARCH = 4  # references across one search's results
 ABOUT_CHARS = 90
 FILE_CHATS = 5  # a file more chats than this edited (a README, the CLI) says nothing about a thread
 REF_KINDS = ("thread", "later", "earlier", "note", "commit", "same files")
@@ -337,6 +338,50 @@ def references(
     return sorted(picked, key=lambda r: r["date"])
 
 
+def deeper_thread(con, rows: list[dict], ranked: list[str], skip: set, limit: int, db: str, now=None) -> list:
+    """Chats the search ranked just below the results shown (to RANKED) that cover the same ground
+    as one of them, by the bar for chats on the query (RANKED_MEAN, RANKED_FLOOR) in the same
+    project: each as (the result it goes with, its reference), best overlap first. Being ranked
+    already says they are about the query, so they need not repeat its words."""
+    if limit <= 0:
+        return []
+    until = (now or time.time()) - ACTIVE
+    own = usage.agent_session()
+    tops = [(r, _chat(con, r["chat_id"])) for r in rows]
+    tops = [(r, s, *_fingerprint(con, db, s["id"], s["n_messages"])) for r, s in tops if s and s["project_key"]]
+    found = []
+    for cid in ranked[len(rows) : RANKED]:
+        c = _chat(con, cid)
+        if (
+            cid in skip
+            or not c
+            or not c["project_key"]
+            or (c["origin"] or "") in ("subagent", "headless")
+            or (own and cid.split(":", 1)[-1] == own)
+            or (c["updated_at"] or 0) >= until
+        ):
+            continue
+        fp, mine = _fingerprint(con, db, cid, c["n_messages"])
+        best = None
+        for r, s, tfp, theirs in tops:
+            if s["project_key"] != c["project_key"]:
+                continue
+            forward, back = _cover(tfp, mine), _cover(fp, theirs)
+            passes = (forward + back) / 2 >= RANKED_MEAN and RANKED_FLOOR <= min(forward, back) < COPY
+            if passes and (not best or forward + back > best[0]):
+                best = (forward + back, r)
+        if best:
+            ref = {
+                "kind": "thread",
+                "id": cid,
+                "date": (store.fmt_time(c["updated_at"]) or "")[:10],
+                "about": _about(c["title"]),
+            }
+            found.append((best[0], best[1], ref))
+    found.sort(key=lambda x: -x[0])
+    return [(r, ref) for _, r, ref in found[:limit]]
+
+
 def _linked(con, sql: str, *args) -> list:
     """Rows from recall's commit links, or none in an index that has no links (an eval's)."""
     try:
@@ -383,7 +428,8 @@ def who(role: str, origin: str | None) -> str:
 
 def annotate_search(con, rows: list[dict], queries: list[str], found: list[dict], explain: dict) -> list[dict]:
     """Search results with each hit labelled with who wrote it (and its date when not the
-    chat's last day), and the top results with the newer chat on the same ground, if any.
+    chat's last day), the top results with the newer chat on the same ground, if any, and next-hop
+    references (refs) to chats ranked just below them on the same ground.
     found: every chat the search returned, of which rows are the first; explain: what
     store.search filled in for a single phrasing, whose scores rank chats beyond those."""
     db = _db_key(con)
@@ -410,17 +456,12 @@ def annotate_search(con, rows: list[dict], queries: list[str], found: list[dict]
                 h["date"] = when
         if i < ANNOTATED and (n := newer(con, row["chat_id"], queries[0] if queries else None, ranked, db)):
             row["newer_chat"] = n
-    # Next-hop references on the top results, never naming a chat the agent already sees here.
+    # Next-hop references: the chats ranked just below the results that cover the same ground as
+    # one of them, each under that result. A result's own time neighbours, notes and commits wait
+    # for read_chat: in replayed real searches, agents opened none of them.
     skip = {r["chat_id"] for r in rows} | {r["newer_chat"]["chat_id"] for r in rows if r.get("newer_chat")}
-    left = REFS_SEARCH
-    for row in rows[:REFS_HITS]:
-        refs = references(
-            con, row["chat_id"], queries[0] if queries else None, ranked, skip, min(REFS_PER_HIT, left), db
-        )
-        if refs:
-            row["refs"] = refs
-            skip |= {r["id"] for r in refs}
-            left -= len(refs)
+    for row, ref in deeper_thread(con, rows, ranked, skip, REFS_SEARCH, db):
+        row.setdefault("refs", []).append(ref)
     return rows
 
 
@@ -442,9 +483,9 @@ def ref_line(ref: dict) -> str:
 
 def annotate_read(con, result: dict, query: str | None, first: bool) -> dict:
     """read_chat's result with the roles of a subagent's or headless chat's prompts named for who
-    wrote them; and, on a first read (no offset), the newer chat on the same ground, where this
-    chat ended up (when the messages shown stop short of its end), and the person's turns that
-    changed course."""
+    wrote them, and next-hop references (refs, see references); and, on a first read (no offset),
+    the newer chat on the same ground, where this chat ended up (when the messages shown stop short
+    of its end), and the person's turns that changed course."""
     sid = result["chat_id"]
     s = con.execute("select origin from sessions where id = ?", (sid,)).fetchone()
     origin = s["origin"] if s else None
