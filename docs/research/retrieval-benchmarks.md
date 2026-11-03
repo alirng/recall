@@ -50,9 +50,9 @@ measurements, which are reproducible with `recall eval longmemeval`.
 | Mem0 platform (vendor) | 94.4 | 92.5 | 64.1 | GPT-5 (also judge) | Platform only; committed files recount to 93.4 / 91.6 [mem0-results] |
 | Mem0 library (vendor) | 88.6–91.0 | | | | [mem0-results] |
 | Honcho (vendor) | 90.4 | 89.9 | 0.631 | Claude Haiku 4.5 | Whole LoCoMo transcript in the prompt; full-context Haiku on the same LoCoMo questions scores 83.1 [honcho-loc] |
-| Hindsight (vendor) | 91.4 | 89.6 | 73.9 | Gemini-3 Pro | Dense + BM25 + graph + temporal, RRF, cross-encoder [hindsight] |
+| Hindsight (vendor) | 94.6 | 89.6 | 73.9 | Gemini-3 Pro (paper) | Dense + BM25 + graph + temporal, RRF, cross-encoder. LongMemEval from its 2026 benchmark post, which names no answer model; the paper reported 91.4 [hindsight-blog] [hindsight] |
 | EverMemOS (vendor) | 83.0 | 93.05 | | GPT-4.1-mini | A third party measured 38.38 on LoCoMo [locomo-audit] |
-| Zep (paper) | 71.2 | | | GPT-4o | [zep-paper] |
+| Zep (vendor) | 90.2 | | | gpt-5.4 (also judge) | Its research page; the paper reported 71.2 with GPT-4o [zep-research] [zep-paper] |
 | Letta filesystem (vendor) | | 74.0 | | GPT-4o-mini | grep plus embedded file search [letta-fs] |
 
 LoCoMo's answer key is wrong on 6.4% of questions and its usual judge accepts 62.8% of
@@ -239,20 +239,23 @@ different answer models and judges, so these are context, not a ranking):
 
 | System | Accuracy | Answer model / judge | Context tokens a query | LLM calls at ingest |
 | --- | --- | --- | --- | --- |
+| Hindsight | 94.6 | not named (the paper's 91.4: Gemini-3 Pro / GPT-OSS-120B) | token budget | extraction per message |
 | Mem0 platform | 94.4 | GPT-5 / GPT-5 | 6,956 on LoCoMo (vendor) [mem0-research] | 1 extraction call per add |
-| Mastra observational memory | 94.9 | gpt-5-mini | ~30,000 | observer and reflector |
-| Hindsight | 91.4 | Gemini-3 Pro / GPT-OSS-120B | token budget | extraction per message |
+| Mastra observational memory | 93.6 | gpt-5-mini / gpt-4o | ~30,000 | observer and reflector |
 | Honcho | 90.4 | Haiku 4.5 / GPT-4o | median ~5% of history | deriver per message batch |
+| Zep | 90.2 | gpt-5.4 / gpt-5.4 | median ~4,400 | several |
 | **recall (this run)** | **87.4** | **Haiku 5.5 / Haiku 5.5** | **~44,100** | **none** |
 | Supermemory | 81.6-85.2 | GPT-4o to Gemini-3 / GPT-4o | not reported | extraction |
 | EverMemOS | 83.0 | GPT-4.1-mini | ~2,800 (its paper's token column, undefined) | extraction, plus a verifier at query time |
 | ICM folders, "Cost of Remembering" (n=39) | 74.4 | Sonnet 5 | 5,314 | none |
-| Zep | 71.2 | GPT-4o / GPT-4o | ~1,600 | several |
 | Full context, Haiku 4.5 (Honcho's baseline) | 62.6 | Haiku 4.5 / GPT-4o | ~115,000 | none |
 | Full context, Sonnet 5 ("Cost of Remembering") | 87.2 | Sonnet 5 | 184,186 | none |
 
-Sources: [mem0-results], [mastra], [hindsight], [honcho-stats], [supermemory], [evermemos],
-[cost-of-remembering], [zep-paper]. The full-context baseline with Haiku 5.5 was not run:
+Sources: [mem0-results], [mastra], [hindsight-blog], [honcho-stats], [supermemory], [evermemos],
+[cost-of-remembering], [zep-research]. Mastra publishes 94.9, the average of the six question types,
+which weights the small types up; counted per question, as the other rows are, it is 93.6 (468 of 500).
+Zep's paper reported 71.2 with GPT-4o over about 1,600 tokens, and Hindsight's paper 91.4; the rows
+above use their newer figures, as [docs/benchmarks.md](../benchmarks.md) does. The full-context baseline with Haiku 5.5 was not run:
 LongMemEval_S histories exceed the 100k-token cap this run kept to.
 
 What this says about recall: its retrieval is as good as anything published, and better than
@@ -314,6 +317,7 @@ file, which `recall rules` is placed to do.
 - [evermemos]: https://arxiv.org/html/2601.02163v2
 - [fsm]: https://arxiv.org/html/2607.26637v1
 - [hindsight]: https://arxiv.org/html/2512.12818v1
+- [hindsight-blog]: https://hindsight.vectorize.io/blog/2026/03/23/agent-memory-benchmark
 - [honcho-loc]: https://github.com/plastic-labs/honcho-benchmarks/blob/main/a1d689b/locomo_baseline_results_20251215_184837.json
 - [honcho-msg]: https://github.com/plastic-labs/honcho/blob/cb8ab1a1b7e25db9b8559f8a72d107dc195b7e00/src/crud/message.py
 - [honcho-search]: https://github.com/plastic-labs/honcho/blob/cb8ab1a1b7e25db9b8559f8a72d107dc195b7e00/src/utils/search.py
@@ -336,3 +340,4 @@ file, which `recall rules` is placed to do.
 - [refind]: https://arxiv.org/html/2608.12888v2
 - [supermemory]: https://supermemory.ai/research/longmembench
 - [zep-paper]: https://arxiv.org/html/2501.13956v1
+- [zep-research]: https://www.getzep.com/research

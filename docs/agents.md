@@ -2,7 +2,8 @@
 
 recall's three main agents are Claude Code, Codex and Cursor: it reads their history, sets up their
 MCP server, skill and hooks, and turns their chats into notes. Beyond those it is **compatible** with
-more than thirty other agents. Compatible means two things and nothing more:
+36 other agents: it reads the history of 34 of them, and for Windsurf and Warp it only registers its
+MCP server. Compatible means two things and nothing more:
 
 - **History.** recall reads the agent's local chat history into the index, read-only, so `search_chats`
   and `read_chat` (in any agent) find those chats, labelled with the agent's name and the folder it ran
