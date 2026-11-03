@@ -10,8 +10,8 @@ import sqlite3
 import time
 from datetime import datetime
 
-from .. import __version__, paths
-from . import archive, scrub
+from .. import __version__, paths, roots
+from . import archive, scrub, sources
 from .errors import ToolError, anchor, identity, reclean_errors
 from .projects import resolve
 from .redact import Chat, redact
@@ -37,6 +37,7 @@ _PARTS = (
     "sources.codex",
     "sources.compressed",
     "sources.cursor",
+    "sources.grokbot",
     "transcript",
 )
 
@@ -44,6 +45,8 @@ _PARTS = (
 def chat_schema_version() -> str:
     """A short stable hash of every part's CHAT_SCHEMA, sorted by module name."""
     parts = [(name, importlib.import_module(f"{__package__}.{name}").CHAT_SCHEMA) for name in _PARTS]
+    # One module per format family of the agents beyond the main three (sources/__init__.py FAMILIES).
+    parts += [(m.__name__.removeprefix(f"{__package__}."), m.CHAT_SCHEMA) for m in sources.family_modules()]
     parts.append(("store", CHAT_SCHEMA))
     return "p-" + hashlib.sha1(json.dumps(sorted(parts)).encode()).hexdigest()[:10]
 
@@ -199,6 +202,10 @@ def backfill_roots(con: sqlite3.Connection, found: list) -> int:
             prefixes.append((base + "projects" + os.sep, r.name))
             if r.data:
                 prefixes.append((os.path.join(r.data, "globalStorage", "state.vscdb") + "#", r.name))
+    # Agents without roots (roots.OTHERS) key their chats by the agent's own name. A chat restored from the
+    # archive has no root, and `recall dream` reads chats with none, so each is attributed by its folder.
+    for key in roots.OTHERS:
+        prefixes += [(d.rstrip(os.sep) + os.sep, key) for d in roots.other_dirs(key)]
     n = 0
     seen = set()
     for prefix, name in prefixes:

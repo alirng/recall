@@ -91,6 +91,13 @@ def default_dir(agent: str) -> str:
     return os.path.join(home(), {"claude": ".claude", "codex": ".codex", "cursor": ".cursor"}[agent])
 
 
+def grokbot_dir() -> str:
+    """Grok Bot's app folder (Cursor's personal-agent app). Not a harness root: it has no settings, hooks
+    or MCP servers for recall to connect, so it stays out of AGENTS and discover(); only its chat cache is
+    read (chats/sources/grokbot.py). RECALL_GROKBOT_HOME points a test at a copy."""
+    return os.path.expanduser(os.environ.get("RECALL_GROKBOT_HOME", "~/Library/Application Support/Grok Bot"))
+
+
 # --- what the person chose for a root (config.toml) ---------------------------------------------
 #   [roots.claude-work]
 #   connect = false   autopilot and `recall install` leave this root alone
@@ -475,3 +482,118 @@ def account(root: Root) -> str | None:
     except (OSError, ValueError, AttributeError, sqlite3.Error):
         return None
     return None
+
+
+# --- agents recall reads but does not set up the way it sets up the three above ---------------------------
+# Each has one folder (or a few) where its chats live; no per-account roots, no shell-rc discovery. A key
+# here is also what the chat's Session.root holds, so `recall dream` skips these chats unless the person
+# sets `[roots.<key>] mine = true`. The placeholders are filled from the environment the way the agent
+# does it: {data} is $XDG_DATA_HOME or ~/.local/share, {config} is $XDG_CONFIG_HOME or ~/.config, {support}
+# is ~/Library/Application Support (macOS) or ~/.config.
+
+
+@dataclass(frozen=True)
+class Other:
+    key: str
+    label: str
+    dirs: tuple[str, ...]  # where its chats live, with the placeholders above
+    env: tuple[str, str] | None = None  # (variable, subfolder): the agent's relocation variable, when it has one
+
+
+# The editors that host VS Code extensions, whose globalStorage the extension-based agents write to.
+_EDITORS = ("Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf")
+
+
+def _hosted(extension: str) -> tuple[str, ...]:
+    return tuple(f"{{support}}/{e}/User/globalStorage/{extension}" for e in _EDITORS)
+
+
+OTHERS: dict[str, Other] = {
+    o.key: o
+    for o in (
+        Other("opencode", "OpenCode", ("{data}/opencode",)),
+        Other("kilo", "Kilo Code", ("{data}/kilo",)),
+        Other("gemini", "Gemini CLI", ("{home}/.gemini",), ("GEMINI_CLI_HOME", ".gemini")),
+        Other("qwen", "Qwen Code", ("{home}/.qwen",), ("QWEN_HOME", "")),
+        Other("iflow", "iFlow", ("{home}/.iflow",)),
+        Other("grok", "Grok Build", ("{home}/.grok",), ("GROK_HOME", "")),
+        Other("kimi", "Kimi Code", ("{home}/.kimi-code",), ("KIMI_CODE_HOME", "")),
+        Other("pi", "Pi", ("{home}/.pi/agent",), ("PI_CODING_AGENT_DIR", "")),
+        Other("omp", "Oh My Pi", ("{home}/.omp/agent",)),
+        Other("prime", "Prime Agent", ("{home}/.prime/agent",)),
+        Other("omo", "OMO", ("{home}/.omo/agent",)),
+        Other("stepcode", "StepCode", ("{home}/.stepcode/agent",)),
+        Other("senpi", "Senpi", ("{home}/.senpi/agent",), ("SENPI_CODING_AGENT_DIR", "")),
+        Other("gjc", "gajae-code", ("{home}/.gjc/agent",), ("GJC_CODING_AGENT_DIR", "")),
+        Other("kimchi", "Kimchi Coding", ("{home}/.config/kimchi/harness",)),
+        Other("openclaw", "OpenClaw", ("{home}/.openclaw", "{home}/.kimi_openclaw"), ("OPENCLAW_STATE_DIR", "")),
+        Other("copilot", "GitHub Copilot CLI", ("{home}/.copilot",), ("COPILOT_HOME", "")),
+        Other("droid", "Factory Droid", ("{home}/.factory",)),
+        Other("goose", "Goose", ("{data}/goose", "{support}/Block/goose"), ("GOOSE_PATH_ROOT", "data")),
+        Other("crush", "Crush", ("{data}/crush",)),
+        Other("kiro", "Kiro", ("{home}/.kiro", "{support}/kiro-cli", "{data}/kiro-cli"), ("KIRO_HOME", "")),
+        Other("devin", "Devin CLI", ("{data}/devin", "{support}/devin")),
+        Other("hermes", "Hermes Agent", ("{home}/.hermes",), ("HERMES_HOME", "")),
+        Other("continue", "Continue", ("{home}/.continue",), ("CONTINUE_GLOBAL_DIR", "")),
+        Other(
+            "vscode",
+            "VS Code Copilot Chat",
+            tuple(f"{{support}}/{e}/User" for e in ("Code", "Code - Insiders", "VSCodium")),
+        ),
+        Other("zed", "Zed", ("{support}/Zed", "{data}/zed")),
+        Other("amp", "Amp", ("{data}/amp",), ("AMP_DATA_DIR", "")),
+        Other("muse", "Muse Code", ("{data}/muse",)),
+        Other("vibe", "Mistral Vibe", ("{home}/.vibe",)),
+        Other("commandcode", "Command Code", ("{home}/.commandcode",)),
+        Other("junie", "Junie", ("{home}/.junie",), ("JUNIE_HOME", "")),
+        Other(
+            "cline",
+            "Cline",
+            ("{home}/.cline/data", *_hosted("saoudrizwan.claude-dev")),
+            ("CLINE_DATA_DIR", ""),
+        ),
+        Other("roo", "Roo Code", (*_hosted("rooveterinaryinc.roo-cline"), "{home}/.vscode-mock/global-storage")),
+        Other("kilo-legacy", "Kilo Code (extension)", _hosted("kilocode.kilo-code")),
+        Other(
+            "antigravity",
+            "Antigravity",
+            ("{home}/.gemini/antigravity", "{home}/.gemini/antigravity-ide", "{home}/.gemini/antigravity-cli"),
+        ),
+    )
+}
+
+
+def _places() -> dict[str, str]:
+    h = home()
+    support = os.path.join(h, "Library", "Application Support") if os.uname().sysname == "Darwin" else None
+    return {
+        "data": os.environ.get("XDG_DATA_HOME") or os.path.join(h, ".local", "share"),
+        "config": os.environ.get("XDG_CONFIG_HOME") or os.path.join(h, ".config"),
+        "support": support or os.environ.get("XDG_CONFIG_HOME") or os.path.join(h, ".config"),
+        "home": h,
+    }
+
+
+def expand(template: str) -> str | None:
+    """A path with {data}, {config}, {support} and {home} filled in. A relative XDG_DATA_HOME or
+    XDG_CONFIG_HOME is ignored, as the XDG spec says."""
+    places = {k: v for k, v in _places().items() if os.path.isabs(v)}
+    try:
+        return os.path.expanduser(template.format(**places))
+    except KeyError:
+        return None
+
+
+def other_dirs(key: str) -> list[str]:
+    """The folders of this agent that exist: stat calls only, so detecting it costs nothing when it is
+    not installed."""
+    other = OTHERS[key]
+    candidates = []
+    if other.env and os.path.isabs(value := os.environ.get(other.env[0], "")):
+        candidates.append(os.path.join(value, other.env[1]).rstrip(os.sep))
+    candidates += [p for p in map(expand, other.dirs) if p]
+    out = []
+    for path in candidates:
+        if os.path.isdir(path) and path not in out:
+            out.append(path)
+    return out

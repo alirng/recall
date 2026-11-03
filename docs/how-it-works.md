@@ -187,12 +187,15 @@ you rewrite the history (`git filter-repo`) or start the repository again.
 | Codex | yes | yes | yes | automatic, via a session-start hook you trust once in `/hooks` | edit hook, trusted once in `/hooks` |
 | Cursor | yes, and older chats on macOS | yes | yes | on request, via the `project_memory` tool | edit hooks |
 | T3 Code | through the agent it runs | through that agent | through that agent | through that agent | the agent's own hooks |
-| OpenCode | no | add it yourself | no | via `project_memory` | edit plugin |
-| Gemini CLI | no | add it yourself | no | via `project_memory` | edit hooks |
+| OpenCode | yes | `recall install` | shared skill | via `project_memory` | edit plugin |
+| Gemini CLI | yes | `recall install` | shared skill | via `project_memory` | edit hooks |
+| Antigravity, Pi, Copilot CLI, Goose, Kiro, Cline and about 25 more | yes | `recall install`, where the agent documents a config file | where the agent reads `~/.agents/skills` | via `project_memory` | no |
 
-Agents whose hooks recall does not set up yet (Antigravity, Devin, Copilot, Cline, Kiro) can
-call the `open_elsewhere` MCP tool before editing, but their own edits stay invisible to the
-other chats until recall reads their history or hooks into them.
+The agents beyond the first three are supported for history and MCP only: no session-start hook,
+no edit hooks (OpenCode and Gemini CLI keep theirs), and their chats stay out of the nightly notes
+unless you set `mine = true` for them. [docs/agents.md](agents.md) lists each one. Their own edits
+stay invisible to the other chats until recall reads their history; an agent can call the
+`open_elsewhere` MCP tool before editing.
 
 - **Automatic:** the session-start hook loads your working preferences, a line for each
   always-on rule the repo gives another agent but not this one (a Cursor rule, say, in a

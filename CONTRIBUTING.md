@@ -105,44 +105,50 @@ below.
 
 ## Adding an agent source
 
-An agent source reads one agent's chat history and gives the index a list of chats. Copy
-`src/recall/chats/sources/claude.py`.
+An agent source reads one agent's chat history and gives the index a list of chats. The three main
+agents (Claude Code, Codex, Cursor) have a module each with roots of their own
+(`src/recall/chats/sources/claude.py` is the model). Any other agent is a *family* module that several
+agents with one format can share: copy `opencode.py` (SQLite), `pi.py` (JSONL) or `cline.py` (JSON files).
 
-1. Write `src/recall/chats/sources/<agent>.py` with two functions:
-   - `detect(roots)` returns how many chats it found on disk, or `None` if the agent is not
-     installed.
-   - `items(roots)` yields one item per chat. Each item has a stable key and a cheap fingerprint,
-     so unchanged chats are skipped on the next index. Its loader parses the chat only when
-     it is needed.
-
-   `roots` is the list of `roots.Root` found for the agent (`src/recall/roots.py`): one person can
-   run the same agent against several folders (a second `CLAUDE_CONFIG_DIR`, Cursor beside Cursor
-   Nightly). Read every root's chats, and set `Session.root` to the root's name so the index can
-   tell them apart. Add the agent's folders to `discover()` (and its markers, the files only the
-   agent writes) and to `store.backfill_roots`, which names the root of chats indexed before roots
-   existed by the folder their source file sits in. Do not read a folder the agent has not used.
-3. Read the agent's files and never write to them. Open SQLite databases with `mode=ro`.
-   Read JSONL through `read_jsonl`, which also reads a file the agent has compressed to
-   `.jsonl.zst` (Codex does). Key such a chat by its plain `.jsonl` path in both forms
-   (`sources/compressed.py`), so compressing it later does not make it look new.
+1. Add the agent's folders to `OTHERS` in `src/recall/roots.py` (a key, a label, its folders with the
+   `{home}`, `{data}`, `{config}` and `{support}` placeholders, and its relocation variable if it has
+   one). The key is the agent's name everywhere: `Session.agent`, `Session.root`, `--source`, `--agent`
+   and `[roots.<key>]` in `config.toml`. Do not read a folder the agent has not used.
+2. Write `src/recall/chats/sources/<family>.py` and add its name to `FAMILIES` in
+   `src/recall/chats/sources/__init__.py`. It has a module-level `CHAT_SCHEMA` string and
+   `AGENTS = {key: (label, detect, items)}`:
+   - `detect()` returns how many chats it found on disk, or `None` if the agent is not installed. It
+     costs stat calls only (`roots.other_dirs(key)`).
+   - `items()` yields one item per chat. Each has a stable key and a cheap fingerprint, so unchanged
+     chats are skipped on the next index. Its loader parses the chat only when it is needed. Set
+     `Session.root` to the key, which also keeps the chat out of `recall dream` unless the person opts in.
+3. Read the agent's files and never write to them, and never open its auth or token files. Open SQLite
+   databases with `open_ro` (`mode=ro`). Read JSONL through `read_jsonl`, which also reads a file the
+   agent has compressed to `.jsonl.zst` (Codex does). Skip what you do not recognise; never raise from
+   `items()`.
 4. Drop what the index should not hold: tool output, reasoning, and text the tool injects,
    such as system reminders. The existing sources show how. If the agent records whether a
    tool call failed, note each finished call in an `errors.Calls` (`src/recall/chats/errors.py`:
    the agent's own id for it, its input, the index in `Session.messages` it came after or
    None, and `signature(output)` when it failed) and set `Session.tool_errors = calls.errors()`.
    It goes to its own table, never into the messages, and the helpers redact whole before they cut.
-5. If a parser change alters what the index should hold, change the `CHAT_SCHEMA` string (a date
-   and a reason) of the module you changed. `src/recall/chats/store.py` hashes every module's
-   string into `CHAT_SCHEMA_VERSION`, and a new value makes the chat tables rebuild from the agents' files, and chats whose
-   files are gone come back from recall's archive (`src/recall/chats/archive.py`), which a
-   rebuild never drops. A new agent source declares its own `CHAT_SCHEMA` and is added to `_PARTS` in
-   `store.py`. Never drop the archive, the memory tables or the notes: they are not
+5. If a parser change alters what the index should hold, change the module's `CHAT_SCHEMA` string (a date
+   and a reason). `src/recall/chats/store.py` hashes every module's string (and every family module's)
+   into `CHAT_SCHEMA_VERSION`, and a new value makes the chat tables rebuild from the agents' files, and
+   chats whose files are gone come back from recall's archive (`src/recall/chats/archive.py`), which a
+   rebuild never drops. Never drop the archive, the memory tables or the notes: they are not
    derived data. A change that should stop indexing some chats must also delete their archive
    copies, or the rebuild restores them.
+6. Write synthetic fixtures in `docs/benchmarks/agent_fixtures/<family>.py` (the agent's documented
+   format, never a real chat) and run `uv run python docs/benchmarks/setup_eval.py --scenario
+   agents-<family>`. If the agent documents an MCP config, add a `Target` to `TARGETS` in
+   `src/recall/integrations/agents.py`.
 
-Then run `uv run recall index`, and search for a chat you know with `uv run recall search`.
+Then run `uv run recall index --source <key>` against a scratch `RECALL_HOME` (with `sources = ["<key>"]`
+in its `config.toml`), and search for a chat you know with `uv run recall search --agent <key>`.
 Field-level notes for about 25 agents are in
-[docs/research/agent-storage-and-integration.md](docs/research/agent-storage-and-integration.md).
+[docs/research/agent-storage-and-integration.md](docs/research/agent-storage-and-integration.md), and what
+is supported per agent is in [docs/agents.md](docs/agents.md).
 
 ## Adding a hook
 
