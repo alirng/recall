@@ -271,7 +271,8 @@ OUTSIDE_NOTE = "Outside your filters, but ranked above every chat inside them:"
 
 
 def _outside(con, queries, depth, filters, exclude, vectors) -> list[dict]:
-    found = _merge([store.search(con, q, limit=depth, exclude=exclude, vector=vectors[q]) for q in queries])
+    q = queries[0]  # the main query only: ranking every phrasing again costs a search each
+    found = store.search(con, q, limit=depth, exclude=exclude, vector=vectors[q])
     out = []
     for row in found[:OUTSIDE]:
         failed = [f"{k}={v}" for k, v in filters.items() if v and not store.passes(con, row["chat_id"], **{k: v})]
