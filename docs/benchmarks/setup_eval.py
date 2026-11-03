@@ -1475,6 +1475,8 @@ def _agent_roots(family: str) -> set[str]:
     """The top-level folders an agent of the family may create a config in."""
     home = os.path.expanduser("~")
     out = {".grok"} if "grok" in families()[family] else set()  # Grok Build's TOML is not in TARGETS
+    if any(k in families()[family] for k in ("cline", "roo", "kilo-legacy")):
+        out.add("Library")  # their fixtures make VS Code's folder, so install lists recall in VS Code's mcp.json too
     for key in families()[family]:
         t = _target(key)
         for template in (t.configs if t else ()) + (t.used if t else ()) + ((t.skills,) if t and t.skills else ()):
