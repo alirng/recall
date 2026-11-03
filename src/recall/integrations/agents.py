@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from dataclasses import dataclass
 
 from . import hooks as edit_hooks
 
@@ -44,13 +45,20 @@ _CODEX_ASK = 'tools.message_chat.approval_mode = "prompt"'
 
 
 def install(
-    components=COMPONENTS, dry_run: bool = False, roots: list | None = None, repoint: bool = False
+    components=COMPONENTS,
+    dry_run: bool = False,
+    roots: list | None = None,
+    repoint: bool = False,
+    others: bool = True,
 ) -> list[str]:
     """Connect every root recall found (roots.discover()), or just `roots`. A root the person turned
     off ([roots.NAME] connect = false) is left alone. Hooks that run another existing recall stay on it
-    and are reported; repoint=True (`recall install --repoint`) points them at this one."""
+    and are reported; repoint=True (`recall install --repoint`) points them at this one. others: also the
+    agents beyond the three (TARGETS), which are not roots and so come with a whole-machine install only."""
     cmd = _recall_bin()
     report = _roots(components, cmd, dry_run, roots, repoint=repoint)
+    if others:
+        report += _others(components, cmd, dry_run)
     if "hook" in components:
         report.append(f"Gemini CLI   {_hook_gemini(cmd, dry_run, repoint=repoint)}")
         report.append(f"OpenCode     {_hook_opencode(cmd, dry_run)}")
@@ -64,6 +72,7 @@ def uninstall(components=COMPONENTS, roots: list | None = None, whole: bool | No
     whole = roots is None if whole is None else whole
     report = _roots(components, "", False, roots, remove=True)
     if whole:
+        report += _others(components, "", False, remove=True)
         if "skill" in components:
             _unshare_skill()
         if "hook" in components:
@@ -392,6 +401,195 @@ def _unshare_skill() -> None:
         if os.path.exists(target) and _read(target) != _read(SKILL_SOURCE):  # edited, or an older release's
             _backup(target, dest=os.path.join(os.path.dirname(shared), "recall.SKILL.md"))
         shutil.rmtree(shared)
+
+
+# --- MCP server in the agents beyond Claude Code, Codex and Cursor -------------
+
+
+@dataclass(frozen=True)
+class Target:
+    """An agent whose MCP config recall edits. The file's format is the agent's own, documented (docs/agents.md
+    cites it for each). `used`: paths that exist once the agent has run, so recall never writes into the
+    folder of an agent that is not there. `configs`: the files to list the server in, with the roots.expand
+    placeholders; `first` takes only the first that exists (OpenCode accepts .json and .jsonc)."""
+
+    key: str
+    label: str
+    used: tuple[str, ...]
+    configs: tuple[str, ...]
+    shape: str = "mcpServers"  # how the entry is written, see _server_entry
+    servers: str = "mcpServers"  # the key the entries sit under
+    first: bool = False
+    binary: str | None = None  # a command whose presence also shows the agent is there
+    skills: str | None = None  # the folder of an agent that does not read ~/.agents/skills, to link the skill into
+
+
+TARGETS = (
+    Target("gemini", "Gemini CLI", ("~/.gemini/settings.json",), ("~/.gemini/settings.json",), binary="gemini"),
+    Target(
+        "antigravity",
+        "Antigravity",
+        ("~/.gemini/antigravity", "~/.gemini/antigravity-ide", "~/.gemini/antigravity-cli"),
+        ("~/.gemini/config/mcp_config.json", "~/.gemini/antigravity/mcp_config.json"),
+        skills="~/.gemini/config/skills",
+    ),
+    Target("qwen", "Qwen Code", ("~/.qwen",), ("~/.qwen/settings.json",)),
+    Target(
+        "opencode",
+        "OpenCode",
+        ("{config}/opencode", "{data}/opencode"),
+        ("{config}/opencode/opencode.json", "{config}/opencode/opencode.jsonc"),
+        shape="opencode",
+        servers="mcp",
+        first=True,
+    ),
+    Target(
+        "kilo",
+        "Kilo Code",
+        ("{config}/kilo", "{data}/kilo"),
+        ("{config}/kilo/kilo.json", "{config}/kilo/kilo.jsonc"),
+        shape="opencode",
+        servers="mcp",
+        first=True,
+    ),
+    Target(
+        "crush",
+        "Crush",
+        ("{config}/crush", "{data}/crush"),
+        ("{config}/crush/crush.json",),
+        shape="crush",
+        servers="mcp",
+    ),
+    Target("copilot", "Copilot CLI", ("~/.copilot",), ("~/.copilot/mcp-config.json",), shape="copilot"),
+    Target("droid", "Factory Droid", ("~/.factory",), ("~/.factory/mcp.json",), shape="stdio"),
+    Target("kimi", "Kimi Code", ("~/.kimi-code",), ("~/.kimi-code/mcp.json",), shape="stdio"),
+    Target("kiro", "Kiro", ("~/.kiro",), ("~/.kiro/settings/mcp.json",), skills="~/.kiro/skills"),
+    Target("cline", "Cline", ("~/.cline",), ("~/.cline/data/settings/cline_mcp_settings.json",)),
+    Target("devin", "Devin CLI", ("{config}/devin",), ("{config}/devin/mcp_config.json",)),
+    Target("windsurf", "Windsurf", ("~/.codeium/windsurf",), ("~/.codeium/windsurf/mcp_config.json",)),
+    Target("warp", "Warp", ("~/.warp",), ("~/.warp/.mcp.json",)),
+)
+# Grok Build lists its servers as TOML tables, like Codex.
+GROK_CONFIG = "~/.grok/config.toml"
+
+
+def _server_entry(shape: str, cmd: str) -> dict:
+    if shape == "opencode":
+        return {"type": "local", "command": [cmd, "serve"], "enabled": True}
+    if shape == "crush":
+        return {"type": "stdio", "command": cmd, "args": ["serve"]}
+    if shape == "copilot":
+        return {"type": "local", "command": cmd, "args": ["serve"], "tools": ["*"]}
+    if shape == "stdio":
+        return {"type": "stdio", "command": cmd, "args": ["serve"]}
+    return {"command": cmd, "args": ["serve"]}
+
+
+def _others(components, cmd: str, dry_run: bool, remove: bool = False) -> list[str]:
+    """Register (or remove) recall's MCP server, and link the skill where an agent needs its own copy,
+    in every agent of TARGETS that has been used. `[roots.<key>] connect = false` in config.toml leaves one
+    alone. Autopilot does not touch these: only `recall install` does."""
+    from .. import config, roots
+
+    cfg = config.load()
+    report, skills = [], {}
+    for t in TARGETS:
+        lead = f"{t.label:13}"
+        table = (cfg.get("roots") or {}).get(t.key)
+        if not remove and isinstance(table, dict) and table.get("connect") is False:
+            report.append(f"{lead} skipped: [roots.{t.key}] connect = false")
+            continue
+        paths = [p for p in map(roots.expand, t.used) if p]
+        if not (any(os.path.exists(p) for p in paths) or (t.binary and shutil.which(t.binary))):
+            report.append(f"{lead} not found, skipped")
+            continue
+        if "mcp" in components:
+            report.append(f"{lead} MCP: {_mcp_json(t, cmd, dry_run, remove)}")
+        if t.skills and "skill" in components:
+            skills[t.label] = t.skills
+    if "mcp" in components:
+        report.append(f"{'Grok Build':12} MCP: {_mcp_grok(cmd, dry_run, remove)}")
+    if skills:
+        report += _skill(dry_run, remove, skills)
+    return report
+
+
+def _configs(t: Target) -> list[str]:
+    from .. import roots
+
+    files = [p for p in map(roots.expand, t.configs) if p]
+    if t.first:
+        return [next((f for f in files if os.path.exists(f)), files[0])]
+    return files
+
+
+def _mcp_json(t: Target, cmd: str, dry_run: bool, remove: bool) -> str:
+    done = []
+    for path in _configs(t):
+        existed = os.path.exists(path)
+        try:
+            config = json.loads(_read(path) or "{}")
+        except json.JSONDecodeError:  # comments (JSONC) or damage: recall does not rewrite what it cannot read back
+            done.append(f"{path} is not plain JSON, skipped: add the server by hand")
+            continue
+        if not isinstance(config, dict):
+            done.append(f"{path} is not a JSON object, skipped")
+            continue
+        servers = config.setdefault(t.servers, {})
+        if not isinstance(servers, dict):
+            done.append(f"{path}: `{t.servers}` is not an object, skipped")
+            continue
+        registered = NAME in servers
+        if remove:
+            if registered and not dry_run:
+                del servers[NAME]
+                if not servers:
+                    del config[t.servers]
+                _unlisted(path, config)
+            done.append("removed" if registered else "not registered")
+        elif registered:
+            done.append("already registered")
+        else:
+            if not dry_run:
+                servers[NAME] = _server_entry(t.shape, cmd)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                _write(path, json.dumps(config, indent=2) + "\n")
+            done.append(f"added to {path}" + ("" if existed else " (new file)"))
+    return "; ".join(done)
+
+
+def _unlisted(path: str, config: dict) -> None:
+    """Write a config file back after recall's entry is taken out. When nothing else is left the file is put
+    as it was before recall first wrote it: removed if recall made it, else the original (an empty file, or
+    an empty `mcpServers` table)."""
+    if any(v not in ({}, [], None) for v in config.values()):
+        _write(path, json.dumps(config, indent=2) + "\n")
+        return
+    backup = path + ".recall-backup"
+    if not os.path.exists(backup):
+        _backup(path)  # recall created this file: nothing of the person's is lost by removing it
+        os.remove(path)
+        return
+    _write(path, _read(backup))
+
+
+def _mcp_grok(cmd: str, dry_run: bool, remove: bool) -> str:
+    from .. import roots
+
+    path = roots.expand(GROK_CONFIG)
+    if not os.path.isdir(os.path.dirname(path)):
+        return "not found, skipped"
+    text = _read(path)
+    registered = f"[mcp_servers.{NAME}]" in text
+    if remove:
+        if registered and not dry_run:
+            _write(path, _CODEX_BLOCK.sub("", text).rstrip("\n") + "\n")
+        return "removed" if registered else "not registered"
+    if registered:
+        return "already registered"
+    if not dry_run:
+        _write(path, text + f'\n[mcp_servers.{NAME}]\ncommand = {json.dumps(cmd)}\nargs = ["serve"]\n')
+    return f"added to {path}"
 
 
 # --- hooks ----------------------------------------------------------------------

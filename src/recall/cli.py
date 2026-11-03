@@ -667,7 +667,7 @@ def cmd_install(a) -> None:
         for r in chosen or ():  # asking for a root by name is saying yes to it again
             if not roots.option(r, "connect") and not dry_run:
                 roots.set_option(r, "connect", True)
-        lines = agents.install(parts, dry_run, chosen or found, repoint=a.repoint)
+        lines = agents.install(parts, dry_run, chosen or found, repoint=a.repoint, others=chosen is None)
         if not dry_run:
             autopilot.record_connected(found)  # so uninstall finds these roots even if discovery later loses them
             if "hook" in parts and autopilot.consented() is not None:

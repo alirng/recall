@@ -534,19 +534,24 @@ def _places() -> dict[str, str]:
     }
 
 
+def expand(template: str) -> str | None:
+    """A path with {data}, {config}, {support} and {home} filled in. A relative XDG_DATA_HOME or
+    XDG_CONFIG_HOME is ignored, as the XDG spec says."""
+    places = {k: v for k, v in _places().items() if os.path.isabs(v)}
+    try:
+        return os.path.expanduser(template.format(**places))
+    except KeyError:
+        return None
+
+
 def other_dirs(key: str) -> list[str]:
     """The folders of this agent that exist: stat calls only, so detecting it costs nothing when it is
-    not installed. A relative XDG_DATA_HOME is ignored, as the XDG spec says."""
-    places = {k: v for k, v in _places().items() if os.path.isabs(v)}
+    not installed."""
     other = OTHERS[key]
     candidates = []
     if other.env and os.path.isabs(value := os.environ.get(other.env[0], "")):
         candidates.append(os.path.join(value, other.env[1]).rstrip(os.sep))
-    for template in other.dirs:
-        try:
-            candidates.append(os.path.expanduser(template.format(**places)))
-        except KeyError:
-            continue
+    candidates += [p for p in map(expand, other.dirs) if p]
     out = []
     for path in candidates:
         if os.path.isdir(path) and path not in out:
