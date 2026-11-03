@@ -27,6 +27,9 @@ DEFAULTS = {
     # Exploration subagents' reports are always recorded; serve = true also hands the matching
     # earlier report to a new exploration at its start. Off: no measured gain; see explore.py.
     "explore": {"serve": False},
+    # Each subagent starts with a brief of the rules, earlier chats and open threads that bear on
+    # its task (brief.py); false stops it.
+    "brief": {"subagents": True},
     # Which chats produced which commits, kept in recall's index on this machine and never
     # written to a repo; see commits.py. false stops linking and drops the stored links.
     "links": {"enabled": True},

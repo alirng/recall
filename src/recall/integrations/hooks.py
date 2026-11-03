@@ -17,7 +17,7 @@ Kinds, and what a Reply can carry for them:
   read, tool_failure       context after the tool ran
   prompt                   context with the person's prompt
   stop                     keep_going: the agent continues its turn with that text
-  subagent_start/_stop     context
+  subagent_start/_stop     context (brief.py at the start, for every subagent type)
 
 Formats, confirmed against each agent's docs or source, or live (October 2026):
   claude  PreToolUse on Edit/Write: additionalContext, or deny. SessionStart (also after
@@ -29,15 +29,17 @@ Formats, confirmed against each agent's docs or source, or live (October 2026):
           invalid. Its edit tool is apply_patch, whose input is the patch text; a patch
           applied through a shell command is not seen. It has no read tool (reads are shell
           commands, parsed here) and no failure event (a shell call always succeeds).
-          SubagentStart takes context, without the prompt. A hook runs once trusted in /hooks.
+          SubagentStart takes context, without the prompt (0.163's own hook schema: agent_id,
+          agent_type, cwd, session_id, transcript_path). A hook runs once trusted in /hooks.
   cursor  preToolUse on Write can only allow or deny, and must always print JSON or the edit
           is blocked; postToolUse (Write, Read, or a Shell call that exited non-zero) and
           postToolUseFailure carry additional_context; stop takes followup_message.
           beforeSubmitPrompt takes additional_context too: undocumented, but 3.23's
           validator accepts it and sends it as a system reminder (read from the app bundle,
-          not live-tested). preCompact and subagentStart cannot inform: they are observed.
+          not live-tested). preCompact and subagentStart cannot inform: they are observed
+          (3.24.18 sends subagentStart the task, but still drops its additional_context).
           preToolUse on its subagent tool takes updated_input (merged into the call; from
-          the 3.23 app code, not live-tested), which carries a subagent_start context.
+          the 3.23 and 3.24.18 app code, not live-tested), which carries a subagent_start context.
           Its edit fires Read then Write under one tool_use_id (Event.call). Cursor also
           runs Claude Code's hooks (with cursor_version set); the claude adapter stands down.
   gemini  BeforeTool on write_file/replace can deny; AfterTool carries context.
@@ -75,16 +77,20 @@ HANDLERS: dict[str, list[str]] = {
     "read": ["recall.jit:on_read"],
     "tool_failure": ["recall.jit:on_tool_failure"],
     "stop": ["recall.mail:on_turn"],
-    "subagent_start": ["recall.explore:on_start"],
+    # the brief for every subagent type; the explore cache only for explorations (serving off by default)
+    "subagent_start": ["recall.brief:on_subagent_start", "recall.explore:on_start"],
     "subagent_stop": ["recall.explore:on_stop"],
 }
 
-# Exploration subagents (explore.py): where each agent's subagent's prompt and report reach a
-# hook. Codex only records: its SubagentStart comes before the child's task exists. Cursor's
-# subagent tool is named Task, Subagent or mcp_task depending on the model.
+# Where each agent's subagent's prompt and report reach a hook. The start entries fire for every
+# subagent type and carry its brief (brief.py) and, for an exploration, the explore cache's
+# earlier report (explore.py); the stop entries only store explorations' reports. Codex's
+# SubagentStart has no task, so its brief is shaped from the parent's rollout, and the explore
+# cache only records there. Cursor's subagent tool is named Task, Subagent or mcp_task
+# depending on the model.
 EXPLORE = {
     "claude": [("PreToolUse", "Agent|Task"), ("SubagentStop", "[Ee]xplor")],
-    "codex": [("SubagentStop", "explorer")],
+    "codex": [("SubagentStart", None), ("SubagentStop", "explorer")],
     "cursor": [("preToolUse", "Task|Subagent|mcp_task"), ("subagentStop", "explor")],
 }
 
@@ -126,8 +132,9 @@ INSTALL: dict[str, list[tuple]] = {
 
 def consent_key(agent: str, event: str, matcher: str | None = None) -> str:
     """The unit a person consents to when autopilot may install hooks: an agent's hook event
-    ("claude:Stop"), with the exploration subagent hooks (EXPLORE), which rewrite a subagent's prompt,
-    as their own ("claude:PreToolUse:explore") beside the edit hook on the same event. It does not
+    ("claude:Stop"), with the subagent hooks (EXPLORE), which add to a subagent's prompt (its brief, an
+    earlier exploration), as their own ("claude:PreToolUse:explore") beside the edit hook on the same
+    event; the suffix keeps the name earlier releases recorded consent under. It does not
     depend on matcher text, so widening a matcher later does not turn a consented hook into a new one."""
     return f"{agent}:{event}" + (":explore" if (event, matcher) in EXPLORE.get(agent, []) else "")
 

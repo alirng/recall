@@ -187,6 +187,24 @@ other chats until recall reads their history or hooks into them.
   errors and notes after compaction are wired but rarely fire yet: matching a failure against
   the index's tool errors is off until it is more precise, and notes seldom clear the gate. `recall jit "<prompt>"` shows what would fire
   and why.
+- **Subagents:** a subagent starts with none of its session's memory, and Claude Code's Explore
+  and Plan skip CLAUDE.md as well. So every subagent, of any type, starts with a brief of about
+  1,000 tokens:
+  - the rules in force for the project and for the files its task names;
+  - the two or three earlier chats that best match the task, subagents' reports included. Each
+    one is a dated window with the files that chat edited, the checks it ran and the commits it
+    made;
+  - the project's open threads.
+
+  Contexts hold as at session start.
+  - **Claude Code** and **Cursor** get the brief in the subagent's prompt.
+  - **Codex** gets it through `SubagentStart`. The task is read from the parent's session there,
+    since Codex hands the hook none.
+  - Forks are skipped, since they already hold the session. So are types that don't work in the
+    repo: claude-code-guide, statusline-setup and web-fetch.
+
+  Each delivery is logged with the rule ids and versions it carried. `recall brief "<task>"`
+  prints a brief. `[brief] subagents = false` in config.toml turns briefs off.
 - **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
   `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and
   `message_chat`, which leaves a message for another chat in recall's own mailbox.

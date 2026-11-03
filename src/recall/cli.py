@@ -326,6 +326,25 @@ def cmd_context(a) -> None:
         print(f"recall context: {e}", file=sys.stderr)
 
 
+def cmd_brief(a) -> None:
+    from . import brief, usage
+    from .chats import indexer, store
+    from .memory.context import refresh_notes
+
+    con = store.connect()
+    indexer.index(con, max_age=60)
+    refresh_notes(con)
+    task = " ".join(a.task)
+    b = brief.build(task, a.cwd or os.getcwd(), a.budget, agent=a.agent, subagent=a.subagent, con=con)
+    usage.record("cli", "brief", {"cwd": a.cwd, "budget": a.budget}, b.text or None, rules=b.rules, chats=b.chats)
+    if a.json:
+        print(json.dumps({"text": b.text, "rules": b.rules, "notes": b.notes, "chats": b.chats}, indent=2))
+    elif b.text:
+        print(b.text)
+    else:
+        print("recall knows nothing that bears on this task here.", file=sys.stderr)
+
+
 def cmd_hook(a) -> None:
     """Every hook of every agent: read its JSON, answer through hooks.py. Never breaks the
     session, whatever goes wrong: an agent that blocks an edit on a bad reply (Cursor) still
@@ -1050,6 +1069,13 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--cwd", help="project folder (default: the current directory)")
     sp.add_argument("--hook", action="store_true", help="old hook entry; same as `recall hook`")
     sp.add_argument("--agent", choices=["claude", "codex", "cursor"], default="claude", help="who will read it")
+    sp = command("brief", cmd_brief, "what recall knows that bears on a task: rules, earlier chats, open threads")
+    sp.add_argument("task", nargs="+", help="the task, in words")
+    sp.add_argument("--cwd", help="project folder (default: the current directory)")
+    sp.add_argument("--budget", type=int, default=1000, help="in tokens (default 1,000, a subagent's)")
+    sp.add_argument("--agent", choices=["claude", "codex", "cursor"], default="claude", help="who will read it")
+    sp.add_argument("--subagent", help="the subagent type it is for, e.g. Explore")
+    sp.add_argument("--json", action="store_true", help="the text and the rule, note and chat ids it carries")
     sp = command("hook", cmd_hook, "answer an agent's hook, reading its JSON input (recall install sets this up)")
     sp.add_argument("--agent", default="claude", help="claude, codex, cursor, gemini or opencode")
 

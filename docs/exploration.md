@@ -26,6 +26,12 @@ earlier report matches closely enough, it adds nothing.
 | Codex | `SubagentStop` (explorer role; from Codex's docs and source, not yet tested live) | not automatically: its `SubagentStart` comes before the subagent's task exists, so on request via `project_memory` |
 | Cursor | `subagentStop` | `preToolUse` on the Task tool rewrites the prompt (from Cursor's app code; not yet tested live) |
 
+Every subagent, explorations included, now starts with recall's brief: the rules in force, the
+earlier chats that best match its task, and open threads (see
+[How agents use it](how-it-works.md#how-agents-use-it)). An earlier exploration's report reaches a
+new one that way when it matches, as a dated window among those chats. `serve` adds the report's
+commit and the files changed since, and stays off.
+
 `recall explore` lists a repo's stored explorations, `recall explore lookup <question>` shows
 what a new one would get with serving on, and `recall explore backfill` stores the ones
 already in your chat history, each at the commit its repo's main branch was on at the time.

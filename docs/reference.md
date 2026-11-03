@@ -159,6 +159,7 @@ recall starts in the background run at low priority.
 | `recall why <file>[:line] \| --commit <sha>` | the chats that wrote a file, a line or a commit (local only) |
 | `recall links [--episodes]` | link commits to chats now; `--episodes` (experimental: a judge found only 24% of 21 sampled episodes right) lists failures a later commit fixed |
 | `recall context [--cwd DIR] [--agent codex]` | print the memory block an agent gets at session start |
+| `recall brief <task> [--cwd DIR] [--budget N] [--subagent TYPE] [--json]` | print the brief a subagent gets for this task: rules in force, earlier chats as dated windows, open threads (1,000 tokens by default); `--json` adds the rule, note and chat ids |
 | `recall resolve --repo <repo> --file <file>` | message every chat in an overlap to agree who goes first (the menu bar's Resolve) |
 | `recall hook --agent <agent>` | answer one of an agent's hooks from its JSON input; `recall install` sets these up |
 | `recall explore [lookup <question> \| backfill] [--cwd DIR]` | earlier exploration reports for this repo, and what a new exploration would get |
