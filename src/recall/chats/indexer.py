@@ -16,7 +16,7 @@ from .. import paths
 from . import scrub, store
 from .sources import Incomplete, agents, all_sources
 
-STALE_AFTER = {"claude": 60, "codex": 60, "cursor": 60, "cursor-legacy": 3 * 3600}
+STALE_AFTER = {"claude": 60, "codex": 60, "cursor": 60, "grokbot": 60, "cursor-legacy": 3 * 3600}
 # Cursor's older chats are rows in its state.vscdb, a database of several GB that cannot say which chats
 # changed: finding out means reading every chat's header. These sources are read by the nightly run and by
 # `recall index`, and by a tool call only on the first index or once READ_AGAIN_AFTER has passed since the
