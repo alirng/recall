@@ -61,6 +61,8 @@ def run(
     found = _detect_agents()
     choice = ask.ask("\nImport from which agents? (comma-separated names, or all)", "all")
     cfg["sources"] = [] if choice == "all" else [a.strip() for a in choice.split(",") if a.strip() in found]
+    if "grokbot" in found:
+        _grok_bot(ask, cfg, found["grokbot"])
     config.save(cfg)
 
     print("\n2. Who writes your memories\n")
@@ -261,6 +263,29 @@ def _test(provider: Provider) -> None:
     print("ok")
     where = "nothing leaves this machine" if provider.private else f"chat excerpts go to {provider.destination}"
     print(f"   {where}. Learned from the test chat: {[m['title'] for m in extract.memories(data, 1)[1]]}")
+
+
+def _grok_bot(ask: Prompter, cfg: dict, chats: int) -> None:
+    """Grok Bot's bots are personal agents, so reading their chats is opt-in: no answer, --yes or "all" above
+    leave it off. Yes turns it on, skips the bots the person names, and puts the app's folder in a context."""
+    from . import contexts, roots
+
+    named = "grokbot" in cfg["sources"]
+    print(
+        f"\n  Grok Bot's chats are on this machine ({chats:,} bot-days). They are personal agents' chats, "
+        "so reading them is opt-in."
+    )
+    if not (named or ask.yes("  Index them, as personal (never handed to work sessions)?", default=False)):
+        cfg["grokbot"]["enabled"] = False
+        return
+    cfg["grokbot"]["enabled"] = True
+    if cfg["sources"] and not named:
+        cfg["sources"] = [*cfg["sources"], "grokbot"]
+    skip = ask.ask("  Bots to leave out, by name (for example one that posts publicly), comma-separated", "")
+    cfg["grokbot"]["skip"] = [s.strip() for s in skip.split(",") if s.strip()]
+    folder = roots.grokbot_dir()
+    where = ask.ask("  Which context are they in?", "personal") or "personal"
+    print("   " + contexts.place(cfg, where, folder))
 
 
 def _detect_agents() -> dict[str, int]:

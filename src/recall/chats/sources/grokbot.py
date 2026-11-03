@@ -13,8 +13,8 @@ project is a folder named for its bot under the app's own, so [contexts] can put
 with one folder entry, and Session.root is "grokbot", which `recall dream` does not read until
 [roots.grokbot] mine = true.
 
-The format is undocumented. A blob in a shape this does not know is skipped with a warning, and the
-run raises Incomplete, so that nothing is stamped as read in full.
+Reading is opt-in (enabled()). The format is undocumented. A blob in a shape this does not know is
+skipped with a warning, and the run raises Incomplete, so that nothing is stamped as read in full.
 """
 
 import base64
@@ -77,6 +77,14 @@ def _read(path: str, kind: str) -> dict | None:
     return d["value"]
 
 
+def enabled() -> bool:
+    """Reading Grok Bot is opt-in: `recall setup` asks, or set [grokbot] enabled = true (or list "grokbot"
+    in `sources`) in config.toml. These are personal agents, so an upgrade never starts reading them."""
+    cfg = config.load()
+    table = cfg.get("grokbot")
+    return (isinstance(table, dict) and table.get("enabled") is True) or "grokbot" in (cfg.get("sources") or [])
+
+
 def _skipped() -> list[str]:
     """[grokbot] skip = ["name or bot id", ...] in config.toml: bots recall never reads. The names are
     the person's, so they are kept in their config, not here."""
@@ -134,7 +142,7 @@ def _id(agent) -> str | None:
 
 
 def items():
-    if not os.path.isdir(_folder()):
+    if not os.path.isdir(_folder()) or not enabled():
         return
     bots, unreadable = _bots()
     for bot, days in bots:
