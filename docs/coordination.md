@@ -1,9 +1,11 @@
 # Several chats, one repo
 
 Run agents side by side and two of them will sooner or later change the same file. `recall
-status` shows what each chat is working on now, on which branch, and which files two chats
-both have open changes to: whether the two would conflict if merged now, or share one working
-copy.
+status` shows what each chat is working on now, on which branch, and the files two chats are
+at right now: two chats editing the same lines of one working copy, or on two branches that
+would conflict on the file. Files that are merely still open in several checkouts, because a
+chat finished or its changes merge cleanly, are counted as "more files open" and listed under
+`quiet` in `--json`; the menu bar's "Needs you" holds only the first kind.
 
 ```text
 $ recall status

@@ -613,6 +613,8 @@ def cmd_status(a) -> None:
             print(f"    pid {x['pid']} · since {since}" + (f" · {chat}" if chat else ""))
     if not s["overlaps"] and not s["outlived"]:
         print("Nothing needs you.")
+    if s["quiet"]:
+        print(f"{len(s['quiet'])} more files are open in several chats, none at them now (recall status --json).")
     live = [x for x in s["sessions"] if x["live"]]
     print(f"\n{len(live)} live, {len(s['sessions'])} since {a.since}")
     repos: dict[str, list] = {}
