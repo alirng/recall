@@ -269,12 +269,15 @@ def _grok_bot(ask: Prompter, cfg: dict, chats: int) -> None:
     """Grok Bot's bots are personal agents, so reading their chats is opt-in: no answer, --yes or "all" above
     leave it off. Yes turns it on, skips the bots the person names, and puts the app's folder in a context."""
     from . import contexts, roots
+    from .chats.sources import grokbot
 
     named = "grokbot" in cfg["sources"]
     print(
         f"\n  Grok Bot's chats are on this machine ({chats:,} bot-days). They are personal agents' chats, "
         "so reading them is opt-in."
     )
+    if gone := grokbot.deleted_bots():
+        print(f"  {gone} deleted bot{'s' if gone > 1 else ''} skipped: a bot you deleted in the app is never read.")
     if not (named or ask.yes("  Index them, as personal (never handed to work sessions)?", default=False)):
         cfg["grokbot"]["enabled"] = False
         return

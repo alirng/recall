@@ -17,6 +17,8 @@ skip = ["Post"]            # bot names or ids, never read
 personal = ["~/Documents/Projects/Personal", "~/Library/Application Support/Grok Bot"]
 ```
 
+A bot you deleted in the app (one the app's roster no longer lists) is never read, whatever you answer: its chats can hold what you set it up to watch, such as a calendar. Setup says how many it skipped.
+
 What is read: only the transcript cache in `~/Library/Application Support/Grok Bot/sand-client-persistence/`, read-only, and nothing else in the app's folder (never `sand-secrets.json`). What is kept: what you sent, what the bot said, the answers you picked, other bots' briefs, file names. Not kept: widget payloads, email drafts, connector, secret-request and permission payloads. The usual redaction runs on all of it.
 
 One chat is one bot on one UTC day (`grokbot:<bot id>:<day>`). The app keeps at most 200 entries per bot; recall's archive keeps the older messages as that window slides, so history is complete from your first index. The format is undocumented: a blob in a shape recall does not know is skipped with a warning.

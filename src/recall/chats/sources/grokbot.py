@@ -85,6 +85,11 @@ def enabled() -> bool:
     return (isinstance(table, dict) and table.get("enabled") is True) or "grokbot" in (cfg.get("sources") or [])
 
 
+def deleted_bots() -> int:
+    """How many bots the roster no longer lists, whose chats are therefore left out."""
+    return _bots()[2] if os.path.isdir(_folder()) else 0
+
+
 def _skipped() -> list[str]:
     """[grokbot] skip = ["name or bot id", ...] in config.toml: bots recall never reads. The names are
     the person's, so they are kept in their config, not here."""
@@ -93,10 +98,13 @@ def _skipped() -> list[str]:
     return [s.strip().lower() for s in skip if isinstance(s, str) and s.strip()] if isinstance(skip, list) else []
 
 
-def _bots() -> tuple[list[tuple[dict, dict[str, list[dict]]]], int]:
+def _bots() -> tuple[list[tuple[dict, dict[str, list[dict]]]], int, int]:
     """Each bot as ({"id", "name", "path"}, {UTC day: its entries}), without the skipped bots and
-    without the entries another skipped bot sent or was sent; and how many blobs were in a shape this
-    does not know, which are left out."""
+    without the entries another skipped bot sent or was sent; how many blobs were in a shape this
+    does not know, which are left out; and how many deleted bots there are. A bot the roster no longer
+    lists is deleted, and is never read: its chats can hold what the person set it up to watch (a work
+    calendar), and nothing says they should still be searchable. Without a roster nothing can be told
+    from a deleted bot, so nothing is read."""
     blobs = _blobs()
     names, bad = {}, []
     for kind, path, _ in blobs:
@@ -113,6 +121,11 @@ def _bots() -> tuple[list[tuple[dict, dict[str, list[dict]]]], int]:
     skip = _skipped()
     gone = {i for i, n in names.items() if n.lower() in skip or i.lower() in skip}
     gone |= {i for i in skip if re.fullmatch(r"[0-9a-f-]{36}", i)}
+    replicas = {bot for kind, _, bot in blobs if kind == "replica"}
+    if replicas and not names:
+        bad.append("roster")
+    deleted = replicas - set(names)
+    gone |= deleted
     out = []
     for kind, path, bot in blobs:
         if kind != "replica" or bot in gone:
@@ -134,7 +147,7 @@ def _bots() -> tuple[list[tuple[dict, dict[str, list[dict]]]], int]:
         print(
             f"recall: grokbot: {os.path.basename(path)[:12]}… is in a shape this release does not read", file=sys.stderr
         )
-    return out, len(bad)
+    return out, len(bad), len(deleted)
 
 
 def _id(agent) -> str | None:
@@ -144,7 +157,7 @@ def _id(agent) -> str | None:
 def items():
     if not os.path.isdir(_folder()) or not enabled():
         return
-    bots, unreadable = _bots()
+    bots, unreadable, _ = _bots()
     for bot, days in bots:
         for day, entries in days.items():
             # the same chat has the same count and ends while nothing has been added to it
