@@ -565,12 +565,12 @@ SIBLING_DECAY = 0.5
 WEIGHTS = {"best": 0.5, "sum": 1.0, "title": 2.0, "all": 1.0, "dense": 1.0}
 # The dense ranking counts for more once a query is long enough to describe something instead of
 # naming it. A query of up to LOOKUP_WORDS content words is a lookup, often words copied from the
-# chat, where the keyword rankings are the better evidence and the dense weight stays 1: at 4 it
-# cost 0.136 of known-item MRR over 3-word queries. Longer queries get DENSE_BOOST times that
-# weight, which gained 4 to 5 points on search_v2 and 20 on SWE-ContextBench titles. Both numbers
-# were chosen on the train splits; see docs/research/query-gate.md. Code-like tokens, paths,
-# quotes and rare terms were tried as extra lookup signs and did not help: SWE-ContextBench's
-# queries are full of them, and they are the ones that gain most.
+# chat, and the keyword rankings are the better evidence: with the dense weight at 4 on every query,
+# known-item MRR fell from 0.856 to 0.647. Longer queries get DENSE_BOOST times the dense weight, which
+# gains 6 points of search_v2 hit@5 and 24 of SWE-ContextBench title hit@5, and costs LoCoMo's top-1 and
+# the evolve set's all@8. Both numbers were chosen on the train splits. Paths, code-like tokens, quotes
+# and rare terms were tried as extra signs of a lookup and did not help: SWE-ContextBench's queries are
+# full of them, and they gain most.
 LOOKUP_WORDS = 3
 DENSE_BOOST = 4
 TOP_HITS = 3  # messages per chat summed, and returned as hits
