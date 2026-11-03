@@ -295,6 +295,7 @@ def run_beam_qa(
     workers: int = 4,
     out_path: str | None = None,
     limit: int | None = None,
+    abilities: list[str] | None = None,
 ) -> dict:
     """End-to-end BEAM on one split (a parquet file from huggingface.co/datasets/Mohammadta/BEAM):
     retrieve with recall, answer with `model`, score with `judge` (never the reader)."""
@@ -314,6 +315,8 @@ def run_beam_qa(
             embeddings.index_messages(con, embedder, cache=cache)
         current = datetime.fromtimestamp(conv["last_ts"]).strftime("%Y/%m/%d") if conv["last_ts"] else "unknown"
         for q in conv["questions"]:
+            if abilities and q["ability"] not in abilities:
+                continue
             history, picked = _history(conv, con, q["question"], top_k, max_tokens, embedder)
             jobs.append((conv, q, history, picked, current))
         con.close()
@@ -454,6 +457,7 @@ def run_beam_qa(
         "top_k": top_k,
         "max_tokens": max_tokens,
         "chunk_chars": CHUNK_CHARS,
+        "abilities": abilities,
     }
     print(json.dumps(result, indent=2))
     ledger_qa("beam", f"{result['split']} n={len(rows)}", f"score={result['score']}", result)

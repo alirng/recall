@@ -902,7 +902,16 @@ def cmd_eval(a) -> None:
             from . import evals_beam
 
             evals_beam.run_beam_qa(
-                a.cases, a.qa, a.judge, top_k=a.top_k, embedder=embedder, cache=cache, out_path=a.out, limit=a.limit
+                a.cases,
+                a.qa,
+                a.judge,
+                top_k=a.top_k,
+                embedder=embedder,
+                cache=cache,
+                out_path=a.out,
+                limit=a.limit,
+                workers=a.workers,
+                abilities=a.abilities.split(",") if a.abilities else None,
             )
         elif a.qa:
             evals.run_longmemeval_qa(
@@ -1217,6 +1226,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--top-k", type=int, default=10, help="--qa, sessions: how many chats it reads")
     sp.add_argument("--out", help="--qa: write each question's result here as JSONL")
+    sp.add_argument(
+        "--abilities", help="beam: only these abilities, comma-separated (e.g. event_ordering,summarization)"
+    )
     sp.add_argument("--sample", type=int, default=150)
     sp.add_argument(
         "--model",
