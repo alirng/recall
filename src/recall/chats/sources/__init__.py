@@ -74,7 +74,7 @@ def append(messages: list[Message], role: str, text: str, ts: float | None) -> N
 # from every root recall found for it (see roots.py); pass `found` to reuse a discovery.
 def agents(found=None):
     from ... import roots
-    from . import claude, codex, cursor
+    from . import claude, codex, cursor, grokbot
 
     found = roots.discover() if found is None else found
     by_agent = {a: [r for r in found if r.agent == a] for a in roots.AGENTS}
@@ -87,6 +87,7 @@ def agents(found=None):
             lambda: cursor.detect(cu),
             {"cursor": lambda: cursor.transcript_items(cu), "cursor-legacy": lambda: cursor.legacy_items(cu)},
         ),
+        "grokbot": ("Grok Bot", grokbot.detect, {"grokbot": grokbot.items}),
     }
 
 

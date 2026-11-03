@@ -91,6 +91,13 @@ def default_dir(agent: str) -> str:
     return os.path.join(home(), {"claude": ".claude", "codex": ".codex", "cursor": ".cursor"}[agent])
 
 
+def grokbot_dir() -> str:
+    """Grok Bot's app folder (Cursor's personal-agent app). Not a harness root: it has no settings, hooks
+    or MCP servers for recall to connect, so it stays out of AGENTS and discover(); only its chat cache is
+    read (chats/sources/grokbot.py). RECALL_GROKBOT_HOME points a test at a copy."""
+    return os.path.expanduser(os.environ.get("RECALL_GROKBOT_HOME", "~/Library/Application Support/Grok Bot"))
+
+
 # --- what the person chose for a root (config.toml) ---------------------------------------------
 #   [roots.claude-work]
 #   connect = false   autopilot and `recall install` leave this root alone
