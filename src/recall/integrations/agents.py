@@ -583,7 +583,12 @@ def _mcp_grok(cmd: str, dry_run: bool, remove: bool) -> str:
     registered = f"[mcp_servers.{NAME}]" in text
     if remove:
         if registered and not dry_run:
-            _write(path, _CODEX_BLOCK.sub("", text).rstrip("\n") + "\n")
+            rest = _CODEX_BLOCK.sub("", text).rstrip("\n")
+            if rest or os.path.exists(path + ".recall-backup"):
+                _write(path, rest + "\n" if rest else _read(path + ".recall-backup"))
+            else:  # recall made the file
+                _backup(path)
+                os.remove(path)
         return "removed" if registered else "not registered"
     if registered:
         return "already registered"

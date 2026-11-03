@@ -1474,7 +1474,7 @@ def _same_json(a, b) -> bool:
 def _agent_roots(family: str) -> set[str]:
     """The top-level folders an agent of the family may create a config in."""
     home = os.path.expanduser("~")
-    out = set()
+    out = {".grok"} if "grok" in families()[family] else set()  # Grok Build's TOML is not in TARGETS
     for key in families()[family]:
         t = _target(key)
         for template in (t.configs if t else ()) + (t.used if t else ()) + ((t.skills,) if t and t.skills else ()):
