@@ -20,7 +20,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 
-from . import __version__, paths, projects, usage
+from . import __version__, embeddings, paths, projects, usage
 from .chats import indexer, store
 from .memory import context
 
@@ -223,6 +223,7 @@ def search_chats(
         args["alternatives"] = queries[1:]
 
     note = None
+    filters = {"agent": agent, "project": project, "since": since, "until": until}
 
     def run():
         nonlocal note
@@ -230,13 +231,29 @@ def search_chats(
         depth = n if len(queries) == 1 else max(n, 20)  # deeper lists fuse into a better top n
         with _db() as con:
             note = _incomplete(con)
-            return _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])[:n]
+            vectors = {}
+            for q in queries:  # each phrasing embedded once, also for the search without filters
+                v = embeddings.query_vector(q)
+                vectors[q] = False if v is None else v  # False: by keywords, without asking the model again
+            found = _merge(
+                [store.search(con, q, agent, project, since, depth, until, exclude, vector=vectors[q]) for q in queries]
+            )[:n]
+            if any(filters.values()):
+                found += _outside(con, queries, depth, filters, exclude, vectors)
+            return found
 
-    rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
+    found = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
+    rows = [r for r in found if "outside_filters" not in r]
+    outside = [r for r in found if "outside_filters" in r]
     # Claude Code and Codex show the model structuredContent when a result has it; Cursor reads
     # only content, which would otherwise be one indented JSON block per chat, so content is the
     # same results as text. Keep the two equivalent.
-    text = "\n".join(_result_block(r) for r in rows) or "No chats match. Try other words, or fewer filters."
+    if outside:
+        say = OUTSIDE_NOTE if rows else "No chats match your filters. The best matches outside them:"
+        text = "".join(_result_block(r) + "\n" for r in rows) + say + "\n" + "\n".join(map(_result_block, outside))
+        rows += [{"note": say}, *outside]
+    else:
+        text = "\n".join(_result_block(r) for r in rows) or "No chats match. Try other words, or fewer filters."
     if note:
         rows.append({"note": note})
         text += f"\n{note}"
@@ -244,6 +261,24 @@ def search_chats(
 
 
 MAX_PHRASINGS = 6
+# A wrong guess at a filter (the agent, a project, a since date after the chat) hides the right
+# chat with no sign that it exists. So a filtered search also ranks without the filters, and the
+# chats that rank above every chat the filters keep follow the results, at most OUTSIDE of them,
+# each with its best hit and the filters it fails. When the filters keep the best match, nothing
+# is added. Replaying qa_v2's filtered searches (2 Nov 2026), more than OUTSIDE found no more.
+OUTSIDE = 2
+OUTSIDE_NOTE = "Outside your filters, but ranked above every chat inside them:"
+
+
+def _outside(con, queries, depth, filters, exclude, vectors) -> list[dict]:
+    found = _merge([store.search(con, q, limit=depth, exclude=exclude, vector=vectors[q]) for q in queries])
+    out = []
+    for row in found[:OUTSIDE]:
+        failed = [f"{k}={v}" for k, v in filters.items() if v and not store.passes(con, row["chat_id"], **{k: v})]
+        if not failed:  # the filters keep this chat, so the results already rank it
+            break
+        out.append({"outside_filters": ", ".join(failed), **row, "hits": row["hits"][:1]})
+    return out
 
 
 def _merge(lists: list[list[dict]]) -> list[dict]:
@@ -284,10 +319,11 @@ def _brief(row: dict) -> dict:
 def _result_block(row: dict) -> str:
     """One search result as plain text: a line with chat_id · title · project (branch) · last
     active · size, then each hit as "[seq] snippet" on one line. Far fewer tokens than JSON:
-    no field names, quotes or escapes."""
+    no field names, quotes or escapes. A chat outside the filters starts with the ones it fails."""
     where = (row.get("project") or "") + (f" ({row['branch']})" if row.get("branch") else "")
     size = f"{row['messages']} messages" + (f", {row['matches']} matching" if row.get("matches") else "")
-    head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
+    outside = f"outside {row['outside_filters']}" if row.get("outside_filters") else None
+    head = " · ".join(str(x) for x in (outside, row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
     lines = [f"[{h['seq']}] {' '.join(h['snippet'].split())}" for h in row.get("hits") or []]
     if not lines and row.get("snippet"):
         lines = [f"opening message: {' '.join(row['snippet'].split())}"]

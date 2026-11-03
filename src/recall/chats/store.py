@@ -750,6 +750,12 @@ def recent(con, agent=None, project=None, since=None, limit=15, until=None) -> l
     return [session_row(r) | {"first_prompt": r["first_prompt"][:200]} for r in rows]
 
 
+def passes(con, chat_id: str, agent=None, project=None, since=None, until=None) -> bool:
+    """Whether a chat is inside these filters, as search and recent apply them."""
+    fsql, fargs = _filters(con, agent, project, since, until=until)
+    return con.execute(f"select 1 from sessions s where s.id = ? {fsql}", [chat_id, *fargs]).fetchone() is not None
+
+
 def resolve_id(con, chat_id: str) -> str | None:
     prefix = chat_id.split(":", 1)[-1].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     rows = con.execute(
