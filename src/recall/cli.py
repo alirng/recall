@@ -481,6 +481,14 @@ def cmd_rules(a) -> None:
         )
 
 
+def cmd_ledger(a) -> None:
+    from . import ledger
+    from .chats import store
+
+    r = ledger.report(store.parse_since(a.since), a.top)
+    print(json.dumps(r, indent=2) if a.json else ledger.render(r))
+
+
 def cmd_usage(a) -> None:
     from . import usage
     from .chats import store
@@ -1088,6 +1096,10 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--error", help="a failed command's output: past chats with the same error")
     sp.add_argument("--agent", default="claude", help="which agent: claude, codex or cursor")
     sp.add_argument("--json", action="store_true", help="also print each match's features")
+    sp = command("ledger", cmd_ledger, "what recall delivered, joined to what happened next in the session")
+    sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
+    sp.add_argument("--top", type=int, default=15, help="how many notes to list (default 15)")
+    sp.add_argument("--json", action="store_true")
     sp = command("usage", cmd_usage, "how recall itself gets used, from its local log")
     sp.add_argument("--since", help="e.g. 7d, 2w or 2026-10-01")
     sp.add_argument("--json", action="store_true")
