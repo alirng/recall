@@ -518,7 +518,7 @@ OTHERS: dict[str, Other] = {
         Other("stepcode", "StepCode", ("{home}/.stepcode/agent",)),
         Other("senpi", "Senpi", ("{home}/.senpi/agent",), ("SENPI_CODING_AGENT_DIR", "")),
         Other("gjc", "gajae-code", ("{home}/.gjc/agent",), ("GJC_CODING_AGENT_DIR", "")),
-        Other("kimchi", "Kimchi Coding", ("{config}/kimchi/harness",)),
+        Other("kimchi", "Kimchi Coding", ("{home}/.config/kimchi/harness",)),
         Other("openclaw", "OpenClaw", ("{home}/.openclaw", "{home}/.kimi_openclaw"), ("OPENCLAW_STATE_DIR", "")),
         Other("copilot", "GitHub Copilot CLI", ("{home}/.copilot",), ("COPILOT_HOME", "")),
         Other("droid", "Factory Droid", ("{home}/.factory",)),
