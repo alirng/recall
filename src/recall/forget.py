@@ -40,13 +40,25 @@ class Ambiguous(LookupError):
 def resolve(con: sqlite3.Connection, chat_id: str | None = None, project: str | None = None) -> list[str]:
     """Chat ids for one chat (a full id, or the part after "agent:", or the start of one) or
     for every chat in a project. Chats that only the archive still has count too. Raises
-    Ambiguous when a name fits more than one chat."""
+    Ambiguous when a name fits more than one chat. A Claude Code chat brings its subagents: the
+    briefs they were given were written from it."""
     ids = []
     if chat_id and chat_id.strip():
         ids += _named(con, chat_id.strip())
     if project:
         ids += _in_project(con, project)
-    return list(dict.fromkeys(ids))
+    return list(dict.fromkeys(ids + _subagents(con, ids)))
+
+
+def _subagents(con: sqlite3.Connection, ids: list[str]) -> list[str]:
+    """The subagent chats of these Claude Code chats, whose transcripts sit in <session>/subagents/."""
+    marks = [f"{os.sep}{i.split(':', 1)[1]}{os.sep}subagents{os.sep}" for i in ids if i.startswith("claude:")]
+    if not marks:
+        return []
+    rows = con.execute("select id, source from sessions where origin = 'subagent' and agent = 'claude'").fetchall()
+    if archive.enabled(con):
+        rows += con.execute("select distinct id, source from chat_archive where id like 'claude:agent-%'").fetchall()
+    return [sid for sid, source in rows if any(m in (source or "") for m in marks)]
 
 
 def _known(con: sqlite3.Connection) -> list[str]:

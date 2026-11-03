@@ -1,7 +1,10 @@
-"""Claude Code history: one JSONL file per session under ~/.claude/projects/<folder>/."""
+"""Claude Code history: one JSONL file per session under ~/.claude/projects/<folder>/, and one per
+subagent under <folder>/<session>/subagents/ (a workflow's under subagents/workflows/<run>/)."""
 
 import glob
+import json
 import os
+import textwrap
 
 from ...roots import Root
 from ..errors import Calls, declined, position, signature
@@ -35,21 +38,28 @@ def detect(roots=None) -> int | None:
     return sum(len(glob.glob(os.path.join(f, "*", "*.jsonl"))) for _, f in folders)
 
 
+SUBAGENTS = (("*", "*", "subagents", "agent-*.jsonl"), ("*", "*", "subagents", "workflows", "*", "agent-*.jsonl"))
+
+
 def items(roots=None):
-    # Only top-level session files; subagent transcripts live in nested folders.
     for name, folder in _folders(roots):
-        for path in glob.glob(os.path.join(folder, "*", "*.jsonl")):
+        files = [(p, False) for p in glob.glob(os.path.join(folder, "*", "*.jsonl"))]
+        files += [(p, True) for pattern in SUBAGENTS for p in glob.glob(os.path.join(folder, *pattern))]
+        for path, subagent in files:
             try:
                 st = os.stat(path)
             except OSError:  # deleted since the listing; the index and the archive keep its chat
                 continue
-            yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path, n=name: load(p, n))
+            yield Item(path, f"{st.st_mtime_ns}:{st.st_size}", lambda p=path, n=name, a=subagent: load(p, n, a))
 
 
-def load(path: str, root: str | None = None) -> Session | None:
+def load(path: str, root: str | None = None, subagent: bool = False) -> Session | None:
+    """subagent: the file is a subagent's, whose every entry Claude Code marks a sidechain. Its
+    user turn is the brief its parent agent wrote, and its assistant turn is kept to the report."""
     s = Session("claude", os.path.basename(path)[:-6], path)
     s.root = root
     messages: list[Message] = []
+    report = _Report(messages) if subagent else None
     pending: dict[str, tuple[str, object]] = {}  # tool_use id -> (tool, its input)
     calls = Calls()
     summary = None
@@ -65,9 +75,11 @@ def load(path: str, root: str | None = None) -> Session | None:
             # another session or a background task sent it.
             if _by_person(att) and _by_person(d):
                 ts = iso_ts(att.get("timestamp") or d.get("timestamp"))
+                if report is not None:
+                    report.flush()
                 append(messages, "user", clean_user_text(str(att.get("prompt") or "")), ts)
             continue
-        if kind not in ("user", "assistant") or d.get("isSidechain") or d.get("isMeta"):
+        if kind not in ("user", "assistant") or (d.get("isSidechain") and not subagent) or d.get("isMeta"):
             continue
         if kind == "user" and (d.get("isCompactSummary") or not _by_person(d)):
             continue  # a compaction summary, a peer message or a task notification
@@ -84,11 +96,90 @@ def load(path: str, root: str | None = None) -> Session | None:
         _tool_calls(content, pending, calls, messages, ts)
         text = text_blocks(content, ("text",))
         text = clean_user_text(text) if kind == "user" else clean_assistant_text(text)
-        append(messages, kind, text, ts)
+        if report is None:
+            append(messages, kind, text, ts)
+        elif kind == "assistant":
+            report.add("\n\n".join(t for t in (text, _structured(content)) if t), ts)
+        elif not text:  # tool results
+            report.stale = True
+        elif text := _brief(text):  # the brief, or a follow-up its parent sent
+            report.flush()
+            append(messages, kind, text, ts)
     s.title = s.title or summary
+    if report is not None:
+        report.flush()
+        s.origin = "subagent"
+        s.title = _description(path) or s.title
+        s.parent = f"claude:{os.path.basename(path[: path.rindex(os.sep + 'subagents' + os.sep)])}"
     s.messages = messages
     s.tool_errors = calls.errors()
     return s
+
+
+class _Report:
+    """A subagent's report: the last stretch of assistant text in each of its turns. What it
+    wrote before a tool call ran is narration ("let me check the config") and is dropped, which
+    also keeps the report inside the length a stored message is cut to."""
+
+    def __init__(self, messages: list[Message]):
+        self.messages, self.parts, self.ts, self.stale = messages, [], None, False
+
+    def add(self, text: str, ts: float | None) -> None:
+        if not text:
+            return
+        if self.stale:  # a tool ran since the text so far
+            self.parts, self.ts, self.stale = [], None, False
+        self.parts.append(text)
+        self.ts = self.ts or ts
+
+    def flush(self) -> None:
+        append(self.messages, "assistant", "\n\n".join(self.parts), self.ts)
+        self.parts, self.ts, self.stale = [], None, False
+
+
+# How Claude Code frames a workflow subagent's brief: first the person's request that started the
+# run, which the parent's chat already holds, then the task the workflow's script computed, indented.
+_RELAYED = "[Workflow harness — user request]"
+_COMPUTED = "[Workflow harness — computed task]"
+
+
+def _brief(text: str) -> str:
+    """A subagent's brief without the workflow harness's framing: without the relayed request,
+    which every subagent of a run repeats, and with the computed task as the script wrote it."""
+    if text.startswith(_RELAYED):
+        return ""
+    if text.startswith(_COMPUTED):
+        return textwrap.dedent(text.partition("\n")[2]).strip()
+    return text
+
+
+def _description(path: str) -> str | None:
+    """What the parent agent called the subagent's task, from the file Claude Code keeps beside the transcript."""
+    try:
+        with open(path[: -len(".jsonl")] + ".meta.json") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return meta.get("description") if isinstance(meta, dict) else None
+
+
+def _structured(content) -> str:
+    """A workflow subagent's report, which it returns as a StructuredOutput call rather than as text."""
+    calls = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+    return "\n\n".join(
+        _plain(b.get("input")) for b in calls if b.get("type") == "tool_use" and b.get("name") == "StructuredOutput"
+    )
+
+
+def _plain(value) -> str:
+    """A tool input as text with its strings as written: JSON would escape their line breaks into the words."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n".join(f"{k}: {_plain(v)}" for k, v in value.items() if v not in (None, "", [], {}))
+    if isinstance(value, list):
+        return "\n".join(_plain(v) for v in value)
+    return json.dumps(value)
 
 
 # What Claude Code says a user-turn entry is when the person did not write it: another

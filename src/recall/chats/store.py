@@ -557,6 +557,11 @@ def session_row(r: sqlite3.Row) -> dict:
 # Weights were tuned on LongMemEval and on personal search evals together; see
 # docs/research/retrieval-benchmarks.md.
 FUSION_K = 20
+# Claude Code subagents' chats (a workflow runs dozens, with much the same words) must not crowd out
+# the other chats: in each ranking those are ranked among themselves, so a subagent takes a place
+# above one only by scoring higher, and in the results each further chat of a subagent's thread (its
+# parent and the parent's other subagents) placed above it halves its score.
+SIBLING_DECAY = 0.5
 WEIGHTS = {"best": 0.5, "sum": 1.0, "title": 2.0, "all": 1.0, "dense": 1.0}
 TOP_HITS = 3  # messages per chat summed, and returned as hits
 POOL = 2000  # matching messages considered per query
@@ -648,10 +653,14 @@ def search(
     weights = dict(WEIGHTS, title=WEIGHTS["title"] * min(1.0, TITLE_WORDS / (q.count(" OR ") + 1)) ** 4)
     scores: dict[str, float] = {}
     rankings = (("best", by_best), ("sum", by_sum), ("title", by_title), ("all", by_all), ("dense", by_dense))
+    threads = _subagent_threads(con)
     for name, ranking in rankings:
+        own = 0  # the place among the chats that are not subagents'
         for rank, sid in enumerate(ranking):
-            scores[sid] = scores.get(sid, 0) + weights[name] / (FUSION_K + rank + 1)
-    top = sorted(scores, key=scores.get, reverse=True)[:limit]
+            at = rank if sid in threads else own
+            own += sid not in threads
+            scores[sid] = scores.get(sid, 0) + weights[name] / (FUSION_K + at + 1)
+    top = _spread(scores, threads, limit)
     if explain is not None:
         explain.update(
             scores=scores,
@@ -678,6 +687,34 @@ def search(
     return out
 
 
+def _subagent_threads(con) -> dict[str, str]:
+    """Each Claude Code subagent chat's thread: the id of the chat that started it, read from where
+    its transcript sits (<session>/subagents/). Codex and Cursor subagents rank as other chats do."""
+    out = {}
+    for sid, source in con.execute("select id, source from sessions where origin = 'subagent' and agent = 'claude'"):
+        head, sep, _ = (source or "").partition(f"{os.sep}subagents{os.sep}")
+        if sep:
+            out[sid] = f"claude:{os.path.basename(head)}"
+    return out
+
+
+def _spread(scores: dict[str, float], threads: dict[str, str], limit: int) -> list[str]:
+    """The best `limit` chats, a subagent's score halved for each chat of its thread placed before it."""
+    pool = sorted(scores, key=scores.get, reverse=True)[: limit * 10]
+    if not threads:
+        return pool[:limit]
+    placed: dict[str, int] = {}
+    top = []
+    while pool and len(top) < limit:
+        best = max(
+            pool, key=lambda s: scores[s] * SIBLING_DECAY ** placed.get(threads[s], 0) if s in threads else scores[s]
+        )
+        pool.remove(best)
+        top.append(best)
+        placed[threads.get(best, best)] = placed.get(threads.get(best, best), 0) + 1
+    return top
+
+
 def _message_window(since, until) -> tuple[str, list]:
     """Keep message hits inside a date window too, for chats that span it."""
     sql, args = "", []
@@ -702,9 +739,12 @@ def _snippets(con, q: str, ids: list[int]) -> dict[int, str]:
 
 
 def recent(con, agent=None, project=None, since=None, limit=15, until=None) -> list[dict]:
+    """The chats last active, subagents left out: a workflow runs dozens of them, which would fill
+    the list, and each one's parent is the chat to show."""
     fsql, fargs = _filters(con, agent, project, since, until=until)
     rows = con.execute(
-        f"select * from sessions s where n_messages > 0 {fsql} order by updated_at desc limit ?",
+        f"select * from sessions s where n_messages > 0 and s.origin is not 'subagent' {fsql}"
+        " order by updated_at desc limit ?",
         [*fargs, limit],
     )
     return [session_row(r) | {"first_prompt": r["first_prompt"][:200]} for r in rows]

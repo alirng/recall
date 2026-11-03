@@ -131,15 +131,16 @@ def _index(con, only, force, max_age, log) -> dict:
 
 
 def _keeper(con):
-    """Whether a parsed chat may be indexed: not forgotten, and not older than a retention
-    period an organisation sets for its agent."""
+    """Whether a parsed chat may be indexed: not forgotten, nor a subagent of a forgotten chat, and
+    not older than a retention period an organisation sets for its agent."""
     from .. import forget, retention
 
     gone, cutoffs = forget.forgotten(con), retention.cutoffs()
 
     def keep(session) -> bool:
         cutoff = cutoffs.get(session.agent)
-        return session.id not in gone and (cutoff is None or (session.updated_at or 0) >= cutoff)
+        forgotten = session.id in gone or session.parent in gone
+        return not forgotten and (cutoff is None or (session.updated_at or 0) >= cutoff)
 
     return keep
 
