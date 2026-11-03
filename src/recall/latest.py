@@ -26,6 +26,7 @@ import re
 import time
 from collections import Counter
 
+from . import usage
 from .chats import store
 
 # Words of at least three characters that start with a letter. FTS5's tokenizer splits on
@@ -51,8 +52,9 @@ COPY = 0.95
 RANKED = 30  # places of the search's ranking that count as being about the query
 RANKED_MEAN, RANKED_FLOOR = 0.3, 0.15
 PICK = "latest"  # which passing chat to name: the latest one, or the closest ("overlap")
-# A chat written to in the last few minutes is most likely the one asking, which always covers
-# the ground it is searching for; it is never offered as the newer chat.
+# The chat asking always covers the ground it searches for, so it is never offered as the newer
+# chat: by its session id where the agent gives one (usage.agent_session: Claude Code, Codex),
+# and for Cursor, which gives none, as any chat written to in the last few minutes.
 ACTIVE = 900
 ANNOTATED = 8  # search results checked for a newer chat, from the top
 
@@ -169,12 +171,14 @@ def newer(
     fp, mine = _fingerprint(con, db, sid, s["n_messages"])
     if len(fp) < 4:  # too little to say what it is about
         return None
-    later = """s.id != ? and s.updated_at > ? and s.updated_at < ?
+    later = """s.id != ? and (? is null or s.native_id is not ?) and s.updated_at > ? and s.updated_at < ?
            and coalesce(s.started_at, s.updated_at) > ?
            and coalesce(s.origin, '') not in ('subagent', 'headless')
            and (? is null or s.project_key is null or s.project_key = ?)"""
     args = [
         sid,
+        own := usage.agent_session(),
+        own,
         s["updated_at"] + MIN_GAP,
         (now or time.time()) - ACTIVE,
         s["started_at"] or s["updated_at"],

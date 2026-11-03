@@ -190,6 +190,15 @@ other chats until recall reads their history or hooks into them.
 - **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
   `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and
   `message_chat`, which leaves a message for another chat in recall's own mailbox.
+  So that an agent asked "what did we decide?" does not answer from a version that changed
+  later, `search_chats` and `read_chat` also say when a later chat in the same project covers
+  the same ground (its id and date; the agent's own chat and a copy of the same chat imported
+  into another agent never count), and each matching line says who wrote it: you, the agent,
+  or the parent agent that briefed a subagent. A first `read_chat` adds where the chat ended up
+  (your last instruction and the agent's closing words) when the messages shown stop short of
+  its end, and the turns where you changed course. "Same ground" is word overlap: the share
+  of each chat's rarest frequent words the other also uses. It is read from the index with no
+  model call, and costs about 150 tokens and 60 ms per search.
 - **Explicit:** type `/recall what did we decide about auth` in any agent with skills.
 
 Agents treat notes and transcripts as background, not instructions: the current request and
