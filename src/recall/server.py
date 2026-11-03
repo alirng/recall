@@ -98,7 +98,7 @@ def _index_run() -> None:
 def _complain(what: str, e: Exception) -> None:
     """A failure a tool call works around: on stderr (stdout carries the protocol) and in the usage log."""
     print(f"recall: {what} failed: {e!r}", file=sys.stderr)
-    usage.record("mcp", what, None, {"error": repr(e)}, session=os.getpid())
+    usage.record("mcp", what, None, {"error": repr(e)}, session=usage.agent_session() or usage.process_session())
 
 
 def _incomplete(con) -> str | None:
@@ -177,16 +177,31 @@ def _client(ctx: Context | None) -> str | None:
         return None
 
 
+def _session(ctx: Context | None) -> str:
+    """The agent's session id for a usage row (usage.agent_session), else this server's process."""
+    try:
+        meta = ctx.request_context.meta
+    except Exception:
+        meta = None
+    return usage.agent_session(meta) or usage.process_session()
+
+
 def _logged(ctx: Context | None, tool: str, args: dict, run, **extra):
     start = time.perf_counter()
     try:
         result = run()
     except Exception as e:
-        usage.record("mcp", tool, args, {"error": repr(e)}, client=_client(ctx), session=os.getpid())
+        usage.record("mcp", tool, args, {"error": repr(e)}, client=_client(ctx), session=_session(ctx))
         if isinstance(e, store.BadWindow):  # the agent's own mistake: it reads the forms recall takes
             raise ToolError(str(e)) from e
         raise
-    usage.record("mcp", tool, args, result, client=_client(ctx), session=os.getpid(), ms=usage.ms_since(start), **extra)
+    try:  # these are known only once the call has run, and a log field must not fail it
+        extra = {k: v() if callable(v) else v for k, v in extra.items()}
+    except Exception:
+        extra = {k: v for k, v in extra.items() if not callable(v)}
+    usage.record(
+        "mcp", tool, args, result, client=_client(ctx), session=_session(ctx), ms=usage.ms_since(start), **extra
+    )
     return result
 
 
@@ -445,12 +460,20 @@ def project_memory(path: str, task: str | None = None, ctx: Context = None) -> s
             return explore.brief(path, task)[0] or "No earlier exploration of this repo answers that closely enough."
 
         return _logged(ctx, "project_memory", {"cwd": path, "task": task}, run, project=found.id if found else None)
+    delivered: list[str] = []  # what the block carries, for the usage log: the Cursor session-start channel
+
+    def block() -> str:
+        text, delivered[:] = context.session_delivery(path, agent=agent)
+        return text or "No memory notes yet for this folder."
+
     return _logged(
         ctx,
         "project_memory",
         {"cwd": path},
-        lambda: context.session_context(path, agent=agent) or "No memory notes yet for this folder.",
+        block,
         project=found.id if found else None,
+        ids=lambda: delivered or None,
+        rules=lambda: context.rule_ids(delivered) or None,
     )
 
 

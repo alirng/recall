@@ -44,7 +44,7 @@ import re
 import time
 from datetime import datetime
 
-from . import config
+from . import config, evals_profiles
 from .chats import store
 from .chats.transcript import Message, Session
 
@@ -160,6 +160,7 @@ def run_longmemeval(
     embedder=None,
     cache=None,
     official: bool = False,
+    profiles: bool = False,
 ) -> dict:
     """Session retrieval on LongMemEval: for each question, index its history in memory and
     rank the sessions with recall's search.
@@ -171,6 +172,8 @@ def run_longmemeval(
     embedder: also rank by meaning (hybrid search); cache: a connection that keeps vectors
     between runs, so the 19,000 sessions are embedded once. official: only the questions the
     benchmark's own retrieval script scores (an answer turn on the user's side; 419 of 470).
+    profiles: label each question P1 literal, P2 concept or P3 conjunction against its own
+    history (evals_profiles.py) and add MRR and Recall@R per profile.
     """
     search = search or store.search
     with open(path, encoding="utf-8") as f:
@@ -178,6 +181,7 @@ def run_longmemeval(
     ks = (1, 3, 5, 10, 30, 50)
     totals: dict[str, float] = {}
     by_type: dict[str, list[float]] = {}
+    labelled: list[dict] = []
     n = 0
     started = time.time()
     for q in data:
@@ -208,6 +212,13 @@ def run_longmemeval(
         for k in (5, 10):
             row[f"recall_any@{k}"] = bool(evidence & set(ranked[:k]))
             row[f"recall_all@{k}"] = evidence <= set(ranked[:k])
+        if profiles:
+            pool = {r[0] for r in con.execute("select id from sessions")}
+            row.update(evals_profiles.label(con, q["question"], {f"lme:{e}" for e in evidence} & pool, pool))
+            rank = next((i for i, sid in enumerate(ranked, 1) if sid in evidence), None)
+            row["rr"] = 1 / rank if rank else 0.0
+            row["r@r"] = evals_profiles.recall_at_r(ranked, evidence)
+            labelled.append(row)
         log_case("longmemeval" + ("-hybrid" if embedder is not None else ""), row)
         con.close()
     result = {
@@ -218,6 +229,9 @@ def run_longmemeval(
         **{k: round(v / max(n, 1), 3) for k, v in totals.items()},
         "recall_all@5_by_type": {t: round(sum(v) / len(v), 3) for t, v in sorted(by_type.items())},
     }
+    if profiles:
+        scores = {"mrr": "rr", "r@r": "r@r", "recall_any@5": "recall_any@5", "recall_all@5": "recall_all@5"}
+        result["by_profile"] = evals_profiles.breakdown(labelled, scores)
     print(json.dumps(result, indent=2))
     return result
 
