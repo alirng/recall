@@ -90,7 +90,7 @@ the method, the caveats and the commands.
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.5.0 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.5.0 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.5.0 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
 
 On LongMemEval, the chat benchmark memory products usually report, recall's search puts a
-session that answers the question in its top five 98.7% of the time.
+session that answers the question in its top five 98.7% of the time (470 questions: the ones that have an answer session).
 
 ## How agents use it
 
