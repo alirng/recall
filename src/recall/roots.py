@@ -5,8 +5,8 @@ CLAUDE_CONFIG_DIR for a work account, Codex with another CODEX_HOME, Cursor next
 Nightly. Each folder is a root with a stable name (claude, claude-work, codex, cursor,
 cursor-nightly). discover() finds them from the defaults, the environment, the shell's rc
 files (assignments that start a statement, `export` lines and aliases) and folders named like a config
-dir. It only reads, and from the rc files it keeps just the two variables' values; nothing else in
-them is stored or shown. A folder counts as a root once the agent has used it, and never when it is the
+dir. It only reads, and from the rc files it keeps just the two variables' values and the files they
+source (in cache/rc-scans.json, so a hook does not parse them again); nothing else in them is stored or shown. A folder counts as a root once the agent has used it, and never when it is the
 home folder or above, or looks like a backup or a copy of the default.
 
 What each agent does with its root (live-checked in October 2026 unless marked):
@@ -30,6 +30,8 @@ import re
 import shlex
 import sqlite3
 from dataclasses import dataclass
+
+from . import paths
 
 AGENTS = ("claude", "codex", "cursor")
 ENV_VARS = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
@@ -291,30 +293,77 @@ def _declared() -> list[tuple[str, str, str]]:
     value that needs a command to work out or that names a folder holding more than one agent's."""
     out, seen_files = [], set()
     queue = [os.path.join(home(), rc) for rc in RC_FILES]
+    cache = _scans_load()
     while queue and len(seen_files) < 24:
         path = queue.pop(0)
         if path in seen_files:
             continue
         seen_files.add(path)
-        try:
-            if os.path.getsize(path) > MAX_RC_BYTES:
-                continue
-            with open(path, encoding="utf-8", errors="ignore") as f:
-                lines = f.read().splitlines()
-        except OSError:
-            continue
-        fish = path.endswith("config.fish")
-        for words in _statements(lines):
-            if words[0] in _SOURCE_HEADS and len(words) > 1:
-                target = _expand(words[1])
-                if target and target.startswith(home() + os.sep):
-                    queue.append(target)
-                continue
-            for var, raw, via in _assigned(words, fish):
-                folder = _expand(raw)
-                if folder and usable(folder):
-                    out.append((_VAR_AGENT[var], folder, f"shell: {via} in {os.path.basename(path)}"))
+        scan = _scan(path, cache)
+        for raw in scan["sources"]:
+            target = _expand(raw)
+            if target and target.startswith(home() + os.sep):
+                queue.append(target)
+        for var, raw, via in scan["assigned"]:
+            folder = _expand(raw)
+            if folder and usable(folder):
+                out.append((_VAR_AGENT[var], folder, f"shell: {via} in {os.path.basename(path)}"))
+    _scans_save(cache)
     return out
+
+
+# Parsing the rc files with shlex took 60 ms of every session-start hook; a file is parsed again
+# only when its size or modification time changes. The cache keeps what the parse found, nothing else.
+SCANS = os.path.join(paths.HOME, "cache", "rc-scans.json")
+
+
+def _scans_load() -> dict:
+    try:
+        with open(SCANS) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _scans_save(cache: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(SCANS), exist_ok=True)
+        tmp = f"{SCANS}.{os.getpid()}"
+        with open(tmp, "w") as f:
+            json.dump({p: v for p, v in cache.items() if v.get("stamp")}, f)
+        os.replace(tmp, SCANS)
+    except OSError:
+        pass
+
+
+def _scan(path: str, cache: dict) -> dict:
+    """What one rc file holds that matters: {"sources": files it sources (raw), "assigned": (variable,
+    raw value, via) for each variable set}, from the cache when the file is unchanged."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {"sources": [], "assigned": []}
+    stamp = [st.st_mtime_ns, st.st_size]
+    if (hit := cache.get(path)) and hit.get("stamp") == stamp:
+        return hit
+    scan = {"stamp": stamp, "sources": [], "assigned": []}
+    cache[path] = scan
+    if st.st_size > MAX_RC_BYTES:
+        return scan
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        scan["stamp"] = None  # unreadable: look again next time
+        return scan
+    fish = path.endswith("config.fish")
+    for words in _statements(lines):
+        if words[0] in _SOURCE_HEADS and len(words) > 1:
+            scan["sources"].append(words[1])
+            continue
+        scan["assigned"].extend(_assigned(words, fish))
+    return scan
 
 
 def _continued(lines: list[str]) -> list[str]:

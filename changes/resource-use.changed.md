@@ -1,0 +1,1 @@
+**Lighter background use:** the session-start hook no longer re-parses your shell rc files every time (about 40 ms saved on every session start; they are read again only when they change), and the menu bar app refreshes every 15 minutes instead of every 5, at lower priority. Each refresh is a `recall status` run that costs about 1.5 CPU seconds.
