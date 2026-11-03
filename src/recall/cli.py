@@ -629,6 +629,13 @@ def cmd_status(a) -> None:
     print("\n" + autopilot.summary_line(rows))
 
 
+def cmd_menubar_use(a) -> None:
+    """The menu bar app's own use, one usage.jsonl row: the action and when, nothing else."""
+    from . import usage
+
+    usage.record("menubar", f"panel_{a.action}")
+
+
 def cmd_resolve(a) -> None:
     from . import mail
     from .chats import store
@@ -1139,6 +1146,8 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--file", required=True, help="the file, relative to the repo, as recall status shows it")
     sp.add_argument("--since", default="12h")
     sp.add_argument("--json", action="store_true")
+    sp = command("menubar-use", cmd_menubar_use, "log that the menu bar panel was opened or used (the app calls it)")
+    sp.add_argument("action", choices=["open", "show", "resolve"])
     sp = command("jit", cmd_jit, "what recall would hand an agent mid-session, and why")
     sp.add_argument("prompt", nargs="*", help="a prompt to match against past chats and notes")
     sp.add_argument("--cwd", help="the project folder (default: the current folder)")
