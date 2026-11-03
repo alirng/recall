@@ -515,7 +515,7 @@ def cmd_usage(a) -> None:
         print(f"Nothing logged yet{' in that window' if a.since else ''} ({usage.LOG}).")
         return
     print(f"{s['calls']} calls since {s['since'][:16].replace('T', ' ')}\n")
-    kinds = ["search", "read", "recent", "load", "jit", "other"]
+    kinds = ["search", "read", "recent", "load", "jit", "menubar", "other"]
     print("".ljust(10) + "".join(k.rjust(8) for k in kinds))
     for who, counts in s["by_agent"].items():
         print(who.ljust(10) + "".join(str(counts.get(k, 0) or "·").rjust(8) for k in kinds))
