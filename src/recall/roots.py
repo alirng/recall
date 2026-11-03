@@ -524,6 +524,17 @@ OTHERS: dict[str, Other] = {
         Other("droid", "Factory Droid", ("{home}/.factory",)),
         Other("goose", "Goose", ("{data}/goose", "{support}/Block/goose"), ("GOOSE_PATH_ROOT", "data")),
         Other("crush", "Crush", ("{data}/crush",)),
+        Other("kiro", "Kiro", ("{home}/.kiro", "{support}/kiro-cli", "{data}/kiro-cli")),
+        Other("devin", "Devin CLI", ("{data}/devin", "{support}/devin")),
+        Other("hermes", "Hermes Agent", ("{home}/.hermes",), ("HERMES_HOME", "")),
+        Other("continue", "Continue", ("{home}/.continue",), ("CONTINUE_GLOBAL_DIR", "")),
+        Other(
+            "vscode",
+            "VS Code Copilot Chat",
+            tuple(f"{{support}}/{e}/User" for e in ("Code", "Code - Insiders", "VSCodium")),
+        ),
+        Other("zed", "Zed", ("{support}/Zed", "{data}/zed")),
+        Other("amp", "Amp", ("{data}/amp",)),
         Other(
             "cline",
             "Cline",
