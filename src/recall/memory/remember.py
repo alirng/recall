@@ -58,6 +58,9 @@ class Remembered:
     rule: Rule
     new: bool  # False: the same rule was already there and was confirmed
     contexts: list[str] = field(default_factory=list)  # where a global rule loads; empty: everywhere
+    changed: bool = (
+        True  # False: the rule was already there and this run could not vouch for it, so nothing was written
+    )
 
 
 class Refused(Exception):
@@ -67,18 +70,21 @@ class Refused(Exception):
 # --- who said it -------------------------------------------------------------------------
 
 
-def speaker(rule: str, quote: str | None, chat: str | None, folder: str) -> tuple[str, str | None, str]:
-    """(said_by, the chat it was verified in, how it was decided) for a rule about to be saved."""
+def speaker(rule: str, quote: str | None, folder: str) -> tuple[str, str | None, str]:
+    """(said_by, the chat it was verified in, how it was decided) for a rule about to be saved.
+    `folder` is the command's own working folder when an agent runs it (cmd_remember)."""
     agent = _under_agent()
     if not agent:
         return ("unverified" if said.risky(rule) else "developer"), None, "typed at your terminal"
-    chat = chat or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID")
     if said.risky(rule):
         raise Refused(
             "an agent cannot save a rule with a command, a URL, or a network, destructive or exfiltrating "
             "step; type it yourself with `recall remember` at your terminal"
         )
     in_cursor = "Cursor" in agent or any(os.environ.get(k) for k in ("CURSOR_AGENT", "CURSOR_TRACE_ID"))
+    # The chat that vouches for the quote is the one the harness says this command runs in. An agent
+    # cannot name another (--chat), or it could pick a chat whose latest turns suit its rule.
+    chat = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID")
     found = live_chat(chat) if chat else _cursor_chat(folder) if in_cursor else None
     if found is None:
         return "agent", None, f"run by {agent}; no chat to check the quote against, so the nightly run confirms it"
@@ -99,7 +105,7 @@ def _under_agent() -> str | None:
         try:
             out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
         except (OSError, subprocess.TimeoutExpired):
-            return None
+            return "an agent (the process tree could not be read)"  # unknown: treated as the agent, not the person
         parent, _, comm = out.stdout.strip().partition(" ")
         name = os.path.basename(comm.strip())
         if name in AGENT_PROCESSES or name.startswith("Cursor"):
@@ -129,12 +135,13 @@ def live_chat(chat: str) -> tuple[str, list[str]] | None:
         turns = []
         for d in read_jsonl(path):
             att = d.get("attachment") or {}
-            if d.get("type") == "attachment" and att.get("type") == "queued_command" and _by_person(att):
-                turns.append(said.typed_text(str(att.get("prompt") or "")))
+            if d.get("type") == "attachment" and att.get("type") == "queued_command":
+                if att.get("commandMode") == "prompt" and _human(att) and _by_person(att) and _by_person(d):
+                    turns.append(said.typed_text(str(att.get("prompt") or "")))
                 continue
             if d.get("type") != "user" or d.get("isMeta") or d.get("isSidechain") or d.get("isCompactSummary"):
                 continue
-            if not _by_person(d):
+            if not _human(d) or not _by_person(d):
                 continue
             text = text_blocks((d.get("message") or {}).get("content"), ("text",))
             if text:
@@ -148,6 +155,15 @@ def live_chat(chat: str) -> tuple[str, list[str]] | None:
                 turns = [said.typed_text(m.text) for m in (s.messages if s else []) if m.role == "user"]
                 return f"codex:{chat}", [t for t in turns if t.strip()]
     return None
+
+
+def _human(entry: dict) -> bool:
+    """Did Claude Code record this record as typed by the person? Only a record it tags so counts:
+    the desktop app's PR auto-fix events (review comments) arrive as user records with
+    turnOrigin "sdk", or as queued commands with no origin, and a transcript from before the tags
+    existed cannot say. Both are left out, so the quote is then not found and the rule waits."""
+    origin = entry.get("origin")
+    return entry.get("turnOrigin") == "human" or (isinstance(origin, dict) and origin.get("kind") == "human")
 
 
 def _cursor_chat(folder: str) -> tuple[str, list[str]] | None:
@@ -209,16 +225,27 @@ def remember(
     key = project.key if project else None
     evidence = said.clean_rule(quote if quote is not None else text)[:200]
     notes = store.load()
+    table = contexts.roots()
+    here = contexts.of_folder(folder, table)
     same = next(
         (
             (n, r)
             for n in notes.values()
-            if n.status == "active" and n.scope == scope and n.project == key
+            if n.status == "active"
+            and n.scope == scope
+            and n.project == key
+            # the same words said in another context are another rule: it must not move the first
+            and (scope != "global" or contexts.of_folder(n.stated_in, table) == here)
             for r in n.active_rules
             if _same(r.text, text)
         ),
         None,
     )
+    if same and said_by != "developer":
+        # Only the person can confirm a rule: a run that cannot vouch for its words would move the
+        # date the nightly run compares newer chats with, and count as the person's for it.
+        note, rule = same
+        return Remembered(note, rule, False, sorted(_placed(note)) if note.reach == "context" else [], changed=False)
     if same:
         note, rule = same
         rule.last_seen, rule.stated = max(rule.last_seen, day), stamp
@@ -241,8 +268,11 @@ def remember(
             created=day,
             updated=day,
         )
-        while note.id in notes:
-            note.id = new_id(title, salt=f"{key or 'global'}{stamp}{len(notes)}")
+        taken = store.load(include_archived=True).keys() | notes.keys()  # an archived file keeps its id
+        salt = 0
+        while note.id in taken:
+            salt += 1
+            note.id = new_id(title, salt=f"{key or 'global'}{stamp}{salt}")
         rule = Rule(
             rule_id(note.id, text, set()),
             text,
@@ -256,7 +286,6 @@ def remember(
         note.rules = [rule]
         new = True
     if scope == "global":
-        table = contexts.roots()
         note.stated_in = os.path.normpath(os.path.abspath(folder))
         note.reach = "context" if table else note.reach  # one context only: the nightly judge may widen it
     note.updated = day
@@ -272,6 +301,8 @@ def save(store: NoteStore, done: Remembered, log=print) -> None:
     notes folder, refresh the search index, and leave the nightly run its candidate."""
     from ..chats import store as chats
 
+    if not done.changed:
+        return
     notes = store.load()
     store.reconcile(notes)
     store.compile(notes)

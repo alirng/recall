@@ -26,6 +26,7 @@ Candidates the model skips, or whose only operations were refused, are retried.
 import copy
 import os
 import re
+import sqlite3
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -429,11 +430,27 @@ def _kept(b: _Batch, rule: Rule, candidates) -> bool:
     """May these candidates refine or retire this rule? Any rule but one the developer stated
     with `recall remember`, which only the developer can change: a chat newer than the remember,
     other than the one it ran in, with a quote they typed. A chat that ran on after the remember
-    has a later timestamp, but what it says may come from before, so that chat never counts."""
+    has a later timestamp, but what it says may come from before, so that chat never counts: the
+    chat must have started after the remember (a rule typed at a terminal has no source chat to
+    exclude, and an older chat still open would otherwise beat it)."""
     stated = remember.stamp_of(rule)
     if stated is None or rule.said_by != "developer":
         return True
-    return any((c["chat_ts"] or 0) > stated and c["session_id"] not in rule.sources and b.typed(c) for c in candidates)
+    return any(
+        (c["chat_ts"] or 0) > stated
+        and c["session_id"] not in rule.sources
+        and _started_after(b.con, c["session_id"], stated)
+        and b.typed(c)
+        for c in candidates
+    )
+
+
+def _started_after(con, session_id: str, stamp: float) -> bool:
+    try:
+        row = con.execute("select started_at from sessions where id=?", (session_id,)).fetchone()
+    except sqlite3.Error:
+        return False
+    return bool(row and row[0] and row[0] > stamp)
 
 
 def _remembered(b: _Batch, op: dict, candidates: list, stats: Counter, log) -> list:

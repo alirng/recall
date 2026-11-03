@@ -65,7 +65,7 @@ _WRAPPERS = (
     r"user-prompt-submit-hook|task-notification|user_instructions|environment_context|"
     r"codex_internal_context|in-app-browser-context|skill|recall-memory|recall-context|"
     r"documents?|pasted[_-](?:text|content)|function_(?:results|calls)|tool_(?:result|use)|"
-    r"ide_selection|ide_opened_file|attached_file|attachment|file_content"
+    r"ide_selection|ide_opened_file|attached_file|attachment|file_content|ci-monitor-event|artifact-view-context"
 )
 _WRAPPER = re.compile(rf"<({_WRAPPERS})(?:\s[^>]*)?>.*?(?:</\1>|\Z)", re.S)
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
