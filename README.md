@@ -111,7 +111,10 @@ session that answers the question in its top five 98.7% of the time (470 questio
 - **When you ask**, `/recall what did we decide about auth` works in any agent with skills.
 
 Agents treat notes and transcripts as background, not instructions: the current request and
-the code win when they disagree. T3 Code, OpenCode and Gemini CLI are partly supported; see
+the code win when they disagree. Beyond those three, recall reads the chat history of OpenCode,
+Antigravity, Gemini CLI, Pi, Copilot CLI, Goose and about thirty more agents, and registers its MCP
+server in the ones that document a config file: [docs/agents.md](docs/agents.md) says what works in
+each. T3 Code's chats are Claude Code and Codex chats; see
 [How agents use it](docs/how-it-works.md#how-agents-use-it).
 
 ## Memory you can read

@@ -4,7 +4,9 @@ Each source yields Items: a stable key, a cheap fingerprint (so unchanged chats
 are skipped on re-index) and a loader that parses the chat only when needed.
 """
 
+import contextlib
 import json
+import sqlite3
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,6 +27,23 @@ class Item:
     key: str
     fingerprint: str
     load: Callable[[], Session | None]
+
+
+def open_ro(path: str, timeout: float = 2.0) -> sqlite3.Connection | None:
+    """Another agent's SQLite file, read-only (`mode=ro`, never `immutable`: that would ignore the WAL, which
+    holds the newest rows). None when it cannot be opened."""
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=timeout, check_same_thread=False)
+        con.execute("pragma query_only = on")
+        return con
+    except sqlite3.Error:
+        return None
+
+
+def table_names(con: sqlite3.Connection) -> set[str]:
+    with contextlib.suppress(sqlite3.Error):
+        return {r[0] for r in con.execute("select name from sqlite_master where type in ('table', 'view')")}
+    return set()
 
 
 def iso_ts(value) -> float | None:
@@ -79,7 +98,7 @@ def agents(found=None):
     found = roots.discover() if found is None else found
     by_agent = {a: [r for r in found if r.agent == a] for a in roots.AGENTS}
     cl, cx, cu = by_agent["claude"], by_agent["codex"], by_agent["cursor"]
-    return {
+    main = {
         "claude": ("Claude Code", lambda: claude.detect(cl), {"claude": lambda: claude.items(cl)}),
         "codex": ("Codex", lambda: codex.detect(cx), {"codex": lambda: codex.items(cx)}),
         "cursor": (
@@ -89,6 +108,60 @@ def agents(found=None):
         ),
         "grokbot": ("Grok Bot", grokbot.detect, {"grokbot": grokbot.items}),
     }
+    return {**main, **other_agents()}
+
+
+# Agents recall reads beside the three above, one module per format family (see docs/agents.md). A module
+# lists its agents in AGENTS: key -> (display name, detect, items). detect() and items() take no
+# arguments: each agent's folders come from roots.other_dirs(key). Their chats carry the agent's key as
+# Session.root, which keeps them out of `recall dream` unless [roots.<key>] mine = true.
+FAMILIES = (
+    "amp",
+    "antigravity",
+    "cline",
+    "commandcode",
+    "continuedev",
+    "copilot",
+    "crush",
+    "devin",
+    "droid",
+    "gemini",
+    "goose",
+    "grok",
+    "hermes",
+    "junie",
+    "kimi",
+    "kiro",
+    "muse",
+    "opencode",
+    "pi",
+    "vibe",
+    "vscodecopilot",
+    "zed",
+)
+
+
+def family_modules() -> list:
+    """The family modules that exist. A name in FAMILIES with no file yet is skipped; a module that is
+    there but does not import is an error, not a skip."""
+    import importlib
+
+    out = []
+    for name in FAMILIES:
+        try:
+            out.append(importlib.import_module(f"{__name__}.{name}"))
+        except ModuleNotFoundError as e:
+            if e.name != f"{__name__}.{name}":
+                raise
+    return out
+
+
+def other_agents() -> dict:
+    out = {}
+    for module in family_modules():
+        for key, (label, detect, items) in module.AGENTS.items():
+            out[key] = (label, detect, {key: items})
+    return out
 
 
 def all_sources(selected: list[str] | None = None, found=None) -> dict:

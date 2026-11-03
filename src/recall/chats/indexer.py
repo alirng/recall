@@ -105,7 +105,9 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
         keep = _keeper(con)
         done = 0
         for name, items in all_sources(cfg["sources"], found).items():
-            if name in OUT_OF_PROCESS:
+            # A session-end hook closes a Claude Code, Codex or Cursor transcript: the other agents' sources
+            # (a dozen SQLite files and globalStorage folders to open) have none to match.
+            if name in OUT_OF_PROCESS or name in roots.OTHERS:
                 continue
             for item in items():
                 if os.path.realpath(item.key) in wanted:
@@ -244,7 +246,7 @@ def _scan(con, selected, only, force, max_age, log, found) -> dict:
         stamp_key = f"indexed_at:{name}"
         if max_age is not None:
             row = con.execute("select v from meta where k=?", (stamp_key,)).fetchone()
-            if row and time.time() - float(row[0]) < max(max_age, STALE_AFTER[name]):
+            if row and time.time() - float(row[0]) < max(max_age, STALE_AFTER.get(name, 60)):
                 continue
         files = _database_files(wanted) if name in OUT_OF_PROCESS else None
         if files is not None and not _whole_read_due(con, name, max_age, force, files):

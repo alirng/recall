@@ -681,7 +681,7 @@ def cmd_install(a) -> None:
         for r in chosen or ():  # asking for a root by name is saying yes to it again
             if not roots.option(r, "connect") and not dry_run:
                 roots.set_option(r, "connect", True)
-        lines = agents.install(parts, dry_run, chosen or found, repoint=a.repoint)
+        lines = agents.install(parts, dry_run, chosen or found, repoint=a.repoint, others=chosen is None)
         if not dry_run:
             autopilot.record_connected(found)  # so uninstall finds these roots even if discovery later loses them
             if "hook" in parts and autopilot.consented() is not None:
@@ -1006,6 +1006,8 @@ _CONTEXT_HELP = (
 
 
 def _parser() -> argparse.ArgumentParser:
+    from . import roots
+
     p = argparse.ArgumentParser(prog="recall", description="One memory for all your coding agents.")
     p.add_argument("--version", action="version", version=f"recall {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1029,13 +1031,15 @@ def _parser() -> argparse.ArgumentParser:
 
     sp = command("index", cmd_index, "index new and changed chats")
     sp.add_argument("--force", action="store_true", help="re-read every chat")
-    sp.add_argument("--source", action="append", help="claude, codex, cursor or cursor-legacy")
+    sp.add_argument(
+        "--source", action="append", help="claude, codex, cursor, cursor-legacy or another agent (docs/agents.md)"
+    )
     sp.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
     for name, help_text in (("search", "find chats by topic"), ("recent", "most recently active chats")):
         sp = command(name, cmd_search, help_text)
         if name == "search":
             sp.add_argument("query", nargs="+")
-        sp.add_argument("--agent", choices=["claude", "codex", "cursor", "grokbot"])
+        sp.add_argument("--agent", choices=["claude", "codex", "cursor", "grokbot", *roots.OTHERS])
         sp.add_argument("--project")
         sp.add_argument("--context", help=_CONTEXT_HELP)
         sp.add_argument("--since", help="e.g. 7d, 2w, 3m or 2026-09-01")
