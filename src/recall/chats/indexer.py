@@ -244,7 +244,7 @@ def _scan(con, selected, only, force, max_age, log, found) -> dict:
         stamp_key = f"indexed_at:{name}"
         if max_age is not None:
             row = con.execute("select v from meta where k=?", (stamp_key,)).fetchone()
-            if row and time.time() - float(row[0]) < max(max_age, STALE_AFTER[name]):
+            if row and time.time() - float(row[0]) < max(max_age, STALE_AFTER.get(name, 60)):
                 continue
         files = _database_files(wanted) if name in OUT_OF_PROCESS else None
         if files is not None and not _whole_read_due(con, name, max_age, force, files):

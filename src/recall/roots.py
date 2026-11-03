@@ -475,3 +475,58 @@ def account(root: Root) -> str | None:
     except (OSError, ValueError, AttributeError, sqlite3.Error):
         return None
     return None
+
+
+# --- agents recall reads but does not set up the way it sets up the three above ---------------------------
+# Each has one folder (or a few) where its chats live; no per-account roots, no shell-rc discovery. A key
+# here is also what the chat's Session.root holds, so `recall dream` skips these chats unless the person
+# sets `[roots.<key>] mine = true`. The placeholders are filled from the environment the way the agent
+# does it: {data} is $XDG_DATA_HOME or ~/.local/share, {config} is $XDG_CONFIG_HOME or ~/.config, {support}
+# is ~/Library/Application Support (macOS) or ~/.config.
+
+
+@dataclass(frozen=True)
+class Other:
+    key: str
+    label: str
+    dirs: tuple[str, ...]  # where its chats live, with the placeholders above
+
+
+OTHERS: dict[str, Other] = {
+    o.key: o
+    for o in (
+        Other("opencode", "OpenCode", ("{data}/opencode",)),
+        Other("kilo", "Kilo Code", ("{data}/kilo",)),
+        Other(
+            "antigravity",
+            "Antigravity",
+            ("{home}/.gemini/antigravity", "{home}/.gemini/antigravity-ide", "{home}/.gemini/antigravity-cli"),
+        ),
+    )
+}
+
+
+def _places() -> dict[str, str]:
+    h = home()
+    support = os.path.join(h, "Library", "Application Support") if os.uname().sysname == "Darwin" else None
+    return {
+        "data": os.environ.get("XDG_DATA_HOME") or os.path.join(h, ".local", "share"),
+        "config": os.environ.get("XDG_CONFIG_HOME") or os.path.join(h, ".config"),
+        "support": support or os.environ.get("XDG_CONFIG_HOME") or os.path.join(h, ".config"),
+        "home": h,
+    }
+
+
+def other_dirs(key: str) -> list[str]:
+    """The folders of this agent that exist: stat calls only, so detecting it costs nothing when it is
+    not installed. A relative XDG_DATA_HOME is ignored, as the XDG spec says."""
+    places = {k: v for k, v in _places().items() if os.path.isabs(v)}
+    out = []
+    for template in OTHERS[key].dirs:
+        try:
+            path = os.path.expanduser(template.format(**places))
+        except KeyError:
+            continue
+        if os.path.isdir(path) and path not in out:
+            out.append(path)
+    return out

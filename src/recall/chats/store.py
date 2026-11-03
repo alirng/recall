@@ -10,7 +10,7 @@ import sqlite3
 import time
 from datetime import datetime
 
-from .. import __version__, paths
+from .. import __version__, paths, roots
 from . import archive, scrub
 from .errors import ToolError, anchor, identity, reclean_errors
 from .projects import resolve
@@ -33,10 +33,12 @@ _PARTS = (
     "projects",
     "redact",
     "sources",
+    "sources.antigravity",
     "sources.claude",
     "sources.codex",
     "sources.compressed",
     "sources.cursor",
+    "sources.opencode",
     "transcript",
 )
 
@@ -199,6 +201,10 @@ def backfill_roots(con: sqlite3.Connection, found: list) -> int:
             prefixes.append((base + "projects" + os.sep, r.name))
             if r.data:
                 prefixes.append((os.path.join(r.data, "globalStorage", "state.vscdb") + "#", r.name))
+    # Agents without roots (roots.OTHERS) key their chats by the agent's own name. A chat restored from the
+    # archive has no root, and `recall dream` reads chats with none, so each is attributed by its folder.
+    for key in roots.OTHERS:
+        prefixes += [(d.rstrip(os.sep) + os.sep, key) for d in roots.other_dirs(key)]
     n = 0
     seen = set()
     for prefix, name in prefixes:
