@@ -381,6 +381,13 @@ def _log(e: "Event", event: str, picked: list[Item], text: str, considered: list
     top = max((i.p for i in considered if i.p is not None), default=None)
     if not picked and event not in ("prompt", "compact"):
         return  # file reads and failures that match nothing are too many to log
+    notes = [i.id for i in picked if i.kind == "note"]
+    if notes:
+        from .memory.context import rule_ids
+
+        rules = rule_ids(notes)  # a note's rules, as `note/rule@version`
+    else:
+        rules = []
     usage.record(
         "hook",
         "jit",
@@ -391,6 +398,7 @@ def _log(e: "Event", event: str, picked: list[Item], text: str, considered: list
         agent_id=(e.raw or {}).get("agent_id"),  # a subagent's, apart from its session's
         ids=[i.id for i in picked] or None,
         kinds=[i.kind for i in picked] or None,
+        rules=rules or None,
         chars=len(text) if text else 0,
         p=round(top, 3) if top is not None else None,
     )

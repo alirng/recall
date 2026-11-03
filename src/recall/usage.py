@@ -37,6 +37,8 @@ def record(via: str, tool: str, args: dict | None = None, result=None, *, client
         if args := {k: v for k, v in (args or {}).items() if v not in (None, "", [])}:
             entry["args"] = args
         entry |= _outcome(result) | {k: v for k, v in extra.items() if v is not None}
+        if via == "cli" and "session" not in entry and (found := agent_session()):
+            entry["session"] = found  # a command the agent's shell ran
         os.makedirs(paths.HOME, exist_ok=True)
         with open(LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
@@ -76,6 +78,35 @@ def client_from_env() -> str | None:
     if env.get("CURSOR_TRACE_ID") or env.get("CURSOR_AGENT"):
         return "cursor"
     return None
+
+
+def agent_session(meta=None) -> str | None:
+    """The id of the agent session a process serves, the same id its hooks report (hooks.Event.session).
+    Codex's tool calls carry it in `_meta` under x-codex-turn-metadata (found in its binary, not yet
+    seen in a live MCP call), and its shell has CODEX_THREAD_ID. Claude Code puts it in the
+    environment of the MCP servers it starts (CLAUDE_CODE_SESSION_ID: confirmed, it names the chat's
+    transcript); that is fixed when the server starts, so a call's own `_meta` goes first.
+    Cursor has no known source. `meta` is a tool call's `_meta`, when the client sent one."""
+    try:
+        meta = meta.model_dump() if hasattr(meta, "model_dump") else meta
+        if isinstance(meta, dict):
+            turn = meta.get("x-codex-turn-metadata")
+            turn = json.loads(turn) if isinstance(turn, str) else turn
+            for source in (turn, meta):
+                if isinstance(source, dict):
+                    for key in ("session_id", "thread_id", "sessionId", "conversation_id"):
+                        if isinstance(source.get(key), str) and source[key]:
+                            return source[key]
+        env = os.environ
+        return env.get("CLAUDE_CODE_SESSION_ID") or env.get("CODEX_THREAD_ID") or None
+    except Exception:
+        return None
+
+
+def process_session() -> str:
+    """What stands in for the agent's session when none can be found: this process, marked so a
+    reader can tell it from a session id."""
+    return f"pid:{os.getpid()}"
 
 
 def _outcome(result) -> dict:
