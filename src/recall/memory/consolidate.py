@@ -32,10 +32,11 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
+from .. import contexts
 from ..chats.redact import redact
 from ..llm import Client
 from . import prompts, remember, said
-from .notes import CONFIDENCE, REMOVED_BY_HAND, Note, NoteStore, Rule, clean_title, new_id, rule_id, sync, today
+from .notes import CONFIDENCE, REMOVED_BY_HAND, Note, NoteStore, Rule, clean_title, new_id, placed, rule_id, sync, today
 
 SYSTEM, _ = prompts.load("consolidate")
 BATCH = 20
@@ -477,6 +478,10 @@ def _remembered(b: _Batch, op: dict, candidates: list, stats: Counter, log) -> l
         if not found or found[1] is own[1] or c["speaker"] != "user" or own[1].said_by != "developer":
             continue
         note, rule = found
+        if note.scope == own[0].scope == "global":
+            table = contexts.roots()
+            if placed(note, table) != placed(own[0], table):
+                continue  # the same words in another context are another rule: it keeps its own
         stated = remember.stamp_of(own[1]) or c["chat_ts"] or 0
         if (remember.stamp_of(rule) or 0) >= stated or _date(stated) < rule.seen:
             continue  # the other rule is as new as this one: nothing to replace

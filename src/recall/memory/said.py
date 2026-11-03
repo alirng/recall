@@ -79,7 +79,9 @@ _GAP = re.compile(r"…|\.\.\.|\[\s*\.\.\.\s*\]")
 
 def typed_text(text: str) -> str:
     """The part of a user turn that is plausibly typed, with the pasted parts cut out."""
-    text = drop_compaction_summary(clean_user_text(text))
+    # Wrapper blocks first: clean_user_text keeps only a <user_query>'s inside, and a wrapper tag
+    # written into a page the agent read could hide in it, past the cut.
+    text = drop_compaction_summary(clean_user_text(_WRAPPER.sub("\n", text)))
     if notice := _NOTICE.search(text):
         text = text[: notice.start()]
     text = _COMMENT.sub("\n", text)

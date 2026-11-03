@@ -49,6 +49,8 @@ _COMMAND_ARGS = re.compile(
     r"<command-args>(.*?)</command-args>",
     re.S,
 )
+# The desktop app's own context, recorded as a human record (the page's JSON is written by an agent).
+_NOT_TYPED = ("<artifact-view-context", "<ci-monitor-event")
 CURSOR_LIVE_SECONDS = 900  # a Cursor transcript written this recently, in this folder, is the live chat
 
 
@@ -136,15 +138,17 @@ def live_chat(chat: str) -> tuple[str, list[str]] | None:
         for d in read_jsonl(path):
             att = d.get("attachment") or {}
             if d.get("type") == "attachment" and att.get("type") == "queued_command":
-                if att.get("commandMode") == "prompt" and _human(att) and _by_person(att) and _by_person(d):
-                    turns.append(said.typed_text(str(att.get("prompt") or "")))
+                prompt = str(att.get("prompt") or "")
+                typed = att.get("commandMode") == "prompt" and _human(att) and _by_person(att) and _by_person(d)
+                if typed and not prompt.lstrip().startswith(_NOT_TYPED):
+                    turns.append(said.typed_text(prompt))
                 continue
             if d.get("type") != "user" or d.get("isMeta") or d.get("isSidechain") or d.get("isCompactSummary"):
                 continue
             if not _human(d) or not _by_person(d):
                 continue
             text = text_blocks((d.get("message") or {}).get("content"), ("text",))
-            if text:
+            if text and not text.lstrip().startswith(_NOT_TYPED):
                 args = _COMMAND_ARGS.match(text)
                 turns.append(" ".join([args.group(1) if args else "", said.typed_text(text)]))
         return f"claude:{chat}", [t for t in turns if t.strip()]
