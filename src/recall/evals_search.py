@@ -8,21 +8,28 @@ chats also get all@8: every one of them is in the top 8 (an id missing from the 
 it). An optional `twins` map {expected id: [copy ids]} lets a hit on a copy count as a hit on
 that id. Search runs exactly as the MCP tool runs it (store.search, hybrid when embeddings are on),
 and is deterministic, so there are no repeats; the latency of each search is recorded too.
+
+With profiles, each case is also labelled P1 literal, P2 concept or P3 conjunction
+(evals_profiles.py) against the chats it searched, and scored per profile.
 """
 
 import sys
 import time
 
 from . import evals_harness as h
+from . import evals_profiles
 from .chats import store
 
 K = 10  # search_chats returns 8 by default; ranking does not depend on the limit
 ALL_AT = 8  # all@8: every expected chat of a multi-chat case is in the top 8
 
 
-def run(con, cases: list[dict], run: h.Run, against: str | None = None, keyword_only: bool = False) -> dict:
+def run(
+    con, cases: list[dict], run: h.Run, against: str | None = None, keyword_only: bool = False, profiles: bool = False
+) -> dict:
     """keyword_only: rank without embeddings even when they are configured (vector=False)."""
-    ids = {r[0] for r in con.execute("select id from sessions")}
+    agents = {r[0]: r[1] for r in con.execute("select id, agent from sessions")}
+    ids = set(agents)
     by_native = {i.split(":", 1)[1]: i for i in ids}
     vector = False if keyword_only else None  # None: search embeds the query itself, as the MCP tool does
     store.search(con, "warm up the index and the embedding model", vector=vector)  # not part of latency
@@ -48,6 +55,11 @@ def run(con, cases: list[dict], run: h.Run, against: str | None = None, keyword_
             "ms": round(ms, 1),
             "query": c["query"],
         }
+        if profiles:
+            agent = c.get("agent")
+            pool = {i for i, a in agents.items() if a == agent.lower()} if agent else ids
+            row.update(evals_profiles.label(con, c["query"], expect, pool))
+            row["r@r"] = evals_profiles.recall_at_r([r["chat_id"] for r in rows], expect)
         if len(c["expect"]) >= 2:
             top = {r["chat_id"] for r in rows[:ALL_AT]}
             row[f"all@{ALL_AT}"] = all(g & top for g in groups)
@@ -88,6 +100,8 @@ def run(con, cases: list[dict], run: h.Run, against: str | None = None, keyword_
         "plumbing": h.plumbing(run.rows),
         "warnings": h.headroom(metrics),
     }
+    if profiles:
+        summary["by_profile"] = evals_profiles.breakdown(scored, {"mrr": "rr", "r@r": "r@r", "hit@5": "hit@5"})
     if against:
         summary["against"] = {"run": against}
         summary["warnings"] += h.mismatch(against, run.meta)
@@ -106,4 +120,6 @@ def run(con, cases: list[dict], run: h.Run, against: str | None = None, keyword_
     if against:
         headline += f" Δhit@5={h.fmt(summary['against']['hit@5'], signed=True)}"
     columns = [("rank", "rank"), ("hit@5", "hit@5"), ("ms", "ms"), ("query", "query")]
+    if profiles:
+        columns.insert(0, ("profile", "profile"))
     return run.finish(summary, headline, columns, note=run.meta.get("note", ""))

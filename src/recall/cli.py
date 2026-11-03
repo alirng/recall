@@ -895,7 +895,9 @@ def cmd_eval(a) -> None:
                 out_path=a.out,
             )
         else:
-            evals.run_longmemeval(a.cases, a.limit, a.user_only, embedder=embedder, cache=cache, official=a.official)
+            evals.run_longmemeval(
+                a.cases, a.limit, a.user_only, embedder=embedder, cache=cache, official=a.official, profiles=a.profiles
+            )
     elif a.kind == "session":
         cases = a.cases or os.path.join(paths.EVALS, "session_cases.json")
         if not os.path.exists(cases):
@@ -966,8 +968,10 @@ def _eval_v2(a) -> None:
 
         con = harness.corpus()
         settings["keyword_only"] = a.keyword
+        if a.profiles:
+            settings["profiles"] = True
         run = harness.Run(kinds[a.kind], a.split, settings, a.who, a.runs_dir)
-        evals_search.run(con, cases, run, a.against, keyword_only=a.keyword)
+        evals_search.run(con, cases, run, a.against, keyword_only=a.keyword, profiles=a.profiles)
 
 
 # --- arguments ----------------------------------------------------------------
@@ -1153,6 +1157,12 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--user-only", action="store_true", help="longmemeval: index only user turns, as the paper does")
     sp.add_argument("--official", action="store_true", help="longmemeval: only the questions its own script scores")
     sp.add_argument("--hybrid", action="store_true", help="longmemeval, locomo: also rank by meaning ([embeddings])")
+    sp.add_argument(
+        "--profiles",
+        action="store_true",
+        help="search --v2, longmemeval, swe-contextbench: also score per query profile (P1 literal, P2 concept, "
+        "P3 conjunction)",
+    )
     sp.add_argument(
         "--qa", metavar="MODEL", help="longmemeval: answer and judge with MODEL, e.g. claude:claude-haiku-5-5"
     )
