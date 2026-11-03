@@ -23,6 +23,7 @@ about one random pair of chats in twenty from the same project.
 
 import math
 import re
+import sqlite3
 import time
 from collections import Counter
 
@@ -57,6 +58,29 @@ PICK = "latest"  # which passing chat to name: the latest one, or the closest ("
 # and for Cursor, which gives none, as any chat written to in the last few minutes.
 ACTIVE = 900
 ANNOTATED = 8  # search results checked for a newer chat, from the top
+
+# Next-hop references (references()).
+REFS_READ = 5  # references on a read_chat window
+REFS_HITS = 3  # search results that carry references, from the top
+REFS_PER_HIT = 2
+REFS_SEARCH = 6  # references across one search's results
+ABOUT_CHARS = 90
+FILE_CHATS = 5  # a file more chats than this edited (a README, the CLI) says nothing about a thread
+REF_KINDS = ("thread", "later", "earlier", "note", "commit", "same files")
+# Which reference goes in first when the limit is short: the best one of each kind, then more of
+# the thread.
+REF_ORDER = [(k, 0) for k in REF_KINDS] + [("thread", 1), ("thread", 2), ("note", 1), ("commit", 1), ("same files", 1)]
+COMMITS_SQL = """select c.sha, c.at, c.subject from commit_links l join link_commits c using (repo, sha)
+    where l.session_id = ? order by l.score desc limit 2"""
+# Other chats that edited the files this chat edited, most files in common first; a file counts
+# only when at most FILE_CHATS chats edited it.
+SAME_FILES_SQL = """select s.id, s.title, s.updated_at, count(*) n
+    from link_edits e join link_edits o on o.repo = e.repo and o.path = e.path and o.session_id != e.session_id
+    join sessions s on s.id = o.session_id
+    where e.session_id = ? and coalesce(s.origin, '') not in ('subagent', 'headless')
+    and (select count(distinct x.session_id) from link_edits x where x.repo = e.repo and x.path = e.path) <= ?
+    and s.updated_at < ?
+    group by s.id order by n desc, s.updated_at desc limit 2"""
 
 # Where a chat ended and where it changed course.
 ENDED_PERSON = 200  # characters of the person's last instruction
@@ -163,33 +187,50 @@ def newer(
     (RANKED_MEAN, RANKED_FLOOR): a decision changed in a later chat often uses other words.
     now: the time of the call (default the clock), for replaying calls made earlier."""
     db = db if db is not None else _db_key(con)
-    s = con.execute(
-        "select id, agent, project_key, started_at, updated_at, n_messages from sessions where id = ?", (sid,)
-    ).fetchone()
+    s = _chat(con, sid)
     if not s or not s["updated_at"]:
         return None
+    found = _same_ground(con, db, s, query, ranked, now, later=True)
+    if not found:
+        return None
+    # The end of the line rather than the nearest step: a decision changed twice is answered by
+    # the last chat.
+    b = max(found, key=lambda x: x[0]["updated_at"] if PICK == "latest" else x[1])[0]
+    return {"chat_id": b["id"], "title": b["title"], "updated": store.fmt_time(b["updated_at"])}
+
+
+def _chat(con, sid: str):
+    return con.execute(
+        """select id, agent, title, first_prompt, origin, project_key, started_at, updated_at, n_messages
+           from sessions where id = ?""",
+        (sid,),
+    ).fetchone()
+
+
+def _same_ground(con, db: str, s, query, ranked, now, later: bool) -> list[tuple]:
+    """The chats in s's project that cover the same ground as s, each with its overlap (both
+    ways, summed): only those after it when later, else those before it as well."""
+    sid = s["id"]
     fp, mine = _fingerprint(con, db, sid, s["n_messages"])
     if len(fp) < 4:  # too little to say what it is about
-        return None
-    later = """s.id != ? and (? is null or s.native_id is not ?) and s.updated_at > ? and s.updated_at < ?
-           and coalesce(s.started_at, s.updated_at) > ?
+        return []
+    when = (
+        "s.updated_at > ? and s.updated_at < ? and coalesce(s.started_at, s.updated_at) > ?"
+        if later
+        else "s.updated_at < ?"
+    )
+    own = usage.agent_session()
+    until = (now or time.time()) - ACTIVE
+    times = [s["updated_at"] + MIN_GAP, until, s["started_at"] or s["updated_at"]] if later else [until]
+    clause = f"""s.id != ? and (? is null or s.native_id is not ?) and {when}
            and coalesce(s.origin, '') not in ('subagent', 'headless')
            and (? is null or s.project_key is null or s.project_key = ?)"""
-    args = [
-        sid,
-        own := usage.agent_session(),
-        own,
-        s["updated_at"] + MIN_GAP,
-        (now or time.time()) - ACTIVE,
-        s["started_at"] or s["updated_at"],
-        s["project_key"],
-        s["project_key"],
-    ]
+    args = [sid, own, own, *times, s["project_key"], s["project_key"]]
     rows = con.execute(
         f"""select m.session_id sid, bm25(messages_fts) score
             from messages_fts join messages m on m.id = messages_fts.rowid
             join sessions s on s.id = m.session_id
-            where messages_fts match ? and {later}
+            where messages_fts match ? and {clause}
             order by score limit ?""",
         [" OR ".join(f'"{w}"' for w in fp), *args, POOL],
     ).fetchall()
@@ -200,13 +241,13 @@ def newer(
     on_query = set((ranked or [])[:RANKED]) - {sid}
     cands += [c for c in on_query if c not in cands]
     if not cands:
-        return None
+        return []
     qwords = {_norm(w) for w in _words(query or "") if _idf(con, db, w)}
     found = []
     marks = ",".join("?" * len(cands))
     for r in con.execute(
         f"""select s.id, s.agent, s.title, s.project_key, s.updated_at, s.n_messages from sessions s
-            where s.id in ({marks}) and {later}""",
+            where s.id in ({marks}) and {clause}""",
         [*cands, *args],
     ):
         theirs_fp, theirs = _fingerprint(con, db, r["id"], r["n_messages"])
@@ -224,12 +265,112 @@ def newer(
         if qwords and len(qwords & theirs) * 2 < len(qwords):
             continue
         found.append((r, forward + back))
-    if not found:
-        return None
-    # The end of the line rather than the nearest step: a decision changed twice is answered by
-    # the last chat.
-    b = max(found, key=lambda x: x[0]["updated_at"] if PICK == "latest" else x[1])[0]
-    return {"chat_id": b["id"], "title": b["title"], "updated": store.fmt_time(b["updated_at"])}
+    return found
+
+
+def references(
+    con,
+    sid: str,
+    query: str | None = None,
+    ranked: list[str] | None = None,
+    skip=(),
+    limit: int = REFS_READ,
+    db: str | None = None,
+    now: float | None = None,
+) -> list[dict]:
+    """Where to go next from a chat: a few other chats, notes and commits, each with its id, date
+    and one line on what it is, so an agent can follow the decision thread hop by hop instead of
+    searching again. In order of priority, before `limit` cuts the list:
+
+    - thread: chats in the same project on the same ground (as for newer, both before and after);
+    - later / earlier: the nearest chat after and before it in the same project, by start time;
+    - note: the memory notes it fed;
+    - commit: the commits recall linked to it;
+    - same files: other chats that edited the files it edited, leaving out files many chats touch.
+
+    skip: ids already in front of the agent (the results shown, the newer chat), never repeated.
+    Returned in date order. query, ranked and now are as for newer."""
+    db = db if db is not None else _db_key(con)
+    s = _chat(con, sid)
+    if not s or limit <= 0:
+        return []
+    now = now or time.time()
+    seen = {sid, *skip}
+    kinds: dict[str, list[dict]] = {k: [] for k in REF_KINDS}
+
+    def add(kind: str, rid: str, ts, about: str | None):
+        if rid in seen:
+            return
+        seen.add(rid)
+        date = ts[:10] if isinstance(ts, str) else (store.fmt_time(ts) or "")[:10]
+        kinds[kind].append({"kind": kind, "id": rid, "date": date, "about": _about(about)})
+
+    if s["updated_at"]:
+        for r, _ in sorted(_same_ground(con, db, s, query, ranked, now, later=False), key=lambda x: -x[1]):
+            add("thread", r["id"], r["updated_at"], r["title"])
+    if s["project_key"]:
+        own = usage.agent_session()
+        start = s["started_at"] or s["updated_at"]
+        for kind, op, order in (("later", ">", "asc"), ("earlier", "<", "desc")):
+            for r in con.execute(
+                f"""select id, title, updated_at from sessions
+                    where project_key = ? and id != ? and (? is null or native_id is not ?)
+                    and coalesce(origin, '') not in ('subagent', 'headless')
+                    and coalesce(started_at, updated_at) {op} ? and updated_at < ?
+                    and first_prompt is not ?
+                    order by coalesce(started_at, updated_at) {order} limit 4""",
+                (s["project_key"], sid, own, own, start, now - ACTIVE, s["first_prompt"]),
+            ):
+                if r["id"] not in seen:
+                    add(kind, r["id"], r["updated_at"], r["title"])
+                    break
+    for last_seen, note_id, title in _notes_of(sid):
+        add("note", note_id, last_seen, title)
+    for r in _linked(con, COMMITS_SQL, sid):
+        add("commit", r["sha"][:10], r["at"], r["subject"])
+    for r in _linked(con, SAME_FILES_SQL, sid, FILE_CHATS, now - ACTIVE):
+        add("same files", r["id"], r["updated_at"], r["title"])
+    picked: list[dict] = []
+    for kind, i in REF_ORDER:
+        if len(picked) < limit and i < len(kinds[kind]):
+            picked.append(kinds[kind][i])
+    return sorted(picked, key=lambda r: r["date"])
+
+
+def _linked(con, sql: str, *args) -> list:
+    """Rows from recall's commit links, or none in an index that has no links (an eval's)."""
+    try:
+        return con.execute(sql, args).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
+def _about(text: str | None) -> str:
+    text = " ".join((text or "").split())
+    return text[:ABOUT_CHARS] + ("…" if len(text) > ABOUT_CHARS else "")
+
+
+_notes: dict = {}
+
+
+def _notes_of(sid: str) -> list[tuple[str, str, str]]:
+    """The active memory notes learned from a chat, latest first, as (last seen, id, title). The
+    notes' sources live in their files, so the map from chat to notes is built once and again only
+    when a note file changes (NoteStore.digest)."""
+    from .memory.notes import NoteStore
+
+    try:
+        notes = NoteStore()
+        digest = notes.digest()
+        if _notes.get("digest") != digest:
+            by: dict[str, list] = {}
+            for n in notes.load().values():
+                for c in n.sources if n.status == "active" else ():
+                    by.setdefault(c, []).append((n.last_seen or n.created or "", n.id, n.title))
+            _notes.update(digest=digest, by=by)
+    except OSError:
+        return []
+    return sorted(_notes["by"].get(sid, []), reverse=True)
 
 
 def who(role: str, origin: str | None) -> str:
@@ -269,18 +410,34 @@ def annotate_search(con, rows: list[dict], queries: list[str], found: list[dict]
                 h["date"] = when
         if i < ANNOTATED and (n := newer(con, row["chat_id"], queries[0] if queries else None, ranked, db)):
             row["newer_chat"] = n
+    # Next-hop references on the top results, never naming a chat the agent already sees here.
+    skip = {r["chat_id"] for r in rows} | {r["newer_chat"]["chat_id"] for r in rows if r.get("newer_chat")}
+    left = REFS_SEARCH
+    for row in rows[:REFS_HITS]:
+        refs = references(
+            con, row["chat_id"], queries[0] if queries else None, ranked, skip, min(REFS_PER_HIT, left), db
+        )
+        if refs:
+            row["refs"] = refs
+            skip |= {r["id"] for r in refs}
+            left -= len(refs)
     return rows
 
 
-def search_lines(row: dict) -> tuple[list[str], str | None]:
-    """The text form of annotate_search's additions: each hit's label, and the newer line."""
+def search_lines(row: dict) -> tuple[list[str], list[str]]:
+    """The text form of annotate_search's additions: each hit's label, and the lines after the
+    hits (the newer chat, then the references)."""
     labels = []
     for h in row.get("hits") or []:
         label = " ".join(x for x in (h.get("who"), h.get("date")) if x)
         labels.append(f" {label}" if label else "")
     n = row.get("newer_chat")
-    line = f"newer chat on this: {n['chat_id']} · {n['updated']} · {n['title']}" if n else None
-    return labels, line
+    lines = [f"newer chat on this: {n['chat_id']} · {n['updated']} · {n['title']}"] if n else []
+    return labels, lines + [ref_line(r) for r in row.get("refs") or []]
+
+
+def ref_line(ref: dict) -> str:
+    return f"→ {ref['kind']}: {ref['id']} · {ref['date']} · {ref['about']}"
 
 
 def annotate_read(con, result: dict, query: str | None, first: bool) -> dict:
@@ -293,13 +450,18 @@ def annotate_read(con, result: dict, query: str | None, first: bool) -> dict:
     origin = s["origin"] if s else None
     for m in result["transcript"]:
         m["role"] = who(m["role"], origin)
-    if not first:
-        return result
     db = _db_key(con)
-    msgs = con.execute("select seq, role, text from messages where session_id = ? order by seq", (sid,)).fetchall()
     extra = {}
-    if n := newer(con, sid, query, db=db):
+    if first and (n := newer(con, sid, query, db=db)):
         extra["newer_chat"] = n
+    if refs := references(con, sid, query, skip={n["chat_id"] for n in extra.values()}, db=db):
+        extra["refs"] = refs
+    if not first:
+        transcript = result.pop("transcript")
+        result.update(extra)
+        result["transcript"] = transcript
+        return result
+    msgs = con.execute("select seq, role, text from messages where session_id = ? order by seq", (sid,)).fetchall()
     shown = {m["seq"] for m in result["transcript"]}
     if msgs and msgs[-1]["seq"] not in shown and (ended := _ended(msgs, origin)):
         extra["ended"] = ended

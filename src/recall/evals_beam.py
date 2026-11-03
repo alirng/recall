@@ -216,7 +216,9 @@ def load(path: str, limit: int | None = None) -> list[dict]:
     return convs
 
 
-def _index(conv: dict):
+def _index(conv: dict, project: bool = False):
+    """The conversation as an index of chats; project: all in one project, for the references'
+    time neighbours (store.search is the same either way)."""
     con = store.connect(":memory:")
     for k, chat in enumerate(conv["chats"]):
         # Turns within a batch share a date; a second apart keeps their order.
@@ -226,10 +228,17 @@ def _index(conv: dict):
         store.upsert(
             con, Session("beam", sid, "beam", started_at=messages[0].ts, updated_at=messages[-1].ts, messages=messages)
         )
+    if project:
+        # Chats cut from one batch share its date: a second apart keeps their order by start too.
+        con.execute("update sessions set project_key = ?", (f"beam:{conv['id']}",))
+        for k in range(len(conv["chats"])):
+            con.execute("update sessions set started_at = started_at + ? where id = ?", (k, f"beam:{conv['id']}-{k}"))
     return con
 
 
-def _history(conv: dict, con, question: str, top_k: int, max_tokens: int, embedder) -> tuple[str, list[int]]:
+def _history(
+    conv: dict, con, question: str, top_k: int, max_tokens: int, embedder, stubs: bool = False
+) -> tuple[str, list[int]]:
     vector = False
     if embedder is not None:
         from . import embeddings
@@ -251,7 +260,29 @@ def _history(conv: dict, con, question: str, top_k: int, max_tokens: int, embedd
         date = datetime.fromtimestamp(chat[0]["ts"]).strftime("%Y/%m/%d") if chat[0]["ts"] else "unknown"
         body = "\n\n".join(f"{m['role']}: {m['text']}" for m in chat)
         blocks.append(f"\n### Session {n}:\nSession Date: {date}\nSession Content:\n\n{body}\n")
+    if stubs:
+        blocks.append(_stubs(conv, con, question, picked, [r["chat_id"] for r in rows]))
     return "".join(blocks), picked
+
+
+def _stubs(conv: dict, con, question: str, picked: list[int], ranked: list[str]) -> str:
+    """The product's next-hop references (latest.references) for the chats read, inlined, since
+    the reader here cannot follow them: each other chat they name, dated, with how it begins."""
+    from . import latest
+
+    shown = {f"beam:{conv['id']}-{k}" for k in picked}
+    named: dict[str, dict] = {}
+    for k in picked:
+        sid = f"beam:{conv['id']}-{k}"
+        for r in latest.references(con, sid, question, ranked, shown | set(named), db=f"beam:{conv['id']}"):
+            named[r["id"]] = r
+    if not named:
+        return ""
+    lines = []
+    for k, sid in sorted((int(sid.rsplit("-", 1)[1]), sid) for sid in named):
+        ts = conv["chats"][k][0]["ts"]
+        lines.append(f"- {datetime.fromtimestamp(ts).strftime('%Y/%m/%d') if ts else 'unknown'}: {named[sid]['about']}")
+    return "\n### Other sessions, not shown above (date: how each begins):\n" + "\n".join(lines) + "\n"
 
 
 def _tau_norm(reference: list[str], system: list[str]) -> float:
@@ -295,6 +326,8 @@ def run_beam_qa(
     workers: int = 4,
     out_path: str | None = None,
     limit: int | None = None,
+    abilities: list[str] | None = None,
+    stubs: bool = False,
 ) -> dict:
     """End-to-end BEAM on one split (a parquet file from huggingface.co/datasets/Mohammadta/BEAM):
     retrieve with recall, answer with `model`, score with `judge` (never the reader)."""
@@ -309,12 +342,14 @@ def run_beam_qa(
     convs = load(path, limit)
     jobs = []
     for conv in convs:
-        con = _index(conv)
+        con = _index(conv, project=stubs)
         if embedder is not None:
             embeddings.index_messages(con, embedder, cache=cache)
         current = datetime.fromtimestamp(conv["last_ts"]).strftime("%Y/%m/%d") if conv["last_ts"] else "unknown"
         for q in conv["questions"]:
-            history, picked = _history(conv, con, q["question"], top_k, max_tokens, embedder)
+            if abilities and q["ability"] not in abilities:
+                continue
+            history, picked = _history(conv, con, q["question"], top_k, max_tokens, embedder, stubs)
             jobs.append((conv, q, history, picked, current))
         con.close()
     settings = config.load()["model"]
@@ -454,6 +489,8 @@ def run_beam_qa(
         "top_k": top_k,
         "max_tokens": max_tokens,
         "chunk_chars": CHUNK_CHARS,
+        "abilities": abilities,
+        "stubs": stubs,
     }
     print(json.dumps(result, indent=2))
     ledger_qa("beam", f"{result['split']} n={len(rows)}", f"score={result['score']}", result)

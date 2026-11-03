@@ -307,15 +307,14 @@ def _result_block(row: dict) -> str:
     where = (row.get("project") or "") + (f" ({row['branch']})" if row.get("branch") else "")
     size = f"{row['messages']} messages" + (f", {row['matches']} matching" if row.get("matches") else "")
     head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
-    labels, newer = latest.search_lines(row)
+    labels, extra = latest.search_lines(row)
     lines = [
         f"[{h['seq']}{label}] {' '.join(h['snippet'].split())}"
         for h, label in zip(row.get("hits") or [], labels, strict=True)
     ]
     if not lines and row.get("snippet"):
         lines = [f"opening message: {' '.join(row['snippet'].split())}"]
-    if newer:
-        lines.append(newer)
+    lines += extra  # the newer chat and next-hop references
     return head + "".join(f"\n  {line}" for line in lines) + "\n"
 
 
