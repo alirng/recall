@@ -30,6 +30,14 @@ from itertools import combinations
 from . import paths
 
 LIVE_SECONDS = 15 * 60  # a session touched this recently counts as live
+# What makes another chat's open changes worth raising at an edit (situation_for): it is working now,
+# and it edited this file recently. "Working now" is its last message; the chat's own edit times
+# come from its transcript or the edit log. Within one working copy the two chats can overwrite each
+# other, so both must be close; across branches the clash is for merge time, so the bar is lower.
+HOT_CHAT_SECONDS = 5 * 60
+HOT_FILE_SECONDS = 15 * 60
+NEAR_CHAT_SECONDS = 30 * 60
+NEAR_FILE_SECONDS = 60 * 60
 CACHE = os.path.join(paths.HOME, "cache", "status.json")
 CACHE_VERSION = 3  # bump when _read's record changes, so old entries are read again (3: redacted)
 WARNED = os.path.join(paths.HOME, "cache", "edit-warnings.json")
@@ -966,6 +974,27 @@ PRESETS = {
 }
 
 
+def situation_for(same: bool, apart: bool, conflict, idle: float, file_age: float | None) -> str:
+    """Which situation another chat's open changes to the file being edited are, for the person's
+    rule. `same`: they are in this working copy; `apart`: the two chats' edits are on different
+    lines; `conflict`: a function, asked only for a chat close enough to matter in another
+    checkout, whether merging the two checkouts would conflict; `idle`: seconds since the other
+    chat's last message; `file_age`: seconds since it last edited this file (None: not recorded).
+    Open changes of a chat that is not at this file now are the quiet `overlap`, which nothing
+    acts on by default, so a finished chat, an orchestrator that handed a file over or a
+    sub-session working through it does not stop anyone."""
+
+    def recent(limit: float) -> bool:
+        return file_age is None or file_age <= limit
+
+    if same:
+        if idle <= HOT_CHAT_SECONDS and recent(HOT_FILE_SECONDS):
+            return "apart" if apart else "same_copy"
+    elif idle <= NEAR_CHAT_SECONDS and recent(NEAR_FILE_SECONDS) and conflict():
+        return "conflict"
+    return "overlap"
+
+
 def rules() -> dict[str, str]:
     from . import config
 
@@ -1335,6 +1364,9 @@ def check_edit(
             del near[p]
     sessions = _sessions(since, only=near)
     others = [(s, theirs) for s in sessions if not is_me(s) and rel in (theirs := in_repo(s))]
+    # The window is the chat's last message: a transcript rewritten by an app (Claude's desktop
+    # app does on startup) reads as recent in its mtime, and a chat from days ago named a file.
+    others = [(s, theirs) for s, theirs in others if s.updated_at >= since]
     others = [(s, theirs) for s, theirs in others if worst(theirs[rel][0]) > seen.get(s.id, -1)]
     if not others:
         return None
@@ -1359,12 +1391,14 @@ def check_edit(
         if not checkout(top):  # without this checkout's own state nothing can be judged
             return None
         spans = s.regions.get(os.path.join(t, rel), [])
-        if t == top and time.time() - s.updated_at <= LIVE_SECONDS:
-            situation = "apart" if lines and _apart(lines, spans) else "same_copy"
-        elif t != top and _conflict(checkouts[top], c, rel):
-            situation = "conflict"
-        else:
-            situation = "overlap"
+        idle, file_age = time.time() - s.updated_at, time.time() - when if when else None
+        situation = situation_for(
+            t == top,
+            bool(lines and _apart(lines, spans)),
+            lambda c=c: _conflict(checkouts[top], c, rel),
+            idle,
+            file_age,
+        )
         if want[situation] in acts:
             found.append((situation, s, c, theirs, t, spans))
     raise_ = [x for x in found if rank[x[0]] > seen.get(x[1].id, -1)]
