@@ -15,8 +15,17 @@ can compare modes without editing the config):
     document_tokens = 0
     device = "auto"                        # mps, cuda or cpu
     store = true                           # keep token vectors in late-vectors.db; false: rerank encodes every time
+    pool = 1                               # merge a document's similar token vectors, this many to one
+    bits = 16                              # stored vectors: 16 (float16) or 8 (int8, a scale per token)
+    smart = 1.0                            # smart: models only: the token term's weight (0: pooled only)
 
     RECALL_LATE="rerank candidates=30 weight=2"    or    RECALL_LATE=off
+
+A model named "smart:<Hugging Face repo>" reads the token vectors out of a single-vector embedder
+instead of a ColBERT model (SMART, arXiv 2605.24938): the repo's ONNX export, onnxruntime, no torch.
+A message then scores its pooled cosine plus the mean over query tokens of their best match among
+its token vectors (the final layer's hidden states, each normalised), which needs no retraining.
+"smart:nomic-ai/nomic-embed-text-v1.5" is the model recall's dense side runs through Ollama.
 
 Two modes:
 - rerank scores the chats fusion ranked highest, by each one's best few messages (its best
@@ -53,7 +62,11 @@ DEFAULTS = {
     "document_tokens": 0,
     "device": "auto",
     "store": True,
+    "pool": 1,
+    "bits": 16,
+    "smart": 1.0,
 }
+SMART = "smart:"
 MODES = ("rerank", "rank")
 INLINE_LIMIT = 200  # messages a rank search on an index on disk may encode before answering
 BATCH = 32
@@ -80,8 +93,9 @@ def settings() -> dict | None:
                 s[key] = _typed(value, DEFAULTS[key])
     if s["mode"] not in MODES:
         return None
-    if importlib.util.find_spec("pylate") is None:
-        _warn("late interaction is on but pylate is missing: install the late extra (recall-agents[late])")
+    needs = "onnxruntime" if s["model"].startswith(SMART) else "pylate"
+    if importlib.util.find_spec(needs) is None:
+        _warn(f"late interaction is on but {needs} is missing: install the late extra (recall-agents[late])")
         return None
     return s
 
@@ -186,7 +200,12 @@ def _by_best(rows, query, s, keep=True, limit=None, store_of=None) -> list[str]:
     have.update(_encoded(missing, s, store))
     rows = [(sid, have[_key(t, s)]) for sid, t in rows if _key(t, s) in have]
     q = _model_for(s).encode([query], is_query=True)[0].astype(np.float32)
-    scores = _maxsim(q, [m for _, m in rows])
+    if s["model"].startswith(SMART):  # row 0 is the pooled vector, the rest are tokens (_Smart)
+        late = np.array(_maxsim(q[1:], [m[1:] for _, m in rows])) / (len(q) - 1)
+        pooled = np.stack([m[0] for _, m in rows]).astype(np.float32) @ q[0]
+        scores = (pooled + s["smart"] * late).tolist()
+    else:
+        scores = _maxsim(q, [m for _, m in rows])
     best: dict[str, float] = {}
     for (sid, _), score in zip(rows, scores, strict=True):
         best[sid] = max(best.get(sid, score), score)
@@ -255,9 +274,11 @@ class _Encoder:
         if device == "mps":
             self.model.tokenize = _bucketed(self.model)
 
-    def encode(self, texts: list[str], is_query: bool) -> list:
+    def encode(self, texts: list[str], is_query: bool, pool: int = 1) -> list:
         with _lock, contextlib.redirect_stdout(sys.stderr):
-            return self.model.encode(texts, is_query=is_query, batch_size=BATCH, show_progress_bar=False)
+            return self.model.encode(
+                texts, is_query=is_query, batch_size=BATCH, show_progress_bar=False, pool_factor=pool
+            )
 
 
 def _bucketed(model, step: int = 64):
@@ -281,12 +302,54 @@ def _bucketed(model, step: int = 64):
     return padded
 
 
-def _model_for(s: dict) -> "_Encoder":
+class _Smart:
+    """A single-vector embedder read as a multi-vector one (SMART): its ONNX export's final hidden
+    states. Each text comes back as one matrix, the normalised mean of its tokens' states (the pooled
+    embedding the model was trained on) in row 0, then each token's normalised state."""
+
+    document_length = 512
+    cut = 2000  # characters, as recall's dense side embeds them (embeddings.MAX_CHARS)
+
+    def __init__(self, s: dict):
+        import onnxruntime
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
+
+        repo = s["model"][len(SMART) :]
+        _warn(f"{describe(s)}: loading {repo} (ONNX) on cpu")
+        options = onnxruntime.SessionOptions()
+        options.enable_cpu_mem_arena = False
+        self.session = onnxruntime.InferenceSession(hf_hub_download(repo, "onnx/model.onnx"), options)
+        self.inputs = {i.name for i in self.session.get_inputs()}
+        self.tokenizer = Tokenizer.from_file(hf_hub_download(repo, "tokenizer.json"))
+        self.lengths = (s["query_tokens"] or self.document_length, s["document_tokens"] or self.document_length)
+        self.prefixes = ("search_query: ", "search_document: ") if "nomic-embed" in repo else ("", "")
+
+    def encode(self, texts: list[str], is_query: bool, pool: int = 1) -> list:
+        np = _numpy()
+        self.tokenizer.enable_truncation(self.lengths[0 if is_query else 1])
+        self.tokenizer.enable_padding()
+        out = []
+        with _lock:
+            for a in range(0, len(texts), 8):
+                batch = self.tokenizer.encode_batch([self.prefixes[0 if is_query else 1] + t for t in texts[a : a + 8]])
+                ids = np.array([e.ids for e in batch], dtype=np.int64)
+                mask = np.array([e.attention_mask for e in batch], dtype=np.int64)
+                feed = {"input_ids": ids, "attention_mask": mask, "token_type_ids": np.zeros_like(ids)}
+                states = self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0]
+                for h, m in zip(states, mask, strict=True):
+                    h = h[m.astype(bool)]
+                    rows = np.vstack([h.mean(0, keepdims=True), h])
+                    out.append(rows / np.linalg.norm(rows, axis=1, keepdims=True))
+        return out
+
+
+def _model_for(s: dict):
     global _model
     key = (s["model"], s["device"], s["query_tokens"], s["document_tokens"])
     with _lock:
         if _model is None or _model[0] != key:
-            _model = (key, _Encoder(s))
+            _model = (key, _Smart(s) if s["model"].startswith(SMART) else _Encoder(s))
     return _model[1]
 
 
@@ -296,36 +359,56 @@ def _encoded(texts: list[str], s: dict, store) -> dict:
     if not texts:
         return {}
     encoder = _model_for(s)
-    cut = encoder.document_length * 10  # characters: more than the model reads, less than a long message
+    # characters: more than the model reads, less than a long message
+    cut = getattr(encoder, "cut", encoder.document_length * 10)
     out = {}
     for a in range(0, len(texts), BATCH * 8):
         part = texts[a : a + BATCH * 8]
-        vecs = [np.asarray(v, dtype=np.float16) for v in encoder.encode([t[:cut] for t in part], is_query=False)]
-        out.update({_key(t, s): v for t, v in zip(part, vecs, strict=True)})
+        encoded = encoder.encode([t[:cut] for t in part], is_query=False, pool=s["pool"])
+        rows = [
+            (_key(t, s), len(v), _packed(np.asarray(v, dtype=np.float32), s))
+            for t, v in zip(part, encoded, strict=True)
+        ]
+        out.update({key: _unpacked(blob, n, s) for key, n, blob in rows})  # what a later search loads
         if store is not None:
             with _lock:
-                store.executemany(
-                    "insert or replace into tokens values (?,?,?)",
-                    [(_key(t, s), len(v), v.tobytes()) for t, v in zip(part, vecs, strict=True)],
-                )
+                store.executemany("insert or replace into tokens values (?,?,?)", rows)
                 store.commit()
     return out
 
 
-def _load(store, keys: list[str], s: dict) -> dict:
+def _packed(v, s: dict) -> bytes:
+    """Token vectors as stored: float16, or with bits = 8 a float16 scale per token then int8 values."""
     np = _numpy()
+    if s["bits"] != 8:
+        return v.astype(np.float16).tobytes()
+    scale = np.maximum(np.abs(v).max(axis=1, keepdims=True), 1e-6) / 127
+    return scale.astype(np.float16).tobytes() + np.round(v / scale).astype(np.int8).tobytes()
+
+
+def _unpacked(blob: bytes, n: int, s: dict):
+    np = _numpy()
+    if s["bits"] != 8:
+        return np.frombuffer(blob, dtype=np.float16).reshape(n, -1)
+    scale = np.frombuffer(blob[: 2 * n], dtype=np.float16).reshape(n, 1)
+    return (np.frombuffer(blob[2 * n :], dtype=np.int8).reshape(n, -1) * scale).astype(np.float16)
+
+
+def _load(store, keys: list[str], s: dict) -> dict:
     out = {}
     for a in range(0, len(keys), 500):
         part = keys[a : a + 500]
         with _lock:
             rows = store.execute(f"select key, n, vec from tokens where key in ({','.join('?' * len(part))})", part)
             rows = rows.fetchall()
-        out.update({k: np.frombuffer(v, dtype=np.float16).reshape(n, -1) for k, n, v in rows})
+        out.update({k: _unpacked(v, n, s) for k, n, v in rows})
     return out
 
 
 def _key(text: str, s: dict) -> str:
-    return hashlib.sha1(f"{s['model']}\0{s['document_tokens']}\0{text}".encode()).hexdigest()[:24]
+    # pool and bits join the key only when set, so stores written before they existed stay valid
+    extra = "".join(f"\0{k}={s[k]}" for k in ("pool", "bits") if s[k] != DEFAULTS[k])
+    return hashlib.sha1(f"{s['model']}\0{s['document_tokens']}{extra}\0{text}".encode()).hexdigest()[:24]
 
 
 def _store(con) -> sqlite3.Connection:
