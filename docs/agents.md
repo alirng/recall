@@ -65,8 +65,8 @@ alone: `recall install` says which file and asks you to add the server by hand.
 ## What is not read, and why
 
 - **Windsurf Cascade and Devin Desktop** keep conversations as AES-GCM protobuf. One competitor decrypts
-  them with a key baked into the app. recall does not decrypt anything.
-- **ChatGPT desktop's classic chats** are encrypted, and Chat mode is server-side. The account export
+  them with a key baked into the app. recall does not decrypt anything, and has decided not to read them.
+- **ChatGPT desktop's classic chats** are encrypted (recall does not decrypt them), and Chat mode is server-side. The account export
   (a ZIP of `conversations.json`) is not imported yet; neither is claude.ai's.
 - **Antigravity's older conversations** (`conversations/*.pb`) are encrypted. For those chats recall reads
   the Markdown plan files beside them, which hold what the agent wrote but not what you typed.
@@ -77,6 +77,24 @@ alone: `recall install` says which file and asks you to add the server by hand.
   TRAE and a long tail of one-reader agents** are not built.
 - **Other agents' own imports**: Cline's sessions imported from another agent are skipped, since that
   agent's reader has them.
+
+## Known limits
+
+- **YAML and commented configs.** Goose, Hermes and Continue keep MCP servers in YAML, and Zed's (and sometimes
+  VS Code's, Amp's or OpenCode's) settings file allows comments. recall does not rewrite those: add the server
+  by hand (`recall install` names the file).
+- **One chat, two copies.** After Senpi's first-run move into Pi's folder the same chat can sit under both
+  roots and be indexed under both agents. A Grok Build `--fork-session` copy repeats the turns of the chat it
+  was forked from, and a Gemini CLI `.json` and `.jsonl` of one session are de-duplicated only when their file
+  names match.
+- **Kiro's classic CLI database.** `kiro-cli/data.sqlite3` may hold an auth table beside the conversations.
+  recall lists the table names and reads only `conversations_v2`, but it does open the file.
+- **Formats checked on real installs.** Only OpenCode and Antigravity's old plan files were checked against
+  real data. The rest follow other tools' parsers and synthetic fixtures; a format that changes makes a
+  reader skip the chat, never fail the index.
+- **Upgrading.** With `sources = []` (the default) every agent found is read, so an existing install starts
+  reading these agents after the upgrade, and the chat tables rebuild once (about three minutes with a large
+  Cursor history).
 
 ## How it behaves
 
