@@ -493,6 +493,14 @@ class Other:
     env: tuple[str, str] | None = None  # (variable, subfolder): the agent's relocation variable, when it has one
 
 
+# The editors that host VS Code extensions, whose globalStorage the extension-based agents write to.
+_EDITORS = ("Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf")
+
+
+def _hosted(extension: str) -> tuple[str, ...]:
+    return tuple(f"{{support}}/{e}/User/globalStorage/{extension}" for e in _EDITORS)
+
+
 OTHERS: dict[str, Other] = {
     o.key: o
     for o in (
@@ -514,6 +522,14 @@ OTHERS: dict[str, Other] = {
         Other("openclaw", "OpenClaw", ("{home}/.openclaw", "{home}/.kimi_openclaw"), ("OPENCLAW_STATE_DIR", "")),
         Other("copilot", "GitHub Copilot CLI", ("{home}/.copilot",), ("COPILOT_HOME", "")),
         Other("droid", "Factory Droid", ("{home}/.factory",)),
+        Other(
+            "cline",
+            "Cline",
+            ("{home}/.cline/data", *_hosted("saoudrizwan.claude-dev")),
+            ("CLINE_DATA_DIR", ""),
+        ),
+        Other("roo", "Roo Code", (*_hosted("rooveterinaryinc.roo-cline"), "{home}/.vscode-mock/global-storage")),
+        Other("kilo-legacy", "Kilo Code (extension)", _hosted("kilocode.kilo-code")),
         Other(
             "antigravity",
             "Antigravity",

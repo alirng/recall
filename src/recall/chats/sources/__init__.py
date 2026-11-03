@@ -114,7 +114,7 @@ def agents(found=None):
 # lists its agents in AGENTS: key -> (display name, detect, items). detect() and items() take no
 # arguments: each agent's folders come from roots.other_dirs(key). Their chats carry the agent's key as
 # Session.root, which keeps them out of `recall dream` unless [roots.<key>] mine = true.
-FAMILIES = ("antigravity", "copilot", "droid", "gemini", "grok", "kimi", "opencode", "pi")
+FAMILIES = ("antigravity", "cline", "copilot", "droid", "gemini", "grok", "kimi", "opencode", "pi")
 
 
 def family_modules() -> list:
