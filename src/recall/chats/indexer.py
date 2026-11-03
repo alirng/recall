@@ -105,7 +105,9 @@ def index_paths(con, files: list[str], wait: float = 5.0) -> int:
         keep = _keeper(con)
         done = 0
         for name, items in all_sources(cfg["sources"], found).items():
-            if name in OUT_OF_PROCESS:
+            # A session-end hook closes a Claude Code, Codex or Cursor transcript: the other agents' sources
+            # (a dozen SQLite files and globalStorage folders to open) have none to match.
+            if name in OUT_OF_PROCESS or name in roots.OTHERS:
                 continue
             for item in items():
                 if os.path.realpath(item.key) in wanted:
