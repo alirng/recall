@@ -21,9 +21,11 @@ classifiers = [
 dependencies = ["mcp>=2.3,<3", "pyyaml>=6", "jsonschema>=4.20"]
 
 [project.urls]
-Homepage = "https://github.com/alirng/recall"
+Homepage = "https://rererecall.com"
+Documentation = "https://github.com/alirng/recall/tree/main/docs"
+Source = "https://github.com/alirng/recall"
 Issues = "https://github.com/alirng/recall/issues"
-Changelog = "https://github.com/alirng/recall/blob/main/CHANGELOG.md"
+Changelog = "https://rererecall.com/changelog/"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1"]
