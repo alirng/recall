@@ -30,6 +30,14 @@ from itertools import combinations
 from . import paths
 
 LIVE_SECONDS = 15 * 60  # a session touched this recently counts as live
+# What makes another chat's open changes worth raising at an edit (situation_for): it is working now,
+# and it edited this file recently. "Working now" is its last message; the chat's own edit times
+# come from its transcript or the edit log. Within one working copy the two chats can overwrite each
+# other, so both must be close; across branches the clash is for merge time, so the bar is lower.
+HOT_CHAT_SECONDS = 5 * 60
+HOT_FILE_SECONDS = 15 * 60
+NEAR_CHAT_SECONDS = 30 * 60
+NEAR_FILE_SECONDS = 60 * 60
 CACHE = os.path.join(paths.HOME, "cache", "status.json")
 CACHE_VERSION = 3  # bump when _read's record changes, so old entries are read again (3: redacted)
 WARNED = os.path.join(paths.HOME, "cache", "edit-warnings.json")
@@ -347,7 +355,9 @@ def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
             _edited(s.edits, f, max(at, s.edits.get(f) or 0))
         for f, spans in e["regions"].items():
             s.regions.setdefault(f, []).extend(spans)
-    return found
+    # The window is the chat's last message: a transcript rewritten by an app (Claude's desktop
+    # app does on startup) reads as recent in its mtime, and a chat from days ago would count.
+    return [s for s in found if s.updated_at >= since]
 
 
 def _log(
@@ -966,6 +976,27 @@ PRESETS = {
 }
 
 
+def situation_for(same: bool, apart: bool, conflict, idle: float, file_age: float | None) -> str:
+    """Which situation another chat's open changes to the file being edited are, for the person's
+    rule. `same`: they are in this working copy; `apart`: the two chats' edits are on different
+    lines; `conflict`: a function, asked only for a chat close enough to matter in another
+    checkout, whether merging the two checkouts would conflict; `idle`: seconds since the other
+    chat's last message; `file_age`: seconds since it last edited this file (None: not recorded).
+    Open changes of a chat that is not at this file now are the quiet `overlap`, which nothing
+    acts on by default, so a finished chat, an orchestrator that handed a file over or a
+    sub-session working through it does not stop anyone."""
+
+    def recent(limit: float) -> bool:
+        return file_age is None or file_age <= limit
+
+    if same:
+        if idle <= HOT_CHAT_SECONDS and recent(HOT_FILE_SECONDS):
+            return "apart" if apart else "same_copy"
+    elif idle <= NEAR_CHAT_SECONDS and recent(NEAR_FILE_SECONDS) and conflict():
+        return "conflict"
+    return "overlap"
+
+
 def rules() -> dict[str, str]:
     from . import config
 
@@ -1012,10 +1043,14 @@ def status(since: float) -> dict:
     alias = {k: s.id for s in sessions for k in (s.id, s.source) if k} | {"recall": "recall"}
 
     # A file that two sessions in one repo both edited and that is still open where each
-    # edited it; work already in the default branch drops out. Its level:
-    #   act    the checkouts would conflict on it if merged now, or two live sessions are
-    #          editing it in the same working tree
-    #   watch  anything else: it merges clean, or one of the sessions has gone quiet
+    # edited it; work already in the default branch drops out. Its situation is the worst
+    # between any two of the chats, as the edit hook reads it (situation_for) for both: each
+    # must be at the file now. Only the two that are something to act on are listed in
+    # `overlaps` (level "act"):
+    #   same_copy  two chats are editing the same lines of one working copy now
+    #   conflict   two chats are working on branches that would conflict on it, now
+    # The rest (other lines of one working copy, a clean merge, a chat that has finished) is
+    # in `quiet`: changes left open in a checkout are not a thing for the person to do.
     # (repo, file) -> {chat id: the checkout it last edited the file in}
     touched: dict[tuple[str, str], dict[str, str]] = {}
     by_id = {s.id: s for s in sessions}
@@ -1034,12 +1069,25 @@ def status(since: float) -> dict:
         conflict = None
         if len(tops) > 1:
             conflict = any(_conflict(checkouts[a], checkouts[b], f) for a, b in combinations(tops, 2))
-        spans = [group[sid].regions.get(os.path.join(side[sid], f), []) for sid in group]
-        apart = conflict is None and live and all(_apart(a, b) for a, b in combinations(spans, 2))
-        level = "act" if conflict or (conflict is None and live and not apart) else "watch"
-        situation = (
-            "conflict" if conflict else "apart" if apart else "same_copy" if conflict is None and live else "overlap"
-        )
+        when = {sid: w for sid in group for t, rel, w in group[sid].touched if rel == f and t == side[sid]}
+        idle = {sid: now - group[sid].updated_at for sid in group}
+        age = {sid: now - when[sid] if when.get(sid) else None for sid in group}
+        spans = {sid: group[sid].regions.get(os.path.join(side[sid], f), []) for sid in group}
+        pairs = []
+        for a, b in combinations(group, 2):
+            near = [
+                situation_for(
+                    side[a] == side[b],
+                    _apart(spans[a], spans[b]),
+                    lambda ta=side[a], tb=side[b], f=f: _conflict(checkouts[ta], checkouts[tb], f),
+                    idle[x],
+                    age[x],
+                )
+                for x in (a, b)
+            ]
+            pairs.append("overlap" if "overlap" in near else near[0])
+        situation = min(pairs, key=list(SITUATIONS).index)
+        level = "act" if situation in ("same_copy", "conflict") else "watch"
         overlaps.append(
             {
                 "repo": _repo_name(repo),
@@ -1081,7 +1129,8 @@ def status(since: float) -> dict:
                 },
             }
         )
-    overlaps.sort(key=lambda o: o["level"] != "act")
+    quiet = [o for o in overlaps if o["level"] != "act"]
+    overlaps = [o for o in overlaps if o["level"] == "act"]
 
     out = []
     for s in sessions:
@@ -1117,6 +1166,7 @@ def status(since: float) -> dict:
         "level": "act" if "act" in levels else "watch" if levels else "none",
         "sessions": out,
         "overlaps": overlaps,
+        "quiet": quiet,
     }
 
 
@@ -1359,12 +1409,14 @@ def check_edit(
         if not checkout(top):  # without this checkout's own state nothing can be judged
             return None
         spans = s.regions.get(os.path.join(t, rel), [])
-        if t == top and time.time() - s.updated_at <= LIVE_SECONDS:
-            situation = "apart" if lines and _apart(lines, spans) else "same_copy"
-        elif t != top and _conflict(checkouts[top], c, rel):
-            situation = "conflict"
-        else:
-            situation = "overlap"
+        idle, file_age = time.time() - s.updated_at, time.time() - when if when else None
+        situation = situation_for(
+            t == top,
+            bool(lines and _apart(lines, spans)),
+            lambda c=c: _conflict(checkouts[top], c, rel),
+            idle,
+            file_age,
+        )
         if want[situation] in acts:
             found.append((situation, s, c, theirs, t, spans))
     raise_ = [x for x in found if rank[x[0]] > seen.get(x[1].id, -1)]

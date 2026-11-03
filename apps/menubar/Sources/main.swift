@@ -236,7 +236,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func togglePanel() {
         guard let button = item.button else { return }
-        if !panel.isOpen { refresh() }
+        if !panel.isOpen { refresh(); logUse("open") }
         panel.toggle(below: button)
     }
 
@@ -259,6 +259,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.rebuild()
             }
         }
+    }
+
+    /// One line in recall's usage log (the action and the time, nothing else), so a later look at
+    /// whether the menu bar earns its place has numbers: `recall menubar-use open|show|resolve`.
+    func logUse(_ action: String) {
+        var command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
+        if let at = command.lastIndex(of: "status") { command.removeSubrange(at...) }
+        command += ["menubar-use", action]
+        DispatchQueue.global(qos: .utility).async { _ = Self.run(command) }
     }
 
     struct RunError: Error { let message: String }
@@ -452,6 +461,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Resolve: `recall resolve` messages every chat in the overlap; each reads it at its next
     /// edit, turn end or prompt. The row shows Sending… until the refresh brings back sent_at.
     func resolve(_ o: Overlap) {
+        logUse("resolve")
         var command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
         if let at = command.lastIndex(of: "status") { command.removeSubrange(at...) }
         command += ["resolve", "--repo", o.repo, "--file", o.file, "--json"]
@@ -479,6 +489,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func showChanges(_ o: Overlap, titles: [String: String]) {
+        logUse("show")
         DispatchQueue.global(qos: .userInitiated).async {
             var text = ""
             var done = Set<String>()

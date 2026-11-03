@@ -1,6 +1,7 @@
 """recall's log of its own use, so what gets built next follows what actually helps.
 
-Every MCP tool call, session-start load, and search or read from the CLI adds one line to
+Every MCP tool call, session-start load, and search or read from the CLI, and each time the menu bar
+panel is opened or its Resolve or Show changes is pressed, adds one line to
 usage.jsonl in recall's data folder: when, through what, which agent, the words asked
 and the ids that came back. It never holds chat or note text, and it stays on this machine.
 `recall usage` sums it up; set `usage_log = false` in config.toml to stop it.
@@ -21,6 +22,7 @@ KINDS = {
     "recent": {"recent_chats", "recent"},
     "load": {"session_start", "project_memory"},
     "jit": {"jit"},
+    "menubar": {"panel_open", "panel_show", "panel_resolve"},
 }
 _enabled: bool | None = None
 
