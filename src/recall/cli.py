@@ -545,7 +545,7 @@ def cmd_usage(a) -> None:
         print(f"Nothing logged yet{' in that window' if a.since else ''} ({usage.LOG}).")
         return
     print(f"{s['calls']} calls since {s['since'][:16].replace('T', ' ')}\n")
-    kinds = ["search", "read", "recent", "load", "jit", "other"]
+    kinds = ["search", "read", "recent", "load", "jit", "menubar", "other"]
     print("".ljust(10) + "".join(k.rjust(8) for k in kinds))
     for who, counts in s["by_agent"].items():
         print(who.ljust(10) + "".join(str(counts.get(k, 0) or "·").rjust(8) for k in kinds))
@@ -643,6 +643,8 @@ def cmd_status(a) -> None:
             print(f"    pid {x['pid']} · since {since}" + (f" · {chat}" if chat else ""))
     if not s["overlaps"] and not s["outlived"]:
         print("Nothing needs you.")
+    if s["quiet"]:
+        print(f"{len(s['quiet'])} more files are open in several chats, none at them now (recall status --json).")
     live = [x for x in s["sessions"] if x["live"]]
     print(f"\n{len(live)} live, {len(s['sessions'])} since {a.since}")
     repos: dict[str, list] = {}
@@ -655,6 +657,13 @@ def cmd_status(a) -> None:
     for line in power.summary():
         print(f"\n{line}")
     print("\n" + autopilot.summary_line(rows))
+
+
+def cmd_menubar_use(a) -> None:
+    """The menu bar app's own use, one usage.jsonl row: the action and when, nothing else."""
+    from . import usage
+
+    usage.record("menubar", f"panel_{a.action}")
 
 
 def cmd_resolve(a) -> None:
@@ -1173,6 +1182,8 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--file", required=True, help="the file, relative to the repo, as recall status shows it")
     sp.add_argument("--since", default="12h")
     sp.add_argument("--json", action="store_true")
+    sp = command("menubar-use", cmd_menubar_use, "log that the menu bar panel was opened or used (the app calls it)")
+    sp.add_argument("action", choices=["open", "show", "resolve"])
     sp = command("jit", cmd_jit, "what recall would hand an agent mid-session, and why")
     sp.add_argument("prompt", nargs="*", help="a prompt to match against past chats and notes")
     sp.add_argument("--cwd", help="the project folder (default: the current folder)")

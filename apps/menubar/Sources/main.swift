@@ -226,21 +226,24 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuild()
         refresh()
         // Opening the menu always refreshes; the timer only keeps the icon honest, so it can be slow.
-        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.refresh() }
+        // Each refresh is a `recall status` run (about 1.5 s of CPU, mostly git), so every 15 minutes, with
+        // slack that lets macOS fold it into other wakeups.
+        let timer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in self?.refresh() }
+        timer.tolerance = 120
     }
 
     func menuWillOpen(_ menu: NSMenu) { refresh() }
 
     @objc func togglePanel() {
         guard let button = item.button else { return }
-        if !panel.isOpen { refresh() }
+        if !panel.isOpen { refresh(); logUse("open") }
         panel.toggle(below: button)
     }
 
     @objc func refresh() {
         guard !running else { again = true; return }
         running = true
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .utility).async {
             let result = Self.fetch()
             DispatchQueue.main.async {
                 self.running = false
@@ -256,6 +259,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.rebuild()
             }
         }
+    }
+
+    /// One line in recall's usage log (the action and the time, nothing else), so a later look at
+    /// whether the menu bar earns its place has numbers: `recall menubar-use open|show|resolve`.
+    func logUse(_ action: String) {
+        var command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
+        if let at = command.lastIndex(of: "status") { command.removeSubrange(at...) }
+        command += ["menubar-use", action]
+        DispatchQueue.global(qos: .utility).async { _ = Self.run(command) }
     }
 
     struct RunError: Error { let message: String }
@@ -449,6 +461,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Resolve: `recall resolve` messages every chat in the overlap; each reads it at its next
     /// edit, turn end or prompt. The row shows Sending… until the refresh brings back sent_at.
     func resolve(_ o: Overlap) {
+        logUse("resolve")
         var command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
         if let at = command.lastIndex(of: "status") { command.removeSubrange(at...) }
         command += ["resolve", "--repo", o.repo, "--file", o.file, "--json"]
@@ -476,6 +489,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func showChanges(_ o: Overlap, titles: [String: String]) {
+        logUse("show")
         DispatchQueue.global(qos: .userInitiated).async {
             var text = ""
             var done = Set<String>()

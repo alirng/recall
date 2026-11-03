@@ -1,9 +1,11 @@
 # Several chats, one repo
 
 Run agents side by side and two of them will sooner or later change the same file. `recall
-status` shows what each chat is working on now, on which branch, and which files two chats
-both have open changes to: whether the two would conflict if merged now, or share one working
-copy.
+status` shows what each chat is working on now, on which branch, and the files two chats are
+at right now: two chats editing the same lines of one working copy, or on two branches that
+would conflict on the file. Files that are merely still open in several checkouts, because a
+chat finished or its changes merge cleanly, are counted as "more files open" and listed under
+`quiet` in `--json`; the menu bar's "Needs you" holds only the first kind.
 
 ```text
 $ recall status
@@ -26,16 +28,20 @@ offers presets; these are the recommended ones):
 
 ```toml
 [coordination]
-same_copy = "ask"    # another live chat is editing the same lines of this working copy
+same_copy = "ask"    # another chat is at the same lines of this working copy right now
 conflict = "tell"    # the two branches would conflict on this file if merged now
-apart = "tell"       # another live chat is editing this working copy, on other lines
-overlap = "off"      # open in both, but merges cleanly (or the other chat has gone quiet)
+apart = "tell"       # another chat is at this working copy right now, on other lines
+overlap = "off"      # open in both, but merges cleanly, or the other chat is not at the file
 ```
 
 `ask` stops the agent once so it checks with you; `worktree` stops it once and has it move
 its work into its own git worktree; `tell` lets the edit through and tells the agent, which
-mentions it to you; `off` does nothing. Each other chat is raised once, with every file the
-two share, and again only if things get worse. The hooks record which lines each edit
+mentions it to you; `off` does nothing. A chat counts as "at the file right now" only if it wrote something in
+the last 5 minutes and edited that file in the last 15 (30 and 60 for a clash across branches). A
+chat that has finished, an orchestrator that handed a file over to the sub-session now working on
+it, and a branch that was merged days ago are `overlap`, which does nothing by default. Chats whose
+last message is older than the hook's window are not looked at at all. Each other chat is raised
+once, with every file the two share, and again only if things get worse. The hooks record which lines each edit
 changes, so two chats working on different parts of one file get `apart`, not `same_copy`.
 
 The other chat hears about it too: recall messages it which chat is about to change which

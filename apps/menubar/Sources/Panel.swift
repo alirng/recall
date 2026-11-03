@@ -207,7 +207,7 @@ struct PanelView: View {
                 if count > 0 { Label(text: "\(count)") }
             }
             if count == 0 {
-                Text("Nothing needs you. No two chats have open changes to the same file.")
+                Text("Nothing needs you. No two chats are at the same file right now.")
                     .font(PaperMono.font(12.5, 390, prose: true)).foregroundStyle(p.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
