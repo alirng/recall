@@ -50,7 +50,9 @@ def reroute_mentions(con) -> int:
             known[name] = (row["k"], row["project_name"])
     moved = 0
     for c in con.execute(
+        # A remembered rule (remember.py) is already filed where the developer said.
         "select id, project_name, title, body from candidates where status='new' and scope='project'"
+        " and session_id not like 'remember:%'"
     ).fetchall():
         text = f" {c['title']} {c['body']} ".lower()
         own = (c["project_name"] or "").lower()

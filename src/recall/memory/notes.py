@@ -21,7 +21,8 @@ from the rules still active (one rule: its text; several: a bullet list), so wha
 reads the body sees only what holds now. A retired rule stays in the frontmatter with
 the date, the reason and the rule that replaced it. Notes written before rules existed
 read as a note with one rule. The body stays the place to edit: an edit there is read
-back into the rules (see _edits).
+back into the rules (see _edits). A rule the developer states with `recall remember` is written
+at once as a note of its own, without waiting for the nightly run (see remember.py).
 """
 
 import fcntl
@@ -83,6 +84,7 @@ class Rule:
     reason: str = ""  # why it was retired
     replaced_by: str | None = None  # id of the rule that replaced it, in the same note
     edited: str = ""  # date the developer last changed it by hand
+    stated: str = ""  # when `recall remember` saved it (ISO time to the second; see remember.py)
 
     @property
     def active(self) -> bool:
@@ -115,6 +117,7 @@ class Note:
     superseded_by: str | None = None
     related: list[str] = field(default_factory=list)  # note ids, kept by links.relink
     reach: str | None = None  # global notes: "everywhere" or "context" (see reach.py)
+    stated_in: str | None = None  # the folder `recall remember --global` ran in: it routes like a chat there
     footer: str = field(default="", repr=False)  # the related-notes footer as last written
     stamp: str = field(default="", repr=False)  # hash of the file as last read or written (see NoteStore.changed)
     path: str = ""
@@ -144,6 +147,8 @@ class Note:
             age_days = 365
         recency = 0.5 ** (max(age_days, 0) / 180)  # half-life of six months
         corroboration = 1 + 0.5 * min(len(self.sources) - 1, 4)
+        if any(r.stated and r.said_by == "developer" for r in self.active_rules):
+            corroboration = 3.0  # the developer stated it with `recall remember`: as sure as many chats
         return CONFIDENCE.get(self.confidence, 0.5) * corroboration * (0.4 + 0.6 * recency)
 
 
@@ -333,8 +338,9 @@ class NoteStore:
                 by_project.setdefault(n.project, []).append(n)
             elif n.scope == "global":
                 # A preference tied to a context but only ever seen in one project is that
-                # project's preference, so it is listed there rather than across the context.
-                seen = contexts.projects_of_chats(n.sources) if n.reach == "context" else set()
+                # project's preference, so it is listed there rather than across the context;
+                # one the developer asked to remember globally stays global.
+                seen = contexts.projects_of_chats(n.sources) if n.reach == "context" and not n.stated_in else set()
                 if len(seen) == 1:
                     by_project.setdefault(seen.pop(), []).append(n)
                 else:
@@ -524,7 +530,7 @@ def _rule_from(entry) -> Rule | None:
     if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
         return None
     known = {k: v for k, v in entry.items() if k in Rule.__dataclass_fields__}
-    for k in ("first_seen", "last_seen", "retired", "edited"):
+    for k in ("first_seen", "last_seen", "retired", "edited", "stated"):
         if k in known:
             known[k] = str(known[k]) if known[k] else ""
     known["text"] = str(known["text"]).strip()
@@ -741,7 +747,7 @@ def _by_context(prefs: list[Note]) -> list[tuple[str, list[Note]]]:
         if n.reach != "context":
             headings = ["How you work"]
         else:
-            seen = contexts.of_chats(n.sources, table)
+            seen = placed(n, table)
             headings = [f"How you work: {c}" for c in sorted(seen)] or ["How you work: unplaced"]
         for heading in headings:
             groups.setdefault(heading, []).append(n)
@@ -753,15 +759,24 @@ def audience(n: Note, table: dict[str, list[str]]) -> str | None:
     applies when it compiles the index (compile and _by_context above). None: everyone, for a
     preference judged to hold everywhere or not judged yet. Otherwise a JSON list of who:
     `project:<key>` when its chats ran in a single project (it is that project's preference),
-    else `ctx:<name>` for each context they ran in; empty when they ran outside every one."""
+    else `ctx:<name>` for each context they ran in (placed); empty when they ran outside every one."""
     if n.scope != "global" or n.reach != "context":
         return None
-    seen = contexts.projects_of_chats(n.sources)
+    seen = set() if n.stated_in else contexts.projects_of_chats(n.sources)
     if len(seen) == 1:
         return json.dumps([f"project:{next(iter(seen))}"])
     if not table:
         return None
-    return json.dumps([f"ctx:{c}" for c in sorted(contexts.of_chats(n.sources, table))])
+    return json.dumps([f"ctx:{c}" for c in sorted(placed(n, table))])
+
+
+def placed(n: Note, table: dict[str, list[str]]) -> set[str]:
+    """The contexts a global preference was learned in: those its chats ran in, and the one of
+    the folder `recall remember --global` ran in."""
+    seen = contexts.of_chats(n.sources, table)
+    if n.stated_in and (c := contexts.of_folder(n.stated_in, table)):
+        seen.add(c)
+    return seen
 
 
 def pushed(note: Note) -> list[Rule] | None:

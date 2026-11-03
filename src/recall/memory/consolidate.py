@@ -11,6 +11,10 @@ checking each one, and nothing is written until the whole batch is checked:
   nightly job reads newest first) cannot undo a newer rule;
 - a rule leaves a note only through a retire that names it: one that went missing any
   other way is put back, and the log says so;
+- a rule the developer stated with `recall remember` keeps their words: only a newer chat in
+  which they typed something it does not say can refine or retire it (see _kept);
+- a candidate from `recall remember` is already a rule (remember.py): it can retire the older
+  rules it replaces and fold in a rule that says the same, and nothing else (see _remembered);
 - a note whose file changed while the batch ran (a hand edit) is not written from the stale
   copy: its candidates stay for the next run;
 - the same goes for a hand edit waiting to be read back into a note's rules, which is written
@@ -29,7 +33,7 @@ from datetime import datetime
 
 from ..chats.redact import redact
 from ..llm import Client
-from . import prompts, said
+from . import prompts, remember, said
 from .notes import CONFIDENCE, REMOVED_BY_HAND, Note, NoteStore, Rule, clean_title, new_id, rule_id, sync, today
 
 SYSTEM, _ = prompts.load("consolidate")
@@ -335,9 +339,12 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
         candidates = [by_number[i] for i in dict.fromkeys(op["candidates"]) if i in by_number]
         if not candidates:
             continue
+        op = {**op, "note_id": op["note_id"].strip().strip("[]"), "rule_id": op["rule_id"].strip().strip("[]")}
+        candidates = _remembered(b, op, candidates, stats, log)
+        if not candidates:
+            continue
         kind, texts = op["op"], _texts(op["rules"])
         fallback = _texts([c["body"] for c in candidates])
-        op = {**op, "note_id": op["note_id"].strip().strip("[]"), "rule_id": op["rule_id"].strip().strip("[]")}
         if kind == "discard":
             for c in candidates:
                 b.discarded.setdefault(c["id"], redact(op["reason"])[:300] or "discarded")
@@ -358,6 +365,15 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
             for c in candidates:
                 b.discarded.setdefault(c["id"], f"older than rule {found[1].id}, last seen {found[1].seen}")
             continue
+        if found and kind in ("refine", "retire") and not _kept(b, found[1], candidates):
+            if kind == "retire":
+                stats["refused, the developer's remembered rule"] += 1
+                log(f"  refused retire of {found[1].id}: the developer stated it with recall remember")
+                for c in candidates:
+                    b.discarded.setdefault(c["id"], f"the developer stated rule {found[1].id} with recall remember")
+                continue
+            kind, texts = "confirm", []  # their words stay; the chat only confirms them
+            stats["kept the developer's words"] += 1
         if kind == "add" and not b.note(op["note_id"]):
             kind = "create"  # an unknown or out-of-scope note id: a new note
         if kind == "create":
@@ -407,6 +423,60 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
             b.merged.setdefault(c["id"], note.id)
     _restore(b, stats, log)
     _commit(con, store, notes, b, by_number, stats, log)
+
+
+def _kept(b: _Batch, rule: Rule, candidates) -> bool:
+    """May these candidates refine or retire this rule? Any rule but one the developer stated
+    with `recall remember`, which only the developer can change: a chat newer than the remember,
+    other than the one it ran in, with a quote they typed. A chat that ran on after the remember
+    has a later timestamp, but what it says may come from before, so that chat never counts."""
+    stated = remember.stamp_of(rule)
+    if stated is None or rule.said_by != "developer":
+        return True
+    return any((c["chat_ts"] or 0) > stated and c["session_id"] not in rule.sources and b.typed(c) for c in candidates)
+
+
+def _remembered(b: _Batch, op: dict, candidates: list, stats: Counter, log) -> list:
+    """Apply what an operation does with candidates from `recall remember`, and return the other
+    candidates for the operation to go on with. Such a candidate's rule is already in the notes,
+    so it is merged into that rule's note whatever the operation. On top of that, a rule the
+    developer stated:
+    - retires the rule the operation names when it is an older one it replaces;
+    - retires the rule a confirm or refine names when that rule says the same (each covers
+      most of the other's words: said.supports both ways), folding it in.
+    The operation's other candidates then state the remembered rule, and support it; otherwise
+    they go on with the operation. An agent's remembered rule (said_by agent) changes nothing else."""
+    rest = [c for c in candidates if not remember.anchor(c["session_id"])]
+    for c in candidates:
+        if not (saved := remember.anchor(c["session_id"])):
+            continue
+        note_id, rid = saved
+        own = b.rule(note_id, rid)
+        if own is None:  # deleted or edited away by hand since: nothing to merge into
+            b.discarded.setdefault(c["id"], f"remembered rule {rid} is no longer in the notes")
+            continue
+        b.merged.setdefault(c["id"], own[0].id)
+        found = b.rule(op["note_id"], op["rule_id"]) if op["op"] in ("confirm", "refine", "retire") else None
+        if not found or found[1] is own[1] or c["speaker"] != "user" or own[1].said_by != "developer":
+            continue
+        note, rule = found
+        stated = remember.stamp_of(own[1]) or c["chat_ts"] or 0
+        if (remember.stamp_of(rule) or 0) >= stated or _date(stated) < rule.seen:
+            continue  # the other rule is as new as this one: nothing to replace
+        same = said.supports(own[1].text, rule.text) and said.supports(rule.text, own[1].text)
+        if op["op"] == "retire" or same:
+            rule.status, rule.retired = "retired", _date(stated)
+            how = "replaced" if op["op"] == "retire" else "restated"
+            rule.reason = f"{how} by the developer's rule {own[1].id} in {own[0].id}"
+            b.retired.add((note.id, rule.id))
+            stats["retired by a remembered rule"] += 1
+            log(f"  retired {rule.id} in {note.id}: {rule.reason}")
+            if rest:
+                _support(b, own[1], rest)
+                for r in rest:
+                    b.merged.setdefault(r["id"], own[0].id)
+                rest = []
+    return rest
 
 
 def _restore(b: _Batch, stats: Counter, log) -> None:
@@ -526,7 +596,8 @@ def _support(b: _Batch, rule: Rule, candidates, fresh: bool = False) -> None:
     Unset is left only on rules written before speakers were recorded (notes.pushed shows those
     as background), and confirming one changes nothing but a typed quote."""
     rule.last_seen = max(rule.last_seen, _date(max(c["chat_ts"] or 0 for c in candidates)))
-    rule.sources = sorted(set(rule.sources) | {c["session_id"] for c in candidates})
+    chats = {c["session_id"] for c in candidates if not remember.anchor(c["session_id"])}
+    rule.sources = sorted(set(rule.sources) | chats)
     risky = said.risky(rule.text)
     typed = (
         None if risky else next((c for c in candidates if b.typed(c) and said.supports(c["evidence"], rule.text)), None)
@@ -575,7 +646,8 @@ def _render(scope: Scope, existing: list[Note], batch, rejected) -> str:
         lines.append(f"[{n.id}] ({n.type}, {n.confidence}, {len(n.sources)} source chats) {n.title}")
         for r in n.rules:
             if r.active:
-                lines.append(f"  - [{r.id}] ({r.first_seen or '?'} to {r.seen or '?'}) {' '.join(r.text.split())}")
+                own = ", the developer's own words" if r.stated and r.said_by == "developer" else ""
+                lines.append(f"  - [{r.id}] ({r.first_seen or '?'} to {r.seen or '?'}{own}) {' '.join(r.text.split())}")
         retired = sorted((r for r in n.rules if not r.active), key=lambda r: r.retired)[-RETIRED_SHOWN:]
         for r in retired:
             lines.append(f"  - retired {r.retired or '?'}, no longer holds: {' '.join(r.text.split())[:160]}")
@@ -584,6 +656,13 @@ def _render(scope: Scope, existing: list[Note], batch, rejected) -> str:
     lines += ["", "New candidates:"]
     for i, c in enumerate(batch, 1):
         why = f" Why: {c['why']}" if c["why"] else ""
+        if saved := remember.anchor(c["session_id"]):  # the developer stated it: already rule saved[1]
+            lines.append(
+                f"{i}. ({_date(c['chat_ts'])}, {c['type']}, stated by the "
+                f"{'developer' if c['speaker'] == 'user' else 'agent'} with recall remember, already saved as rule "
+                f"[{saved[1]}] in note [{saved[0]}]) {c['body']}"
+            )
+            continue
         lines.append(
             f"{i}. ({_date(c['chat_ts'])}, {c['type']}, said by {c['speaker']}, {c['confidence']}) "
             f'{c["title"]}: {c["body"]}{why} Evidence: "{c["evidence"][:160]}"'

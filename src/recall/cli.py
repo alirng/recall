@@ -315,6 +315,36 @@ def cmd_memory(a) -> None:
             print(f"  {r['scope']:8} {r['p'][:24]:24} {r['type']:10} {r['c']}")
 
 
+def cmd_remember(a) -> None:
+    from .memory import remember
+    from .memory.notes import NoteStore, writing
+
+    folder = os.path.abspath(os.path.expanduser(a.project or os.getcwd()))
+    rule = " ".join(a.rule)
+    try:
+        said_by, chat, how = remember.speaker(rule, a.quote, a.chat, folder)
+        with writing(timeout=30) as free:
+            if not free:
+                sys.exit("a memory run is updating notes right now; try again in a minute")
+            notes = NoteStore()
+            done = remember.remember(notes, rule, folder, "global" if a.glob else "project", said_by, a.quote, chat)
+            remember.save(notes, done, log=lambda m: print(m, file=sys.stderr))
+    except remember.Refused as e:
+        sys.exit(f"not saved: {e}")
+    n, r = done.note, done.rule
+    where = n.project_name or n.project if n.scope == "project" else "every project"
+    if n.scope == "global" and n.reach == "context":
+        where += (
+            f" in {', '.join(done.contexts)}"
+            if done.contexts
+            else " (no [contexts] folder holds this one: searchable only)"
+        )
+    print(f"{'saved' if done.new else 'already there; confirmed'}: {n.id} rule {r.id}, for {where}")
+    print(f"said_by: {r.said_by} ({how})")
+    if r.said_by != "developer":
+        print("  agents are not handed it unasked until the nightly run finds you typed it")
+
+
 def cmd_context(a) -> None:
     if a.hook:  # the old session-start hook command; `recall hook` answers it now
         return cmd_hook(a)
@@ -1046,6 +1076,12 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("action", nargs="?", choices=["stats", "search", "show", "link"], default="stats")
     sp.add_argument("terms", nargs="*")
     sp.add_argument("--project")
+    sp = command("remember", cmd_remember, "save a rule you state into memory now")
+    sp.add_argument("rule", nargs="+", help="the rule, in your words")
+    sp.add_argument("--global", dest="glob", action="store_true", help="for every project in this context")
+    sp.add_argument("--project", metavar="PATH", help="the project's folder (default: the current one)")
+    sp.add_argument("--quote", help="agents: the person's own words that state the rule, verbatim")
+    sp.add_argument("--chat", help="agents: the chat id the person stated it in")
     sp = command("context", cmd_context, "print the memory block agents load at session start")
     sp.add_argument("--cwd", help="project folder (default: the current directory)")
     sp.add_argument("--hook", action="store_true", help="old hook entry; same as `recall hook`")

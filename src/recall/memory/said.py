@@ -32,6 +32,13 @@ what they said, and anything that can write the notes folder can write the field
 act on a rule because of it; recall uses it only to hold back (notes.pushed): a rule only the
 agent stated is never handed to an agent unasked.
 
+A rule saved with `recall remember` (remember.py) gets the mark by a stricter path, since it is
+written at once rather than read from a finished chat (see `stated`): typed at the person's own
+terminal, or found word for word in one of the person's latest typed turns of the live chat the
+command ran in. Nothing an agent reads can reach those turns, so a page or tool output that tells
+an agent to remember something produces at most a `said_by: agent` candidate, which no session is
+handed unasked (notes.pushed); the nightly run confirms it only if a typed quote supports it.
+
 These are heuristics. A paste with no fence, quote mark or heading (a log or an email pasted
 bare) still passes as typed; the PR lists the limits.
 Whatever the mark, a convention never authorizes a network, destructive or exfiltrating
@@ -131,6 +138,21 @@ def typed_quote(con, session_id: str, evidence: str) -> bool:
 
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+STATED_QUOTE_WORDS = 2  # a remembered rule is checked against the person's latest turns only
+
+
+def stated(quote: str, rule: str, turns: list[str]) -> bool:
+    """Did the person type this rule just now? `turns` are the typed parts (typed_text) of their
+    latest turns in the live chat `recall remember` ran in, with the arguments of a `/recall`
+    command they typed. The quote, the person's own words, must stand in one of them, the rule
+    must say what the quote says (supports), and it must ask for nothing risky. The quote may be
+    short ("use pnpm"): it is looked for only in the last few turns, not across a whole chat."""
+    words = _norm(quote).split()
+    if len(words) < STATED_QUOTE_WORDS or risky(rule) or not supports(quote, rule):
+        return False
+    return any(f" {' '.join(words)} " in f" {_norm(t)} " for t in turns)
 
 
 # --- the rule -----------------------------------------------------------------------------
