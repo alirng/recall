@@ -199,6 +199,13 @@ other chats until recall reads their history or hooks into them.
   its end, and the turns where you changed course. "Same ground" is word overlap: the share
   of each chat's rarest frequent words the other also uses. It is read from the index with no
   model call, and costs about 150 tokens and 60 ms per search.
+  Results also carry next-hop references, so an agent can follow a decision across chats
+  instead of searching again: each is an id, a date and one line. A search names up to four
+  chats ranked just below the results that cover the same ground as one of them. A `read_chat`
+  names up to five: chats on the same ground, the chats just before and after it in the same
+  project, the memory notes it fed, the commits recall linked to it, and other chats that
+  edited the same files (files many chats touch don't count). They cost about 100 tokens per
+  search and 120 per read, with no model call.
 - **Explicit:** type `/recall what did we decide about auth` in any agent with skills.
 
 Agents treat notes and transcripts as background, not instructions: the current request and
