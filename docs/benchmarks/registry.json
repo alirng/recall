@@ -321,6 +321,20 @@
       "same_day": false,
       "metrics": {"accuracy": {"unit": "fraction", "better": "higher"}}
     },
+    "beam-100k": {
+      "title": "BEAM 100K: rubric score",
+      "description": "recall searches each conversation, cut into chats of about 12k characters; a reader answers from the top 12 chats within 40k tokens; a judge scores each rubric item 0, 0.5 or 1, and event ordering by Kendall tau-b. The score is the mean of the ten abilities' means. recall's own answer prompt, not BEAM's.",
+      "corpus": "public",
+      "dataset": {"name": "BEAM 100K", "url": "https://huggingface.co/datasets/Mohammadta/BEAM", "cases": "20 conversations, 400 questions"},
+      "run": "uv run --with pyarrow recall eval beam --cases 100K-00000-of-00001.parquet --hybrid --qa claude:claude-haiku-5-5 --judge claude:claude-opus-5-5 --top-k 12",
+      "evals": [],
+      "conditions": {
+        "arm": {"values": ["top12-chats"], "about": "what the reader reads"}
+      },
+      "comparable_on": ["model", "judge", "conditions.arm"],
+      "same_day": false,
+      "metrics": {"accuracy": {"unit": "fraction", "better": "higher", "about": "mean of the ten abilities' means"}}
+    },
     "halumem": {
       "title": "HaluMem Medium: memory extraction and updates",
       "description": "Third-party: the paper's authors ran each product's memory API over synthetic personal-life sessions with gold memory points.",
