@@ -6,7 +6,8 @@ Nightly. Each folder is a root with a stable name (claude, claude-work, codex, c
 cursor-nightly). discover() finds them from the defaults, the environment, the shell's rc
 files (assignments that start a statement, `export` lines and aliases) and folders named like a config
 dir. It only reads, and from the rc files it keeps just the two variables' values and the files they
-source (in cache/rc-scans.json, so a hook does not parse them again); nothing else in them is stored or shown. A folder counts as a root once the agent has used it, and never when it is the
+source (in cache/rc-scans.json, so a hook does not parse them again); nothing else in them is stored or
+shown. A folder counts as a root once the agent has used it, and never when it is the
 home folder or above, or looks like a backup or a copy of the default.
 
 What each agent does with its root (live-checked in October 2026 unless marked):
