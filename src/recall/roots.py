@@ -522,6 +522,8 @@ OTHERS: dict[str, Other] = {
         Other("openclaw", "OpenClaw", ("{home}/.openclaw", "{home}/.kimi_openclaw"), ("OPENCLAW_STATE_DIR", "")),
         Other("copilot", "GitHub Copilot CLI", ("{home}/.copilot",), ("COPILOT_HOME", "")),
         Other("droid", "Factory Droid", ("{home}/.factory",)),
+        Other("goose", "Goose", ("{data}/goose", "{support}/Block/goose"), ("GOOSE_PATH_ROOT", "data")),
+        Other("crush", "Crush", ("{data}/crush",)),
         Other(
             "cline",
             "Cline",
