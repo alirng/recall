@@ -1,0 +1,1 @@
+**`recall api`:** a read-only HTTP and JSON door to your chats, notes, memory runs and status, on a local unix socket (mode 0600, no network port), with live updates as server-sent events. It starts on demand and exits after five idle minutes, and an open event stream costs no CPU while nothing changes. Apps use it instead of opening the index. See docs/api.md.
