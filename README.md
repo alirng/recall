@@ -218,6 +218,13 @@ A second account's chats are searchable at once, and become memory only when you
 recall can also keep every folder connected on its own, but only once you say yes to that.
 More in [docs/accounts.md](docs/accounts.md).
 
+## For apps
+
+`recall api` serves your chats, notes, memory runs and status as JSON over a local unix socket
+(mode 0600, no network port), with live updates. It is read-only, starts when a client asks and
+exits when idle, so nothing runs in between. The Mac app and the menu bar are built on it. More in
+[docs/api.md](docs/api.md).
+
 ## Grok Bot
 
 Grok Bot's personal agents keep their chats on your Mac too. If you opt in during `recall setup`,
