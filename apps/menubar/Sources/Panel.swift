@@ -9,6 +9,9 @@ import SwiftUI
 
 struct Palette {
     let paper, card, ink, body, muted, faint, ghost, line, grid, lane, accent, accentText, claude, codex: Color
+    var light = false
+    var sel: Color { ink.opacity(light ? 0.08 : 0.11) }  // the selected row: fill only (4 Nov, board F)
+    var accentSoft: Color { accent.opacity(light ? 0.14 : 0.16) }
 
     static func of(_ scheme: ColorScheme) -> Palette {
         if scheme == .light {
@@ -17,7 +20,7 @@ struct Palette {
                 paper: Color(hex: 0xFAFAFA), card: .white, ink: ink, body: ink.opacity(0.78), muted: ink.opacity(0.62),
                 faint: ink.opacity(0.32), ghost: ink.opacity(0.14), line: ink.opacity(0.3), grid: ink.opacity(0.12),
                 lane: ink.opacity(0.5), accent: Color(hex: 0xF2C14E), accentText: Color(hex: 0xA8780A),
-                claude: Color(hex: 0xD26A3C), codex: Color(hex: 0x2F6FB3)
+                claude: Color(hex: 0xD26A3C), codex: Color(hex: 0x2F6FB3), light: true
             )
         }
         let ink = Color(hex: 0xE8E6DF)
@@ -53,7 +56,18 @@ enum PaperMono {
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
     }
 
+    // Long lists ask for the same few fonts on every row, so each is built once.
+    nonisolated(unsafe) static var cache: [String: Font] = [:]
+
     static func font(_ size: CGFloat, _ weight: CGFloat = 390, prose: Bool = false) -> Font {
+        let key = "\(size)/\(weight)/\(prose)"
+        if let f = cache[key] { return f }
+        let f = make(size, weight, prose: prose)
+        cache[key] = f
+        return f
+    }
+
+    static func make(_ size: CGFloat, _ weight: CGFloat, prose: Bool) -> Font {
         var attrs: [NSFontDescriptor.AttributeName: Any] = [
             .family: "Paper Mono",
             .variation: [NSNumber(value: 0x7767_6874): weight],  // 'wght'
@@ -79,6 +93,7 @@ final class Store: ObservableObject {
 
 struct Actions {
     var refresh: () -> Void = {}
+    var open: () -> Void = {}
     var resolve: (Overlap) -> Void = { _ in }
     var showChanges: (Overlap, [String: String]) -> Void = { _, _ in }
     var quit: () -> Void = {}
@@ -130,7 +145,7 @@ final class Hover: ObservableObject {
 struct BoxButton: View {
     let title: String
     var action: () -> Void
-    @ObservedObject var hover = Hover()
+    @StateObject var hover = Hover()
     @Environment(\.colorScheme) var scheme
     var body: some View {
         let p = Palette.of(scheme)
@@ -172,6 +187,7 @@ struct PanelView: View {
             }
             rule(p)
             HStack {
+                BoxButton(title: "Open recall ⌘O", action: actions.open)
                 Spacer()
                 BoxButton(title: "Quit", action: actions.quit)
             }.padding(.horizontal, 16).padding(.vertical, 10)
@@ -283,7 +299,7 @@ struct OverlapCard: View {
                 if let at = overlap.sent_at {
                     Label(text: "Sent · " + ago(Int(Date().timeIntervalSince1970 - at)), color: p.ink)
                         .padding(.horizontal, 8).padding(.vertical, 5)
-                        .overlay(Rectangle().stroke(p.faint, style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                        .overlay(Rectangle().strokeBorder(p.faint, style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
                         .help("recall messaged every chat here; it clears when the overlap does")
                 } else if sending {
                     Label(text: "Sending…").padding(.horizontal, 8).padding(.vertical, 5)
@@ -462,6 +478,7 @@ final class PanelController {
         panel.level = .popUpMenu
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        panel.isRestorable = false
         panel.contentView = host
         window = panel
         place(below: button)
@@ -472,6 +489,7 @@ final class PanelController {
         } as Any)
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             if e.keyCode == 53 { self?.close(); return nil }
+            if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "o" { self?.actions.open(); return nil }
             return e
         } as Any)
     }
