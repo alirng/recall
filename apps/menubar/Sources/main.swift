@@ -1,5 +1,6 @@
 // recall in the menu bar: what needs you across your coding agents, and what they are working on.
 // It runs `recall status --json` (the command is set in Info.plist by build.sh) and shows the result.
+// "Open recall" (⌘O) opens the window, which reads everything through `recall api` (Window.swift).
 
 import AppKit
 
@@ -199,8 +200,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
     let store = Store()
+    let windows = WindowController()
     lazy var panel = PanelController(store: store, actions: Actions(
         refresh: { [weak self] in self?.refresh() },
+        open: { [weak self] in self?.openWindow() },
         resolve: { [weak self] o in self?.resolve(o) },
         showChanges: { [weak self] o, titles in self?.showChanges(o, titles: titles) },
         quit: { NSApp.terminate(nil) }
@@ -210,11 +213,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var updated: Date?
     var running = false
     var again = false  // a refresh was asked for while one ran (after Resolve, say)
-    // The panel by default; `defaults write com.rererecall.menubar ui menu` for the plain menu.
-    let usesMenu = UserDefaults.standard.string(forKey: "ui") == "menu"
+    // The panel by default; `"ui": "menu"` in ~/.agents/recall/app.json for the plain menu.
+    let usesMenu = AppState.load().ui == "menu"
 
     func applicationDidFinishLaunching(_ note: Notification) {
         PaperMono.register()
+        NSApp.mainMenu = mainMenu()
         if usesMenu {
             menu.delegate = self
             menu.autoenablesItems = false
@@ -230,6 +234,83 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // slack that lets macOS fold it into other wakeups.
         let timer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in self?.refresh() }
         timer.tolerance = 120
+        Probe.appearance()
+        if CommandLine.arguments.contains("--open") { openWindow() }
+        if let dir = Probe.value("--shot") { openWindow(); Probe.shots(windows, to: dir) }
+        if CommandLine.arguments.contains("--scroll-notes") { openWindow(); Probe.scrollNotes(windows) }
+        if CommandLine.arguments.contains("--scroll-chat") { openWindow(); Probe.scrollChat(windows) }
+        if let s = Probe.value("--open-after").flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + s) { self.openWindow() }
+        }
+        if CommandLine.arguments.contains("--ui-test") { openWindow(); Probe.uiTest(windows) }
+        if CommandLine.arguments.contains("--scroll-info") { openWindow(); Probe.scrollInfo(windows) }
+        if CommandLine.arguments.contains("--switch-test") { openWindow(); Probe.switchSections(windows) }
+        if let n = Probe.value("--event-storm").flatMap(Int.init) { openWindow(); Probe.storm(windows, n) }
+        if let s = Probe.value("--close-after").flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + s) { self.windows.window?.performClose(nil) }
+        }
+    }
+
+    @objc func openWindow() {
+        Probe.start()
+        panel.close()
+        windows.show()
+        logUse("window")
+    }
+
+    func applicationWillTerminate(_ note: Notification) {
+        if windows.isOpen { windows.saveState() }
+    }
+
+    /// The window's menus. With no main menu, ⌘C, ⌘V and ⌘K would do nothing in the window.
+    func mainMenu() -> NSMenu {
+        let main = NSMenu()
+        func add(_ title: String, _ items: [NSMenuItem]) {
+            let top = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: title)
+            items.forEach(sub.addItem)
+            top.submenu = sub
+            main.addItem(top)
+        }
+        func item(_ title: String, _ action: Selector, _ key: String, target: AnyObject? = nil) -> NSMenuItem {
+            let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            i.target = target
+            return i
+        }
+        add("recall", [
+            item("Open recall", #selector(openWindow), "o", target: self),
+            .separator(),
+            item("Quit recall", #selector(NSApplication.terminate(_:)), "q"),
+        ])
+        add("Edit", [
+            item("Undo", Selector(("undo:")), "z"),
+            item("Redo", Selector(("redo:")), "Z"),
+            .separator(),
+            item("Cut", #selector(NSText.cut(_:)), "x"),
+            item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Paste", #selector(NSText.paste(_:)), "v"),
+            item("Select All", #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            {
+                let i = item("Copy Note as Markdown", #selector(WindowController.copyNote), "c", target: windows)
+                i.keyEquivalentModifierMask = [.command, .shift]
+                return i
+            }(),
+            item("Find in Chat", #selector(WindowController.findInChat), "f", target: windows),
+        ])
+        add("Go", [
+            item("Search, or Go Anywhere", #selector(WindowController.focusSearch), "k", target: windows),
+            .separator(),
+            item("Memory", #selector(WindowController.goMemory), "1", target: windows),
+            item("Chats", #selector(WindowController.goChats), "2", target: windows),
+            item("Now", #selector(WindowController.goNow), "3", target: windows),
+            item("This Mac", #selector(WindowController.goThisMac), "4", target: windows),
+        ])
+        add("Window", [
+            item("Close", #selector(NSWindow.performClose(_:)), "w"),
+            item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
+        ])
+        return main
     }
 
     func menuWillOpen(_ menu: NSMenu) { refresh() }
@@ -444,6 +525,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let r = NSMenuItem(title: "Refresh", action: #selector(refresh), keyEquivalent: "r")
         r.target = self
         menu.addItem(r)
+        let o = NSMenuItem(title: "Open recall", action: #selector(openWindow), keyEquivalent: "o")
+        o.target = self
+        menu.addItem(o)
         menu.addItem(NSMenuItem(title: "Quit Recall", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
@@ -504,7 +588,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     text += "(no changes)\n\n"
                 }
             }
-            let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("recall")
+            // With recall's other files, not in ~/Library/Caches.
+            let dir = URL(fileURLWithPath: API.home + "/.agents/recall/cache/diffs")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let url = dir.appendingPathComponent("\((o.file as NSString).lastPathComponent)-both-changes.diff")
             try? text.write(to: url, atomically: true, encoding: .utf8)
@@ -567,6 +652,44 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-mark"
     }
     let rep = NSBitmapImageRep(data: sheet.tiffRepresentation!)!
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
+    exit(0)
+}
+
+// `Recall --render-icon DIR` draws the app icon (board F, "a": amber on ink) at every iconset size,
+// for build.sh to turn into an .icns with iconutil. The squircle is Apple's icon grid: an 824 px
+// body on a 1024 px canvas, corner radius 185.4; the mark's 32-unit box is half the body.
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-icon" {
+    let dir = CommandLine.arguments[2]
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    for (name, px) in [("16x16", 16), ("16x16@2x", 32), ("32x32", 32), ("32x32@2x", 64), ("128x128", 128),
+                       ("128x128@2x", 256), ("256x256", 256), ("256x256@2x", 512), ("512x512", 512), ("512x512@2x", 1024)] {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        let k = CGFloat(px) / 1024
+        let body = NSRect(x: 100 * k, y: 100 * k, width: 824 * k, height: 824 * k)
+        let shape = NSBezierPath(roundedRect: body, xRadius: 185.4 * k, yRadius: 185.4 * k)
+        NSGradient(starting: NSColor(srgbRed: 0x1C / 255, green: 0x1C / 255, blue: 0x20 / 255, alpha: 1),
+                   ending: NSColor(srgbRed: 0x0C / 255, green: 0x0C / 255, blue: 0x0E / 255, alpha: 1))!.draw(in: shape, angle: -90)
+        // A 1 px inner line, inset half a pixel so it stays inside the shape.
+        let line = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), xRadius: 185.4 * k - 0.5, yRadius: 185.4 * k - 0.5)
+        line.lineWidth = 1
+        NSColor(white: 1, alpha: 0.12).setStroke()
+        line.stroke()
+        // The mark on its own layer, so its cut lines show the squircle rather than punching through it.
+        let box = 412 * k
+        let mark = NSImage(size: NSSize(width: box, height: box), flipped: false) { _ in
+            let t = NSAffineTransform()
+            t.scale(by: box / 32)
+            t.concat()
+            drawMark(fill: NSColor(srgbRed: 0xF2 / 255, green: 0xC1 / 255, blue: 0x4E / 255, alpha: 1), line: 1.2)
+            return true
+        }
+        mark.draw(in: NSRect(x: body.midX - box / 2, y: body.midY - box / 2, width: box, height: box))
+        NSGraphicsContext.restoreGraphicsState()
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/icon_\(name).png"))
+    }
     exit(0)
 }
 
