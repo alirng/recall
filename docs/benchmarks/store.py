@@ -722,7 +722,8 @@ def rows_from_runs(folders: list[str], args) -> list[dict]:
     corpus = None
     if bench["corpus"] == "private":
         home = runs[0]["home"]
-        corpus = {"home": os.path.basename(home.rstrip("/")) if home else None, "chat_schema": _chat_schema(home)}
+        name = args.home or (os.path.basename(home.rstrip("/")) if home else None)
+        corpus = {"home": name, "chat_schema": _chat_schema(home)}
 
     def figures(s: dict, spec: dict) -> list[tuple[dict, dict]]:
         """(extra conditions, raw value) for a metric: its key, plus its breakdown if any."""
@@ -1061,6 +1062,7 @@ def main() -> None:
             "--harness", help="the agent harness, for runs whose meta.json does not say (before toolsearch-v1)"
         )
         o.add_argument("--metrics", help="only these metrics, comma separated")
+        o.add_argument("--home", help="a private-corpus run on a copy (pair.sh's home-pair-*): the home it copied")
         o.add_argument("--set", action="append", help="a condition the run does not record, key=value")
         o.add_argument("--note")
         o.add_argument(

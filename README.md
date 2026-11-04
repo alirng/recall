@@ -79,7 +79,7 @@ the method, the caveats and the commands.
   session start, Claude Haiku 5.5 writes code that follows the latest conventions on histories
   of 20 to 100 sessions 75% of the time, against 32% with search alone, and takes in 41% fewer
   tokens. Written by Claude Haiku 5.5, the notes hold nine in ten of the conventions in their
-  latest form; written by gpt-6-luna, two in three ([which model to pick](docs/benchmarks.md#which-model-writes-your-notes)).
+  latest form; written by gpt-6-luna, not quite two in three ([which model to pick](docs/benchmarks.md#which-model-writes-your-notes)).
 - **No LLM calls to index or to search.** On ~2,800 chats a search takes about 11 ms, or
   47 ms with embeddings (median, on a laptop).
 - **Out of the way while agents work.** In 0.5.0 a call to recall's tools takes 65 ms at the
@@ -87,7 +87,7 @@ the method, the caveats and the commands.
   [the comparison](docs/benchmarks.md)). It waits for power before background work on battery,
   and every agent's server shares one copy of the search vectors.
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.5.0 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.5.0 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.5.0 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/swecb-dark.svg"><img src="docs/benchmarks/swecb-light.svg" alt="Bar chart of SWE-ContextBench Lite past-fix retrieval over all 300 sessions, each memory product at the cutoff its paper reports and recall at the same cutoff. Top 3: recall 0.5.2 76.8%, recall 0.2.1 44.4%, OpenViking 51.5%, Mem0 39.4%. Top 10: recall 0.5.2 92.9%, recall 0.2.1 73.7%, LangMem 73.3%. Top 15: recall 0.5.2 97.0%, recall 0.2.1 86.9%, Supermemory 59.6%" width="760"></picture></p>
 
 On LongMemEval, the chat benchmark memory products usually report, recall's search puts a
 session that answers the question in its top five 98.7% of the time (470 questions: the ones that have an answer session).

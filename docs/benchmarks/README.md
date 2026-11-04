@@ -126,9 +126,11 @@ the ledger beside the runs folder marks `INVALID`, and an eval no benchmark clai
   once both are in. Then add the paired delta from `recall eval compare` with `add`, its `varies`
   the pair's.
 - `--set key=value` adds a condition the run does not record (`--set notes="0.4.1 by
-  claude-haiku-5-5"` for a hook arm); `--harness upfront-v0` names the harness of runs from before
-  `agent_harness` was recorded; `--git SHA` names the commit when the code matches no tag, and must
-  have the runs' `prod=` and be on `main` or a tag; `--metrics` keeps a subset.
+  claude-haiku-5-5"` for a hook arm); `--home home-rel-v050` names the eval home a private-corpus
+  run's throwaway copy was made from (`pair.sh` gives each arm a `home-pair-*` copy); `--harness
+  upfront-v0` names the harness of runs from before `agent_harness` was recorded; `--git SHA` names
+  the commit when the code matches no tag, and must have the runs' `prod=` and be on `main` or a
+  tag; `--metrics` keeps a subset.
 
 Then `uv run --with fonttools --with brotli python docs/benchmarks/make_charts.py` if a chart
 should show it, `uv run python docs/benchmarks/store.py check`, and commit.
