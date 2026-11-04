@@ -1,1 +1,0 @@
-**Query profiles in the search evals.** `recall eval search --v2`, `recall eval longmemeval` and `recall eval swe-contextbench` take `--profiles`, which labels each case P1 literal, P2 concept or P3 conjunction by written rules over the index (no model; see `evals_profiles.py`) and adds MRR and Recall@R per profile next to the usual scores, which stay as they were.

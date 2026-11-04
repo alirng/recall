@@ -1,1 +1,0 @@
-**all@8 in the search eval.** `recall eval search --v2` now reports the share of cases with two or more expected chats where every one of them is in the top 8, overall and per tag, next to hit@5 and mrr. It is deterministic and model-free, and works with `--cases` for a custom case file.

@@ -1,1 +1,0 @@
-**BEAM by ability.** `recall eval beam` takes `--abilities`, a comma-separated list such as `event_ordering,summarization`, and answers only those questions, so a run aimed at the weak abilities costs a fraction of a full split. It also honours `--workers` now. The result records which abilities it ran.

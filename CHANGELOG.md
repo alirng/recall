@@ -5,6 +5,120 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-04
+
+### Upgrading
+
+- **Run `recall install` after upgrading.** It refreshes the shared `recall` skill, which gains the
+  `remember` step (`/recall remember <rule>` in Claude Code and Cursor, `$recall remember <rule>` in
+  Codex), and registers recall's MCP server with any of the newly supported agents you have. The
+  first index run after the upgrade then rebuilds the chat tables once, because the chat schema
+  changed: about three minutes on a 4,600-chat index with a large Cursor history. Runs after that
+  take their usual fraction of a second.
+
+### Added
+
+- **BEAM by ability.** `recall eval beam` takes `--abilities`, a comma-separated list such as
+  `event_ordering,summarization`, and answers only those questions, so a run aimed at the weak
+  abilities costs a fraction of a full split. It also honours `--workers` now. The result records
+  which abilities it ran.
+- **Claude Code subagents are searchable.** recall indexes each subagent's transcript as its own
+  chat: the brief its parent agent wrote and the report it sent back, a workflow subagent's
+  structured result included. Like Codex and Cursor subagents, they are never mined for memory.
+  `recall forget` on a Claude Code chat forgets its subagents too, and an index run skips the
+  subagents of a chat already forgotten. In search, a subagent takes a place above another chat only
+  by matching better, and each further subagent of the same parent chat counts for half, so one
+  workflow's dozens of subagents do not fill the results; `recent_chats` leaves subagents out.
+- **Query profiles in the search evals.** `recall eval search --v2`, `recall eval longmemeval` and
+  `recall eval swe-contextbench` take `--profiles`, which labels each case P1 literal, P2 concept or
+  P3 conjunction by written rules over the index (no model; see `evals_profiles.py`) and adds MRR
+  and Recall@R per profile next to the usual scores, which stay as they were.
+- **Grok Bot chats (opt-in).** `recall setup` asks, with a default of no, whether to read the chat
+  cache Grok Bot (Cursor's personal-agent app) keeps on the Mac. Yes reads it read-only, as one chat
+  per bot per day, so a bot's older messages stay in recall's archive as the app's 200-entry window
+  slides; skips the bots you name, and any bot you deleted in the app; and puts the app's folder in
+  your `personal` context, so sessions in other contexts are never handed these chats. `recall
+  dream` leaves them out until you set `[roots.grokbot] mine = true`. `recall search`, `recent`,
+  `show` and `memory search` take `--context NAME`, which limits what comes back to one context from
+  any folder, for an agent such as a Grok Bot that must see only that part of your life. More in
+  docs/grok-bot.md.
+- **Outcome ledger, logging first.** Session-start deliveries and the `project_memory` tool
+  (Cursor's session start) now log the agent's session id and the notes and rules they carried, as
+  `note/rule@version`; mid-session injections log the rules of the notes they carried; and MCP tool
+  calls log the agent's session id where the agent exposes one (Claude Code and, by its tool-call
+  metadata, Codex), instead of recall's process number. `recall ledger` joins those deliveries to
+  what the index shows next in the same session (a tool failure within 15 minutes, a linked commit
+  within a day, a commit touching the file whose read triggered the delivery, the person correcting
+  the agent), per channel and per note. It only reads, changes nothing an agent sees, and an older
+  release reads the same `usage.jsonl`.
+- **More coding agents: compatible support.** recall now indexes the chat history of OpenCode, Kilo
+  Code, Antigravity, Gemini CLI, Qwen Code, Pi and its forks, GitHub Copilot CLI, Factory Droid,
+  Cline, Roo Code, Goose, Crush and more (the list and each agent's support level are in
+  `docs/agents.md`), so `search_chats` and `read_chat` find those chats under the agent's name and
+  folder. `recall install` also registers recall's MCP server in the config file each of these
+  agents documents, with a backup first and a restore on `recall uninstall`. Compatible means
+  history and MCP only: no session-start hooks, briefs or notes for these agents, and their chats
+  stay out of the nightly notes unless you set `mine = true` for the agent under `[roots.<name>]`.
+  Adding these sources changes the chat schema, so the chat tables rebuild from the agents' files
+  once after the upgrade (about three minutes on a 4,600-chat index with a large Cursor history; an
+  index with nothing new takes about the same 0.3 seconds as before).
+- **`recall remember "<rule>"` saves a rule you state, at once.** It goes straight into the notes as
+  a note of its own, for the current project, or with `--global` for every project in the folder's
+  `[contexts]` context (a work rule never loads in personal folders), and the next session starts
+  with it. Agents run it through the `recall` skill when you type `/recall remember <rule>` (Claude
+  Code, Cursor) or `$recall remember <rule>` (Codex); the MCP tools stay read-only. A rule is marked
+  `said_by: developer` only when you typed it at your own terminal, or the agent's `--quote` is
+  found in your latest message in that chat's own transcript. Anything else an agent saves is its
+  candidate, which no session is shown unasked, and an agent cannot save a rule with a command, a
+  URL or a destructive step at all. The nightly run keeps your words: it retires the older rules a
+  remembered rule replaces and folds in duplicates, and only a later chat in which you typed
+  something else changes it, never an older chat or the agent. `recall eval memory` gains a `gold`
+  column for this, scored without a judge on cases that remember rules between chats.
+- **all@8 in the search eval.** `recall eval search --v2` now reports the share of cases with two or
+  more expected chats where every one of them is in the top 8, overall and per tag, next to hit@5
+  and mrr. It is deterministic and model-free, and works with `--cases` for a custom case file.
+
+### Changed
+
+- **Evals: a BEAM adapter, and a judge that is not the reader.** `recall eval beam` runs BEAM's long
+  conversations, checked on the 100K split (it needs pyarrow, e.g. `uv run --with pyarrow`). `recall
+  eval longmemeval --qa` and `recall eval beam` now grade with a fixed Claude Opus 5.5 unless
+  `--judge` names another model, refuse a judge that is the reader (before, the reader graded its
+  own answers), record a question the model refuses or fails as an error row instead of ending the
+  run, and put the judge's name in the ledger line. The benchmark tables carry corrected competitor
+  figures (Hindsight 94.6, Zep 90.2, Mastra counted per question as 93.6), name the denominator of
+  the 98.7% retrieval figure, split the tool definitions out of the tokens per task, and name the
+  MemoryCode figures of record. No product behaviour changes.
+- PyPI page: Homepage now points at rererecall.com, with Source, Documentation and the site's
+  changelog listed beside it.
+- **Lighter background use:** the session-start hook no longer re-parses your shell rc files every
+  time (about 40 ms saved on every session start; they are read again only when they change), and
+  the menu bar app refreshes every 15 minutes instead of every 5, at lower priority. Each refresh is
+  a `recall status` run that costs about 1.5 CPU seconds.
+
+### Fixed
+
+- **The edit hook stops agents only for a clash that is happening now.** It used to stop or warn
+  whenever another chat had open changes to the file: in the same working copy if that chat had
+  written anything in the last 15 minutes, and across branches at any age, so an orchestrator's
+  sub-sessions, a chat that had finished, and a branch merged days ago all raised it. Now the other
+  chat must have written in the last 5 minutes and edited that file in the last 15 (30 and 60 across
+  branches); anything older is quiet, and a chat whose last message is outside the hook's window is
+  ignored. The four `[coordination]` rules are unchanged.
+- Menu bar: the Restart rows name how many stale recall servers an agent has and when the oldest and
+  newest started, instead of listing every start time. Working now is a git log again: newest chat
+  at the top, main as the trunk even when no chat is on it, and each branch curving into the trunk
+  below its oldest chat; before, a repo with no chat on main drew a dangling stub above every
+  branch.
+- **The menu bar's "Needs you" lists only clashes happening now.** It listed every file open in two
+  chats, including chats that stopped a day or a week ago, leftover uncommitted changes and clean
+  merges between branches. `recall status` now uses the same test as the edit hook (both chats at
+  the file in the last 5 to 15 minutes, or 30 to 60 across branches) and drops chats whose last
+  message is outside the window, instead of going by when the transcript file changed. The rest are
+  under `quiet` in `--json`. The panel logs each open and each Resolve or Show changes press to
+  `usage.jsonl` (the action and the time only; `recall menubar-use`), so a later look at whether it
+  earns its place has numbers.
+
 ## [0.5.1] - 2026-10-17
 
 ### Added
@@ -645,7 +759,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/alirng/recall/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/alirng/recall/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/alirng/recall/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/alirng/recall/compare/v0.4.1...v0.4.2
