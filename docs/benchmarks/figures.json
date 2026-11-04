@@ -7,11 +7,11 @@
   "rows": [
    {
     "group": "In the top 3",
-    "name": "recall 0.5.0",
+    "name": "recall 0.5.2",
     "value": 76.8,
     "ours": true,
     "note": "no LLM calls",
-    "row": "010d1caef0a1"
+    "row": "881302c5564a"
    },
    {
     "group": "In the top 3",
@@ -39,11 +39,11 @@
    },
    {
     "group": "In the top 10",
-    "name": "recall 0.5.0",
+    "name": "recall 0.5.2",
     "value": 92.9,
     "ours": true,
     "note": "no LLM calls",
-    "row": "111968a43852"
+    "row": "4c6ca0c2d52d"
    },
    {
     "group": "In the top 10",
@@ -63,11 +63,11 @@
    },
    {
     "group": "In the top 15",
-    "name": "recall 0.5.0",
+    "name": "recall 0.5.2",
     "value": 97.0,
     "ours": true,
     "note": "no LLM calls",
-    "row": "465e475f6b39"
+    "row": "111c6fa337eb"
    },
    {
     "group": "In the top 15",
@@ -87,19 +87,19 @@
    }
   ],
   "rows_used": [
-   "010d1caef0a1",
-   "111968a43852",
+   "111c6fa337eb",
    "140bcf1bb63f",
    "1761d1554ef7",
    "1ea689253ea8",
    "2d98c7e48d13",
    "371d6e875d60",
    "462d49853191",
-   "465e475f6b39",
    "47354b74fa48",
+   "4c6ca0c2d52d",
    "572996f8804d",
    "82e546763d99",
    "837976611b24",
+   "881302c5564a",
    "8e4c2125c3e7",
    "a4dd3410b9bd",
    "b31f1b8f29cb"
@@ -168,56 +168,70 @@
  "notes": {
   "kind": "grouped",
   "title": "Notes that keep up with your conventions",
-  "subtitle": "MemoryCode: 40 held-out histories, 3 fresh runs each, the same histories in every series.",
+  "subtitle": "MemoryCode: 40 held-out histories, the same in every series. Both releases run on 4 November: 3 fresh runs each with gpt-6-luna, 6 with Claude Haiku 5.5.",
   "categories": [
    "Conventions in notes,\nlatest form",
    "Changed conventions\nrecorded"
   ],
   "series": [
    {
-    "name": "recall 0.3.0, gpt-6-luna",
+    "name": "recall 0.5.1, gpt-6-luna",
     "cls": "past",
     "values": [
-     61.6,
-     53.6
+     65.3,
+     63.6
     ],
     "rows": [
-     "224254f9a57b",
-     "36ec76db2ae2"
+     "68606250617c",
+     "2da30b692a21"
     ]
    },
    {
-    "name": "recall 0.4.1, gpt-6-luna",
+    "name": "recall 0.5.2, gpt-6-luna",
     "cls": "past",
     "values": [
-     66.6,
-     61.7
+     63.6,
+     59.4
     ],
     "rows": [
-     "661202a75b32",
-     "a659ccc460b7"
+     "b2ce374932fb",
+     "f491e3ec3a81"
     ]
    },
    {
-    "name": "recall 0.4.1, Claude Haiku 5.5",
+    "name": "recall 0.5.1, Claude Haiku 5.5",
+    "cls": "past",
+    "values": [
+     90.4,
+     91.0
+    ],
+    "rows": [
+     "08be9790ceed",
+     "c72d0e769e7a"
+    ]
+   },
+   {
+    "name": "recall 0.5.2, Claude Haiku 5.5",
     "cls": "ours",
     "values": [
-     90.6,
-     90.0
+     89.5,
+     91.4
     ],
     "rows": [
-     "2989aa0471d7",
-     "05b9afd69180"
+     "02d06fe26af9",
+     "6c1b9a18d003"
     ]
    }
   ],
   "rows_used": [
-   "05b9afd69180",
-   "224254f9a57b",
-   "2989aa0471d7",
-   "36ec76db2ae2",
-   "661202a75b32",
-   "a659ccc460b7"
+   "02d06fe26af9",
+   "08be9790ceed",
+   "2da30b692a21",
+   "68606250617c",
+   "6c1b9a18d003",
+   "b2ce374932fb",
+   "c72d0e769e7a",
+   "f491e3ec3a81"
   ]
  },
  "retrieval": {
@@ -230,14 +244,14 @@
     "value": 88.3,
     "ours": true,
     "note": "nomic-embed-text, local",
-    "row": "c2145bf30a6f"
+    "row": "af4fe70fe0e2"
    },
    {
     "name": "recall (keywords only)",
     "value": 82.8,
     "ours": true,
     "note": "SQLite FTS5",
-    "row": "1afb7fd0e83e"
+    "row": "3b86c861d985"
    },
    {
     "name": "engram, dense",
@@ -269,10 +283,10 @@
    }
   ],
   "rows_used": [
-   "1afb7fd0e83e",
+   "3b86c861d985",
    "6f1076da3bf0",
    "a998abfe3821",
-   "c2145bf30a6f",
+   "af4fe70fe0e2",
    "cdda9516c246",
    "fd4a03706f0c"
   ]

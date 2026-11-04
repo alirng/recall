@@ -7,18 +7,18 @@
     "where": {"benchmark": "swecb-lite-retrieval", "conditions.scope": "all"},
     "groups": [
       {"label": "In the top 3", "rows": [
-        {"name": "recall 0.5.0", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.0", "metric": "hit@3", "conditions.search": "hybrid"}},
+        {"name": "recall 0.5.2", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.2", "metric": "hit@3", "conditions.search": "hybrid"}},
         {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@3", "conditions.search": "hybrid"}},
         {"name": "OpenViking", "note": "ingest {usd}, {time:h}", "refs": {"usd": {"metric": "ingest_usd"}, "time": {"metric": "ingest_minutes"}}, "where": {"system": "OpenViking", "metric": "overall_matched", "conditions.k": 3}},
         {"name": "Mem0", "note": "ingest {usd}, {time}", "refs": {"usd": {"metric": "ingest_usd"}, "time": {"metric": "ingest_minutes"}}, "where": {"system": "Mem0", "metric": "overall_matched", "conditions.k": 3}}
       ]},
       {"label": "In the top 10", "rows": [
-        {"name": "recall 0.5.0", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.0", "metric": "hit@10", "conditions.search": "hybrid"}},
+        {"name": "recall 0.5.2", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.2", "metric": "hit@10", "conditions.search": "hybrid"}},
         {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@10", "conditions.search": "hybrid"}},
         {"name": "LangMem", "note": "memories; ingest {usd}", "refs": {"usd": {"metric": "ingest_usd"}}, "where": {"system": "LangMem", "metric": "overall_matched", "conditions.k": 10}}
       ]},
       {"label": "In the top 15", "rows": [
-        {"name": "recall 0.5.0", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.0", "metric": "hit@15", "conditions.search": "hybrid"}},
+        {"name": "recall 0.5.2", "style": "ours", "note": "no LLM calls", "where": {"system": "recall", "release": "0.5.2", "metric": "hit@15", "conditions.search": "hybrid"}},
         {"name": "recall 0.2.1", "style": "past", "note": "no LLM calls", "where": {"system": "recall", "release": "0.2.1", "metric": "hit@15", "conditions.search": "hybrid"}},
         {"name": "Supermemory", "note": "ingest {tokens:k0} tokens", "refs": {"tokens": {"metric": "ingest_tokens"}}, "where": {"system": "Supermemory", "metric": "overall_matched", "conditions.k": 15}}
       ]}
@@ -50,16 +50,17 @@
   "notes": {
     "kind": "grouped",
     "title": "Notes that keep up with your conventions",
-    "subtitle": "MemoryCode: 40 held-out histories, 3 fresh runs each, the same histories in every series.",
+    "subtitle": "MemoryCode: 40 held-out histories, the same in every series. Both releases run on 4 November: 3 fresh runs each with gpt-6-luna, 6 with Claude Haiku 5.5.",
     "where": {"benchmark": "memorycode-notes", "conditions.subset": "first-40", "system": "recall"},
     "categories": [
       {"label": "Conventions in notes,\nlatest form", "where": {"metric": "recall"}},
       {"label": "Changed conventions\nrecorded", "where": {"metric": "updates"}}
     ],
     "series": [
-      {"name": "recall 0.3.0, gpt-6-luna", "style": "past", "where": {"release": "0.3.0", "model": "chatgpt:gpt-6-luna@medium"}},
-      {"name": "recall 0.4.1, gpt-6-luna", "style": "past", "where": {"release": "0.4.1", "model": "chatgpt:gpt-6-luna@medium"}},
-      {"name": "recall 0.4.1, Claude Haiku 5.5", "style": "ours", "where": {"release": "0.4.1", "model": "anthropic:claude-haiku-5-5"}}
+      {"name": "recall 0.5.1, gpt-6-luna", "style": "past", "where": {"release": "0.5.1", "model": "chatgpt:gpt-6-luna@medium", "date": "2026-11-04"}},
+      {"name": "recall 0.5.2, gpt-6-luna", "style": "past", "where": {"release": "0.5.2", "model": "chatgpt:gpt-6-luna@medium", "date": "2026-11-04"}},
+      {"name": "recall 0.5.1, Claude Haiku 5.5", "style": "past", "where": {"release": "0.5.1", "model": "anthropic:claude-haiku-5-5", "date": "2026-11-04"}},
+      {"name": "recall 0.5.2, Claude Haiku 5.5", "style": "ours", "where": {"release": "0.5.2", "model": "anthropic:claude-haiku-5-5", "date": "2026-11-04"}}
     ]
   },
   "retrieval": {
@@ -69,8 +70,8 @@
     "where": {"benchmark": "longmemeval-retrieval", "metric": "recall_all@5", "conditions.dataset": "S", "conditions.turns": "user"},
     "groups": [
       {"rows": [
-        {"name": "recall (keywords + embeddings)", "style": "ours", "note": "nomic-embed-text, local", "where": {"system": "recall", "release": "0.4.2", "conditions.subset": "official-419", "conditions.search": "hybrid"}},
-        {"name": "recall (keywords only)", "style": "ours", "note": "SQLite FTS5", "where": {"system": "recall", "release": "0.4.2", "conditions.subset": "official-419", "conditions.search": "keyword"}},
+        {"name": "recall (keywords + embeddings)", "style": "ours", "note": "nomic-embed-text, local", "where": {"system": "recall", "release": "0.5.2", "conditions.subset": "official-419", "conditions.search": "hybrid"}},
+        {"name": "recall (keywords only)", "style": "ours", "note": "SQLite FTS5", "where": {"system": "recall", "release": "0.5.2", "conditions.subset": "official-419", "conditions.search": "keyword"}},
         {"name": "engram, dense", "note": "bge-small", "where": {"system": "engram", "conditions.method": "dense, bge-small"}},
         {"name": "engram, hybrid", "note": "BM25 + bge-small", "where": {"system": "engram", "conditions.method": "hybrid, BM25 + bge-small"}},
         {"name": "engram, BM25", "note": "", "where": {"system": "engram", "conditions.method": "BM25"}},
