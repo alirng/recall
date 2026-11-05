@@ -40,7 +40,7 @@ recall = "recall.cli:main"
 # Exact versions, so a new release of the build backend cannot change what gets published. PEP 639 license
 # metadata needs hatchling 1.27 or later; the readme plugin rewrites the PyPI description's links. Bump them
 # on purpose: build once with the new versions and check the wheel before a release.
-requires = ["hatchling==1.32.4", "hatch-fancy-pypi-readme==25.1.0"]
+requires = ["hatchling==1.33.0", "hatch-fancy-pypi-readme==25.1.0"]
 build-backend = "hatchling.build"
 
 # PyPI cannot resolve the README's relative links and images, so the published description
