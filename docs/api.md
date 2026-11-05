@@ -69,7 +69,7 @@ in development an app points at the repo copy (`uv run recall api` from a checko
 | Path | Answers |
 | --- | --- |
 | `/v1/info` | recall version, API version, instance name (`This Mac`), whether live updates work |
-| `/v1/status` | what `recall status --json` gives: live sessions, overlaps, outlived servers, power, roots (`?since=12h`; kept 15 s) |
+| `/v1/status` | what `recall status --json` gives: live sessions, overlaps, outlived servers, power, roots (`?since=12h`; kept 15 s, `?fresh=1` skips that and recomputes) |
 | `/v1/stats` | chats and messages by agent, with each agent's latest chat; notes count |
 | `/v1/storage` | every place recall keeps things, inside and outside `~/.agents`: `items` with a plain label, `path`, `bytes`, `kind` and `exists`, plus `totals` by kind. Kinds: `data` (lost if deleted), `rebuildable`, `running`, `settings`, `backup`. Each file is marked on its own, never a whole folder, because `cache/` holds rebuildable files next to mail and edit records that are not. Outside `~/.agents` it lists the installed program, the background job plists, the menu bar app, leftovers of earlier builds, and whether a Keychain item exists (never its contents) |
 | `/v1/runs` | memory runs, newest first, with counts (created, added, refined, confirmed, retired), calls, tokens and cost (`?limit=10`) |

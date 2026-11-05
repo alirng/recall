@@ -104,25 +104,26 @@ enum API {
 
     /// Where `recall api` can come from: a dev checkout written into Info.plist by build.sh, then the
     /// folders uv, pipx and Homebrew install into. An app opened from Finder has no shell PATH.
-    static func commands() -> [[String]] {
+    static func commands(_ extra: [String] = []) -> [[String]] {
         var out: [[String]] = []
         if let dev = Bundle.main.object(forInfoDictionaryKey: "RecallAPICommand") as? [String], !dev.isEmpty { out.append(dev) }
         for dir in [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"] {
             let path = dir + "/recall"
             if FileManager.default.isExecutableFile(atPath: path) { out.append([path, "api"]) }
         }
-        return out
+        return out.map { $0 + extra }
     }
 
     static let starting = NSLock()
 
     /// Starts `recall api` if nothing answers on the socket, and waits up to 10 s for it. The server
-    /// exits by itself once idle, so the app never stops it. Blocking: call it off the main thread.
-    static func ensureRunning() -> Failure? {
+    /// exits by itself once idle, so the app never stops it. `idle` is how long a server this call starts
+    /// waits with no client before exiting (the server's own default when nil). Blocking: call it off the main thread.
+    static func ensureRunning(idle: Int? = nil) -> Failure? {
         starting.lock()
         defer { starting.unlock() }
         if let fd = connect(timeout: 2) { close(fd); return nil }
-        let commands = commands()
+        let commands = commands(idle.map { ["--idle", String($0)] } ?? [])
         if commands.isEmpty {
             return Failure(code: "not_installed", message: "recall isn't set up on this Mac. Install it with uv tool install 'recall-agents[embeddings]', then run recall install.")
         }

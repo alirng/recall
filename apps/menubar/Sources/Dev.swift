@@ -3,6 +3,9 @@
 // the time from opening to the first notes drawn. `--shot DIR` saves the Memory and This Mac views
 // in dark and light, then quits. `--scroll-notes` scrolls the whole notes list and logs the time.
 // `--close-after SECONDS` closes the window again, to measure what a closed window leaves behind.
+// `--panel-open-after SECONDS` and `--panel-close-after SECONDS` open and close the menu bar panel off
+// screen, as clicking the icon would (with `--measure` it logs the time until the panel has its status).
+// `--no-api` keeps the menu bar on `recall status --json`, as before recall api existed.
 // `--open-after SECONDS` opens it once the menu bar has settled, as a real ⌘O would.
 // `--event-storm N` replays N "chats changed" events 2 s apart and logs CPU and memory around them;
 // with `--storm-force` each one redraws as if the data had changed.
@@ -14,7 +17,7 @@ enum Probe {
     static let on = CommandLine.arguments.contains("--measure")
     /// Any test flag: the window then stays off screen and the app never comes forward.
     static let background = ["--open", "--open-after", "--measure", "--shot", "--scroll-notes", "--scroll-chat", "--scroll-info",
-                             "--switch-test", "--event-storm", "--close-after", "--ui-test"].contains { CommandLine.arguments.contains($0) }
+                             "--switch-test", "--event-storm", "--close-after", "--ui-test", "--panel-open-after", "--panel-close-after"].contains { CommandLine.arguments.contains($0) }
     nonisolated(unsafe) static var opened: Date?
 
     static func start() { if on { opened = Date() } }
