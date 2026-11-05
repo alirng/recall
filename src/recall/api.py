@@ -1293,7 +1293,8 @@ def build_app():
         return reply(info())
 
     async def h_status(request):
-        return reply(await off_db(status_view, _opt(request, "since") or "12h"))
+        fresh = _opt(request, "fresh") in ("1", "true")
+        return reply(await off_db(status_view, _opt(request, "since") or "12h", fresh))
 
     async def h_stats(request):
         return reply(await on_db(stats_view))

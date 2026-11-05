@@ -1,5 +1,7 @@
 // recall in the menu bar: what needs you across your coding agents, and what they are working on.
-// It runs `recall status --json` (the command is set in Info.plist by build.sh) and shows the result.
+// It reads `recall api` (/v1/status) when the panel opens. The icon's 15-minute check uses the API only
+// when a server is already up, and otherwise runs `recall status --json` (the command is set in Info.plist
+// by build.sh), which is also the fallback when the API can't start.
 // "Open recall" (⌘O) opens the window, which reads everything through `recall api` (Window.swift).
 
 import AppKit
@@ -212,6 +214,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var error: String?
     var updated: Date?
     var running = false
+    var usingAPI = false  // the last status came from recall api, so a stream may be held while the panel is open
+    var events: Events?   // /v1/events, only while the panel is open, so recall api can exit when it's idle
     var again = false  // a refresh was asked for while one ran (after Resolve, say)
     // The panel by default; `"ui": "menu"` in ~/.agents/recall/app.json for the plain menu.
     let usesMenu = AppState.load().ui == "menu"
@@ -227,12 +231,16 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.button?.target = self
             item.button?.action = #selector(togglePanel)
         }
+        if CommandLine.arguments.contains("--no-api") { Self.apiSkipUntil = .distantFuture }  // measure today's path
+        panel.onClose = { [weak self] in self?.stopListening() }
         rebuild()
-        refresh()
-        // Opening the menu always refreshes; the timer only keeps the icon honest, so it can be slow.
-        // Each refresh is a `recall status` run (about 1.5 s of CPU, mostly git), so every 15 minutes, with
+        tick()
+        // Opening the panel or menu always refreshes; the timer only keeps the icon honest, so it can be slow.
+        // Measured: a status run costs 0.6 s of CPU as `recall status --json` and 0.8 s when it has to start
+        // recall api first (which then sits at 60 MB until it idles out), so a tick uses the API only when one
+        // is already up (the panel or window is open) and otherwise the one-shot command. Every 15 minutes, with
         // slack that lets macOS fold it into other wakeups.
-        let timer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in self?.refresh() }
+        let timer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in self?.tick() }
         timer.tolerance = 120
         Probe.appearance()
         if CommandLine.arguments.contains("--open") { openWindow() }
@@ -246,6 +254,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--scroll-info") { openWindow(); Probe.scrollInfo(windows) }
         if CommandLine.arguments.contains("--switch-test") { openWindow(); Probe.switchSections(windows) }
         if let n = Probe.value("--event-storm").flatMap(Int.init) { openWindow(); Probe.storm(windows, n) }
+        if let s = Probe.value("--panel-open-after").flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + s) { if !self.panel.isOpen { self.togglePanel() } }
+        }
+        if let s = Probe.value("--panel-close-after").flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + s) { self.panel.close() }
+        }
         if let s = Probe.value("--close-after").flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + s) { self.windows.window?.performClose(nil) }
         }
@@ -317,15 +331,19 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func togglePanel() {
         guard let button = item.button else { return }
-        if !panel.isOpen { refresh(); logUse("open") }
+        if !panel.isOpen { Probe.start(); refresh(); logUse("open") }
         panel.toggle(below: button)
     }
 
-    @objc func refresh() {
+    @objc func refresh() { run(spawn: true) }
+    func tick() { run(spawn: false) }
+
+    /// `spawn: false` (the icon's own checks) never starts recall api, only uses one that is running.
+    func run(spawn: Bool) {
         guard !running else { again = true; return }
         running = true
         DispatchQueue.global(qos: .utility).async {
-            let result = Self.fetch()
+            let result = Self.fetch(spawn: spawn)
             DispatchQueue.main.async {
                 self.running = false
                 if self.again { self.again = false; DispatchQueue.main.async { self.refresh() } }
@@ -337,6 +355,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .failure(let e):
                     self.error = e.message
                 }
+                if self.panel.isOpen { Probe.drawn(Self.apiLive ? "panel, api" : "panel, cli") }
+                self.usingAPI = Self.apiLive
+                self.listen()
                 self.rebuild()
             }
         }
@@ -353,7 +374,51 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     struct RunError: Error { let message: String }
 
-    static func fetch() -> Result<Status, RunError> {
+    /// While the panel is open, a status event (the Needs-you answer changed) refreshes it. Closing the
+    /// panel ends the stream, so recall api has no client and exits after its idle time.
+    func listen() {
+        guard panel.isOpen, usingAPI, events == nil else { return }
+        let e = Events(onChange: { [weak self] topics in
+            if topics.contains("status") { self?.refresh() }
+        }, onEnd: { [weak self] in self?.events = nil })
+        events = e
+        e.start()
+    }
+
+    func stopListening() {
+        events?.stop()
+        events = nil
+    }
+
+    /// Seconds a recall api that the menu bar starts waits with no client before it exits.
+    static let apiIdle = 30
+    nonisolated(unsafe) static var apiSkipUntil = Date.distantPast
+    nonisolated(unsafe) static var apiLive = false
+
+    /// Status from recall api, computed fresh. Nil when the API can't be used: an older release has no
+    /// `recall api`, or it didn't start. That is remembered for an hour, then tried again.
+    static func fetchAPI(spawn: Bool) -> Result<Status, RunError>? {
+        apiLive = false
+        guard Date() >= apiSkipUntil else { return nil }
+        if !spawn {
+            guard let fd = API.connect(timeout: 1) else { return nil }
+            close(fd)
+        } else if let failure = API.ensureRunning(idle: apiIdle) {
+            if failure.code == "too_old" || failure.code == "not_installed" { apiSkipUntil = Date().addingTimeInterval(3600) }
+            return nil
+        }
+        guard case .success(let data) = API.raw("/v1/status?fresh=1"),
+              let s = try? JSONDecoder().decode(Status.self, from: data) else { return nil }
+        apiLive = true
+        return .success(s)
+    }
+
+    static func fetch(spawn: Bool = true) -> Result<Status, RunError> {
+        fetchAPI(spawn: spawn) ?? fetchCLI()
+    }
+
+    /// Today's way, and the fallback: one `recall status --json` run.
+    static func fetchCLI() -> Result<Status, RunError> {
         let command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
         switch run(command) {
         case .success(let data):

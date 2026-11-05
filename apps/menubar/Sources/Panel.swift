@@ -456,6 +456,7 @@ final class PanelController {
     let actions: Actions
     var window: NSPanel?
     var monitors: [Any] = []
+    var onClose: () -> Void = {}
     static let maxHeight: CGFloat = 620
 
     init(store: Store, actions: Actions) {
@@ -482,6 +483,12 @@ final class PanelController {
         panel.contentView = host
         window = panel
         place(below: button)
+        if Probe.background {  // a test run: drawn far off screen, never in front, never key
+            panel.level = .normal
+            panel.setFrameOrigin(NSPoint(x: -30000, y: 0))
+            panel.orderBack(nil)
+            return
+        }
         panel.orderFrontRegardless()
         panel.makeKey()
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -516,6 +523,7 @@ final class PanelController {
         monitors = []
         window?.orderOut(nil)
         window = nil
+        onClose()
     }
 }
 
