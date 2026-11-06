@@ -20,7 +20,7 @@ Settings come from the [model] table of config.toml:
     batch = "auto"                        # API providers: "auto" sends the nightly run through
                                           # the provider's batch API (half price), "off" never
     consolidate = "anthropic:claude-sonnet-5-5"  # optional: another model folds memories into notes
-    fallback = "claude:haiku"             # optional: used once the API key's credits run out
+    fallback = "claude:haiku"             # optional: used once the API key's credits or spend limit run out
     price = [0.10, 0.50]                  # optional: USD per million tokens in and out
 
 A one-off `--model` spec names a provider and model, optionally an effort after "@", and
@@ -128,7 +128,7 @@ def from_spec(spec: str | None, settings: dict) -> Provider:
 
 
 def fallback(settings: dict) -> Provider | None:
-    """The provider a run switches to once the API key's credits run out, if one is set."""
+    """The provider a run switches to once the API key's credits or spend limit run out, if one is set."""
     spec = settings.get("fallback")
     return from_spec(spec, {k: v for k, v in settings.items() if k not in RUN_SETTINGS}) if spec else None
 

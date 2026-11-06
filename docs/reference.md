@@ -53,7 +53,7 @@ base_url = "http://localhost:11434"    # local and custom
 api_key = "keychain"                   # env:NAME, keychain or file; never the key itself
 batch = "auto"                         # API keys: send the nightly run as batches, at half price; "off" never
 consolidate = "anthropic:claude-sonnet-5-5"  # optional: a second model folds memories into notes
-fallback = "claude:haiku"              # optional: the plan to use once the key's credits run out
+fallback = "claude:haiku"              # optional: the plan to use once the key's credits or spend limit run out
 ```
 
 Whichever you pick, every call is validated against a strict JSON schema, retried with
@@ -79,8 +79,8 @@ and local models never use it.
 call cap, which is there for plans' rate limits. A model whose price recall does not know is
 not capped by dollars; set `price = [in, out]` (dollars per million tokens) in `[model]`.
 Claude Max and Team plans include monthly API credits that cover this; give recall its own
-Console workspace with a spend limit. When the credits run out, the run carries on with
-`fallback` if you set one, or stops cleanly and continues the next night.
+Console workspace with a spend limit. When the credits run out or the run reaches that limit, it
+carries on with `fallback` if you set one, or stops cleanly and continues the next night.
 
 On my history, Claude Haiku 5.5 read a backlog of 2,452 chats in one batch for $0.77, and the
 whole backlog (2,859 candidate memories folded into notes) took two nights at the $1 default.

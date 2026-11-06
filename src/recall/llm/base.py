@@ -24,12 +24,14 @@ class FatalError(LLMError):
 
 
 class CreditsExhausted(FatalError):
-    """The API account has no credits left. Not a fault: the run falls back to the
-    configured subscription CLI, or stops cleanly and carries on next night."""
+    """The API account has no credits left, or has reached the spend limit set on it. Not a
+    fault: the run falls back to the configured subscription CLI, or stops cleanly and carries
+    on next night."""
 
 
-# The low-balance replies of the metered APIs, as their docs give them.
-CREDIT_ERRORS = ("credit balance is too low", "insufficient_quota", "billing_error")
+# The low-balance and spend-limit replies of the metered APIs. Anthropic answers a key past its
+# monthly spend limit with a 400 "You have reached your specified API usage limits".
+CREDIT_ERRORS = ("credit balance is too low", "insufficient_quota", "billing_error", "API usage limits")
 
 
 @dataclass(frozen=True)

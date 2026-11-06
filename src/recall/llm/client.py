@@ -173,15 +173,21 @@ class Client:
 
     def out_of_credits(self, failed: Provider, e: CreditsExhausted) -> None:
         """Switch to the fallback provider for the rest of the run, or stop the run cleanly."""
+        reason = str(e).split("\n")[0][:200]
         with self._lock:
             if self.fallback is not None:
                 if self.provider is not self.fallback:
-                    self.log(f"the API key's credits ran out; carrying on with {self.fallback.label}")
+                    self.log(
+                        f"the API key is out of credits or at its spend limit ({reason}); carrying on with"
+                        f" {self.fallback.label}"
+                    )
                     self.provider = self.fallback
                     return
                 if failed not in (self.fallback, *(self.fallback.for_purpose(p) for p in PURPOSES)):
                     return  # another call switched already: retry there
-        raise BudgetExceeded(f"no API credits left ({str(e)[:200]}); the next run carries on") from e
+        raise BudgetExceeded(
+            f"the API key is out of credits or at its spend limit ({reason}); the next run carries on"
+        ) from e
 
     def estimate(self, provider: Provider, purpose: str, system: str, prompt: str, batch: bool = False) -> float | None:
         """A call's likely cost, held against the dollar budget until its real cost is known."""
