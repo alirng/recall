@@ -1,6 +1,7 @@
 """Settings, kept in config.toml in recall's data folder. `recall setup` writes it;
 editing it by hand is fine too."""
 
+import contextlib
 import json
 import os
 import re
@@ -67,7 +68,26 @@ def load_checked() -> tuple[dict, bool]:
     }, readable
 
 
+def update(key: str, value) -> None:
+    """Set one setting (a whole table, such as [coordination]) and save, leaving the rest of
+    config.toml as it was: unlike load(), nothing is filled in from the defaults. Refuses to save
+    over a config.toml it cannot read, which would lose the settings in it."""
+    try:
+        with open(paths.CONFIG, "rb") as f:
+            stored = tomllib.load(f)
+    except FileNotFoundError:
+        stored = {}
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise ValueError(f"config.toml can't be read ({e}); fix or remove it first") from e
+    stored[key] = value
+    save(stored)
+
+
 def save(cfg: dict) -> None:
+    """Write config.toml in one step: a temp file beside it, then a rename, so a hook reading the
+    settings mid-save sees the old file or the new one, never half of it."""
+    import tempfile
+
     os.makedirs(paths.HOME, exist_ok=True)
     lines = ["# recall settings. Run `recall setup` to change them interactively, or edit here.", ""]
     for key, value in cfg.items():
@@ -83,8 +103,20 @@ def save(cfg: dict) -> None:
                 if isinstance(values, dict) and values:
                     lines += ["", f"[{key}.{_key(sub)}]"]
                     lines += [f"{k} = {_toml(v)}" for k, v in values.items() if v not in (None, "")]
-    with open(paths.CONFIG, "w") as f:
-        f.write("\n".join(lines) + "\n")
+    try:
+        mode = os.stat(paths.CONFIG).st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(dir=paths.HOME, prefix=".config-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, paths.CONFIG)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 
 def _key(name) -> str:

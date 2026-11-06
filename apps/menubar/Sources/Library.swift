@@ -17,7 +17,7 @@ struct AppState: Codable {
     var pins: [String]?
     var appearance: String?  // "dark" or "light" when set from the palette; the system's otherwise
 
-    static let url = URL(fileURLWithPath: API.home + "/.agents/recall/app.json")
+    static let url = URL(fileURLWithPath: API.recallHome + "/app.json")
 
     static func load() -> AppState {
         (try? JSONDecoder().decode(AppState.self, from: Data(contentsOf: url))) ?? AppState()
@@ -83,6 +83,9 @@ final class Library: ObservableObject {
     /// Projects pinned to the top of the project pickers, kept in app.json.
     @Published var pins: [String] = AppState.load().pins ?? []
     var toggleAppearance: () -> Void = {}
+    /// The Forget sheet while it's open, and the Undo toast for 10 s after (Writes.swift).
+    var forgetting: Forgetting?
+    @Published var toast: Toast?
 
     let facts = Facts()
     let notes = NotesModel()
@@ -190,6 +193,7 @@ final class Library: ObservableObject {
     /// The window gained focus: catch up, since edits made by hand to a note aren't streamed.
     func focused() {
         guard visible else { return }
+        runMoved()  // a write waiting on a memory run tries again: not every lock holder commits
         if link != .ready || events == nil { connect(); return }
         if Date().timeIntervalSince(lastLoad) > 5 { loadAll() }
     }
@@ -207,6 +211,7 @@ final class Library: ObservableObject {
             self.fetch("/v1/coordination", Coordination.self) { self.facts.coordination = $0 }
             self.fetch("/v1/projects", Projects.self) { self.facts.projects = $0 }
             self.fetch("/v1/storage", Storage.self) { self.facts.storage = $0 }
+            if self.canWrite("model") { self.fetch("/v1/models", Models.self) { self.facts.models = $0 } }
             self.fetch("/v1/stats", Stats.self) { self.facts.stats = $0; self.loadAgentTotals($0) }
             self.fetch("/v1/status", Status.self) { self.facts.status = $0 }
             self.warm()
@@ -317,9 +322,11 @@ final class Library: ObservableObject {
             fetch("/v1/storage", Storage.self) { self.facts.storage = $0 }
         }
         if topics.contains("runs") { fetch("/v1/runs/latest", Runs.self) { self.facts.runs = $0; self.notes.lastRun = $0.latest?.started } }
+        if topics.contains("notes") || topics.contains("runs") { runMoved() }
         if topics.contains("config") {
             fetch("/v1/config", Config.self) { self.facts.config = $0 }
             fetch("/v1/coordination", Coordination.self) { self.facts.coordination = $0 }
+            if canWrite("model") { fetch("/v1/models", Models.self) { self.facts.models = $0 } }
         }
         if topics.contains("status") { fetch("/v1/status", Status.self) { self.facts.status = $0 } }
     }
@@ -430,6 +437,12 @@ final class Facts: ObservableObject {
     @Published var runs: Runs?
     @Published var status: Status?
     @Published var projects: Projects?
+    /// This Mac's writes (G3): the model menu and what the last change said.
+    @Published var models: Models?
+    @Published var modelNote: Said?
+    @Published var coordNote: Said?
+    @Published var confirmRemove = false
+    @Published var removeNote: Said?
 
     var needsYou: Int { (status?.overlaps.count ?? 0) + (status?.restarts.count ?? 0) }
 
@@ -498,6 +511,8 @@ final class NotesModel: ObservableObject {
     @Published var selected: String?
     @Published var note: Note?
     @Published var error: String?
+    /// The note being edited, if one is (Writes.swift).
+    @Published var editor: Editor?
     var loading = false
     var generation = 0
     static let page = 100

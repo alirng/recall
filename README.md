@@ -221,9 +221,10 @@ More in [docs/accounts.md](docs/accounts.md).
 ## For apps
 
 `recall api` serves your chats, notes, memory runs and status as JSON over a local unix socket
-(mode 0600, no network port), with live updates. It is read-only, starts when a client asks and
-exits when idle, so nothing runs in between. The Mac app and the menu bar are built on it. More in
-[docs/api.md](docs/api.md).
+(mode 0600, no network port), with live updates. It also makes the few changes an app may make
+(editing and forgetting notes, the coordination rules, the model, removing old copies), through the
+same code as the command line. It starts when a client asks and exits when idle, so nothing runs in
+between. The Mac app and the menu bar are built on it. More in [docs/api.md](docs/api.md).
 
 ## Grok Bot
 

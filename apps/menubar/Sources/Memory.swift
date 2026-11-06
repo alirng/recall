@@ -67,7 +67,7 @@ struct NotesList: View {
             .padding(.horizontal, 16).padding(.bottom, 12)
             Rule()
             Rows(notes.rows, cursor: notes.cursor, more: notes.more) { n in
-                NoteItem(note: n, on: notes.selected == n.id, lastRun: notes.lastRun, showProject: notes.project == nil)
+                NoteItem(note: n, on: notes.selected == n.id, lastRun: notes.lastRun, showProject: notes.project == nil, editing: notes.editor?.noteId == n.id)
                     .onTapGesture { notes.select(n.id) }
             }
         }
@@ -123,6 +123,7 @@ struct NoteItem: View {
     let on: Bool
     let lastRun: String?
     var showProject = true
+    var editing = false
     @Environment(\.colorScheme) var scheme
 
     var body: some View {
@@ -133,6 +134,7 @@ struct NoteItem: View {
             HStack(spacing: 8) {
                 KindTag(type: note.type)
                 Text(meta).lineLimit(1)
+                if editing { Text("· editing").foregroundStyle(p.ink).lineLimit(1) }
                 if fresh { Text("· new last night").foregroundStyle(p.accentText).lineLimit(1) }
             }
             .font(PaperMono.font(11.5)).foregroundStyle(p.muted)
@@ -166,13 +168,17 @@ struct Reader: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 22) {
                 header(p)
-                rules(p)
-                HStack(alignment: .top, spacing: 28) {
-                    learnedFrom(p).frame(maxWidth: .infinity, alignment: .leading)
-                    related(p).frame(maxWidth: .infinity, alignment: .leading)
+                if let e = editing {
+                    EditView(editor: e, library: library)
+                } else {
+                    rules(p)
+                    HStack(alignment: .top, spacing: 28) {
+                        learnedFrom(p).frame(maxWidth: .infinity, alignment: .leading)
+                        related(p).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    history(p)
+                    actions(p)
                 }
-                history(p)
-                actions(p)
             }
             .padding(.horizontal, 32).padding(.top, 26).padding(.bottom, 28)
             .frame(maxWidth: 860, alignment: .leading)
@@ -181,6 +187,9 @@ struct Reader: View {
         .id(note.note_id)
         .background(p.paper)
     }
+
+    /// The edit open on this note, if there is one.
+    var editing: Editor? { notes.editor?.noteId == note.note_id ? notes.editor : nil }
 
     func header(_ p: Palette) -> some View {
         HStack(alignment: .top, spacing: 16) {
@@ -194,7 +203,9 @@ struct Reader: View {
                 Text(meta).font(PaperMono.font(12)).foregroundStyle(p.muted)
             }
             Spacer(minLength: 8)
-            if let c = confirmed {
+            if editing != nil {
+                Label(text: "Editing", color: p.ink)
+            } else if let c = confirmed {
                 HStack(spacing: 6) {
                     Text("✓").foregroundStyle(p.accentText)
                     Text(day(c.date)).foregroundStyle(p.ink)
@@ -335,9 +346,18 @@ struct Reader: View {
     }
 
     /// One line per kind of change in a commit, e.g. "Rule added · the menu bar is a separate Swift app".
+    /// An edit made by hand is one line: "Edited by you · 1 reworded, 1 removed, 1 new".
     func lines(_ c: Note.Commit) -> [(String, String)] {
         let names = ["created": "Created", "added": "Rule added", "refined": "Refined", "retired": "Retired", "confirmed": "Confirmed", "relinked": "Relinked"]
         let changes = c.changes ?? []
+        if c.subject?.hasPrefix("edited by hand:") == true {
+            let words = [("refined", "reworded"), ("retired", "removed"), ("added", "new")].compactMap { k, w -> String? in
+                let n = changes.filter { $0.kind == k }.count
+                return n > 0 ? "\(n) \(w)" : nil
+            }
+            return [("Edited by you", [words.joined(separator: ", "), String(c.commit.prefix(7))].filter { !$0.isEmpty }.joined(separator: " · "))]
+        }
+        if c.subject?.hasPrefix("restored:") == true { return [("Put back", "after Forget · " + c.commit.prefix(7))] }
         if changes.isEmpty { return [("Changed", c.commit.prefix(7) + (c.subject.map { " · " + $0 } ?? ""))] }
         var order: [String] = []
         var texts: [String: [String]] = [:]
@@ -353,17 +373,25 @@ struct Reader: View {
     }
 
     func actions(_ p: Palette) -> some View {
-        HStack(spacing: 8) {
-            WindowButton(title: "Edit note", soon: true)
-            WindowButton(title: "Copy as markdown") { notes.copyMarkdown() }
-            if let path = note.path {
-                WindowButton(title: "Show file") {
-                    let full = (path as NSString).expandingTildeInPath
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: full)])
+        let writes = library.canWrite("notes")
+        let can = notes.editable(note)
+        let why = !writes ? updateToWrite : "Only an active note can be changed here"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                WindowButton(title: "Edit note", soon: !can, keys: "⌘E", why: why) { notes.edit() }
+                WindowButton(title: "Copy as markdown") { notes.copyMarkdown() }
+                if let path = note.path {
+                    WindowButton(title: "Show file") {
+                        let full = (path as NSString).expandingTildeInPath
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: full)])
+                    }
                 }
+                Spacer()
+                WindowButton(title: "Forget…", soon: !can, why: why) { library.askForget() }
             }
-            Spacer()
-            WindowButton(title: "Forget…", soon: true)
+            if library.info != nil, !writes {
+                Text(updateToWrite).font(PaperMono.font(11.5)).foregroundStyle(p.muted)
+            }
         }
         .padding(.top, 6)
     }

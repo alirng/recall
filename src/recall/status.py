@@ -1004,6 +1004,32 @@ def rules() -> dict[str, str]:
     return {k: got[k] if got.get(k) in ACTIONS else PRESETS["recommended"][0][k] for k in SITUATIONS}
 
 
+def preset_of(now: dict[str, str]) -> str | None:
+    """The preset these rules are, or None when they match none (custom)."""
+    return next((name for name, (r, _) in PRESETS.items() if r == now), None)
+
+
+def set_rules(changes: dict[str, str] | None = None, preset: str | None = None) -> dict[str, str]:
+    """Change the coordination rules: a preset's rules, or some situations' actions. Writes only
+    [coordination] in config.toml; agents read it on their next edit. Returns the rules now."""
+    from . import config
+
+    if preset is not None:
+        if preset not in PRESETS:
+            raise ValueError(f"no preset {preset!r}; the presets are {', '.join(PRESETS)}")
+        new = dict(PRESETS[preset][0])
+    else:
+        bad = [k for k in changes or {} if k not in SITUATIONS]
+        if bad:
+            raise ValueError(f"no situation {bad[0]!r}; the situations are {', '.join(SITUATIONS)}")
+        wrong = [v for v in (changes or {}).values() if v not in ACTIONS]
+        if wrong:
+            raise ValueError(f"no action {wrong[0]!r}; the actions are {', '.join(ACTIONS)}")
+        new = {**rules(), **(changes or {})}
+    config.update("coordination", new)
+    return new
+
+
 def _about(other: Live, c: Checkout, situation: str, files: list[str], same: bool) -> str:
     """One line on another chat's open changes to files this agent is touching. `same`: the
     other chat's changes are in this agent's working copy."""

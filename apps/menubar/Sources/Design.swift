@@ -267,6 +267,8 @@ final class MenuModel: ObservableObject {
     let rows: [MenuRow]
     @Published var at: Int
     var close: () -> Void = {}
+    var ticks = true  // the ✓ column; a menu that marks the current row its own way leaves it out
+    var footer: (String, String, String)?  // a quiet last line: text, a command in body colour, text
 
     init(title: String?, rows: [MenuRow]) {
         self.title = title
@@ -304,7 +306,7 @@ struct MenuView: View {
             ForEach(Array(model.rows.enumerated()), id: \.element.id) { i, r in
                 Button { model.pick(i) } label: {
                     HStack(alignment: r.detail == nil ? .center : .top, spacing: 10) {
-                        Text(r.checked ? "✓" : "").foregroundStyle(p.ink).frame(width: 10)
+                        if model.ticks { Text(r.checked ? "✓" : "").foregroundStyle(p.ink).frame(width: 10) }
                         if let m = r.mark { m.padding(.top, r.detail == nil ? 0 : 4) }
                         VStack(alignment: .leading, spacing: 1) {
                             Text(r.title).foregroundStyle(r.enabled ? p.ink : p.muted).fontWeight(i == model.at ? .medium : .regular)
@@ -320,6 +322,13 @@ struct MenuView: View {
                 .buttonStyle(.plain)
                 .disabled(!r.enabled)
                 .onHover { if $0, r.enabled { model.at = i } }
+            }
+            if let f = model.footer {
+                Text("\(Text(f.0).foregroundColor(p.muted))\(Text(f.1).foregroundColor(p.body))\(Text(f.2).foregroundColor(p.muted))")
+                    .font(PaperMono.font(11.5))
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .top) { Rectangle().fill(p.grid).frame(height: 1) }
             }
         }
         .font(PaperMono.font(12.5))

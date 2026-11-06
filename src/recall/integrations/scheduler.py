@@ -18,6 +18,17 @@ LABEL = "dev.recall.dream"
 PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 SYSTEMD = os.path.expanduser("~/.config/systemd/user")
 LOG = os.path.join(paths.LOGS, "dream.log")
+# launchd starts jobs with a bare PATH (/usr/bin:/bin:/usr/sbin:/sbin), and so does an app opened from
+# Finder; agent CLIs (claude, codex) and local model servers live in these. The nightly run gets this
+# PATH from its plist, and `recall api` adds it to its own (with_job_path), so a model the app tests is
+# found the way the nightly run will find it.
+JOB_PATH = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", os.path.expanduser("~/.local/bin"))
+
+
+def with_job_path(path: str | None) -> str:
+    """A PATH that holds the nightly run's folders: `path` first, then any of JOB_PATH it lacks."""
+    have = [p for p in (path or "").split(os.pathsep) if p]
+    return os.pathsep.join(have + [p for p in JOB_PATH if p not in have])
 
 
 def enable(hour: int, minute: int, max_minutes: int, max_calls: int) -> str:
@@ -66,10 +77,7 @@ def _launchd(args: list[str], hour: int, minute: int) -> str:
         "StandardErrorPath": LOG,
         "LowPriorityIO": True,
         "ProcessType": "Background",
-        # launchd starts jobs with a bare PATH; agent CLIs and local model servers live here.
-        "EnvironmentVariables": {
-            "PATH": f"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{os.path.expanduser('~/.local/bin')}"
-        },
+        "EnvironmentVariables": {"PATH": ":".join(JOB_PATH)},
     }
     os.makedirs(os.path.dirname(PLIST), exist_ok=True)
     domain = f"gui/{os.getuid()}"

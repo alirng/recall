@@ -1,6 +1,7 @@
 // This Mac (board D): what recall holds here and how it runs. Stats, sources, last night's memory
 // run as a waterfall, storage from the API's inventory, model and schedule, coordination rules and
-// access. Everything here reads; the writes the board shows arrive in step 4 and are dashed.
+// access. The model, the coordination rules and removing copies kept before upgrades write (board G3),
+// through recall api; on a recall without writes they show read-only. The schedule stays read-only.
 
 import AppKit
 import SwiftUI
@@ -28,6 +29,7 @@ struct ThisMacView: View {
                         AccessPanel(library: library).id("Access")
                     }
                     StoragePanel(library: library).id("Storage")
+                    Color.clear.frame(height: 1).id("End")  // the page's foot, for a scroll to the bottom
                 }
                 .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 26)
             }
@@ -280,22 +282,69 @@ struct StoragePanel: View {
                 .padding(.top, 10).padding(.bottom, 4)
                 ForEach(xs) { item in
                     Cols(cells: [
-                        AnyView(Text(item.label).foregroundStyle(p.ink).truncationMode(.tail)),
+                        AnyView(Text(item.kind == "backup" ? Self.named(item) : item.label).foregroundStyle(p.ink).truncationMode(.tail)),
                         AnyView(Text(item.path).foregroundStyle(p.muted).truncationMode(.middle).help(item.path)),
                         AnyView(Text(size(item.bytes)).frame(maxWidth: .infinity, alignment: .trailing)),
                     ], weights: [1.3, 2.2, 0.5])
                 }
             }
-            if let backup = facts.storage?.totals?["backup"], backup > 0 {
+            let backups = items.filter { $0.kind == "backup" }
+            let backup = backups.reduce(0) { $0 + $1.bytes }
+            if backup > 0, !facts.confirmRemove {
                 HStack(spacing: 10) {
                     Text("\(Int(Double(backup) / Double(total) * 100))% of the space is copies kept before upgrades.")
                         .font(PaperMono.font(11.5)).foregroundStyle(p.muted)
                     Spacer()
-                    WindowButton(title: "Remove old copies · \(size(backup))", soon: true)
+                    WindowButton(title: "Remove old copies · \(size(backup))", soon: !library.canWrite("storage"),
+                                 why: library.info == nil ? "" : updateToWrite) {
+                        facts.removeNote = nil
+                        facts.confirmRemove = true
+                    }
                 }
                 .padding(.top, 12)
             }
+            if facts.confirmRemove, !backups.isEmpty { confirm(backups, backup, p) }
+            if let said = facts.removeNote { SaidLine(said: said).padding(.top, 10) }
         }
+    }
+
+    /// What Remove takes, item by item with sizes, and what stays (G3).
+    func confirm(_ backups: [Storage.Item], _ bytes: Int, _ p: Palette) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Remove what was kept before upgrades?").font(PaperMono.font(12.5, 500)).foregroundStyle(p.ink)
+            VStack(spacing: 0) {
+                ForEach(backups) { b in
+                    VStack(spacing: 0) {
+                        Rule()
+                        HStack {
+                            Text(Self.named(b)).foregroundStyle(p.body).lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 10)
+                            Text(size(b.bytes)).foregroundStyle(p.muted).monospacedDigit()
+                        }
+                        .font(PaperMono.font(12)).padding(.vertical, 5)
+                    }
+                }
+                Rule()
+            }
+            Text("Nothing reads these. Your chat index, notes and chat archive stay. This can't be undone.")
+                .font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Spacer()
+                WindowButton(title: "Cancel", small: true) { facts.confirmRemove = false }
+                WindowButton(title: facts.removeNote?.working == true ? "Removing…" : "Remove · \(size(bytes))", style: .risk, small: true) {
+                    library.removeBackups(backups)
+                }
+            }
+        }
+        .padding(12)
+        .background(p.paper)
+        .overlay(Rectangle().strokeBorder(p.ink, lineWidth: 1))
+        .padding(.top, 12)
+    }
+
+    /// "Old index copy · 0.4.0 · 16 Oct": what it is, the version and the day it was kept.
+    static func named(_ i: Storage.Item) -> String {
+        [i.label, i.version ?? "", day(i.date)].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     func box(_ kind: String, _ bytes: Int, _ p: Palette) -> some View {
@@ -320,9 +369,11 @@ struct ModelPanel: View {
     var body: some View {
         let p = Palette.of(scheme), c = facts.config
         let when = c?.schedule?.enabled == true ? "runs nightly at \(c?.schedule?.time ?? "")" : "no nightly run"
+        let now = facts.models?.options.first { $0.now == true }?.label
+            ?? [c?.model?.provider, c?.model?.name].compactMap { $0 }.joined(separator: " · ")
         Panel(title: "Model and schedule", note: when) {
-            row("Writes notes", [c?.model?.provider, c?.model?.name, c?.model?.batch.map { $0 == "off" ? "" : "batch" }].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "), p, strong: true)
-            if let f = c?.model?.fallback { row("After credits", f, p) }
+            Cols(cells: [AnyView(Label(text: "Writes notes")), AnyView(modelSelect(now, p))], weights: [0.9, 2], top: false)
+            if let f = facts.models?.fallback ?? c?.model?.fallback { row("If that fails", planWords(f), p) }
             row("Key", c?.model?.key?.configured == true ? "in " + (c?.model?.key?.stored_in ?? "settings").replacingOccurrences(of: "macOS ", with: "") : "none", p)
             if let e = c?.embeddings {
                 row("Embeddings", e.on == false ? "off" : [e.provider, e.name, e.provider == "ollama" ? "on this Mac" : nil].compactMap { $0 }.joined(separator: " · "), p)
@@ -331,16 +382,107 @@ struct ModelPanel: View {
                 row("Limits", [l.max_minutes.map { "\(Int($0)) min" }, l.max_calls.map { "\($0) calls" }, l.max_usd.map { String(format: "$%.2f", $0) }].compactMap { $0 }.joined(separator: " · ") + " a night", p)
             }
             if let b = c?.power?.on_battery { row("On battery", b == "defer" ? "waits for power" : b, p) }
+            // Read-only: changing it rewrites a background job, so it stays `recall schedule` in Terminal.
+            Cols(cells: [AnyView(Label(text: "Schedule")), AnyView(
+                Text("\(Text(c?.schedule?.enabled == true ? "nightly at \(c?.schedule?.time ?? "") · " : "off · ").foregroundColor(p.muted))\(Text("recall schedule").foregroundColor(p.body))")
+                .help("Change it with recall schedule in Terminal: it rewrites a background job"))], weights: [0.9, 2])
+            if let said = facts.modelNote { SaidLine(said: said).padding(.top, 10) }
+            if library.info != nil, !library.canWrite("model") {
+                Text(updateToWrite).font(PaperMono.font(11.5)).foregroundStyle(p.muted).padding(.top, 10)
+            }
             HStack(spacing: 8) {
-                WindowButton(title: "Change model…", soon: true)
                 WindowButton(title: "Run now", soon: true)
             }
             .padding(.top, 12)
         }
     }
 
+    /// The model as a menu of what already works here (G3), or plain text on a recall without writes.
+    @ViewBuilder
+    func modelSelect(_ now: String, _ p: Palette) -> some View {
+        if library.canWrite("model") {
+            MenuButton(popups: library.popups, width: 400, menu: { Self.menu(library, p) }) {
+                SelectBox(text: now.isEmpty ? "Choose a model" : now, strong: true)
+            }
+            .disabled(facts.modelNote?.working == true)
+        } else {
+            Text(now).foregroundStyle(p.ink).help(library.info == nil ? "" : updateToWrite)
+        }
+    }
+
+    static func menu(_ library: Library, _ p: Palette) -> MenuModel {
+        let options = library.facts.models?.options ?? []
+        let m = MenuModel(title: nil, rows: options.map { o in
+            MenuRow(title: o.label, detail: o.detail, mark: AnyView(Rectangle().fill(o.now == true ? p.ink : .clear)
+                .overlay(Rectangle().strokeBorder(p.ink, lineWidth: 1)).frame(width: 8, height: 8)),
+                    action: { [weak library] in library?.useModel(o) })
+        })
+        m.ticks = false
+        m.footer = ("A new API key or provider: ", "recall model", " in Terminal")
+        if let i = options.firstIndex(where: { $0.now == true }) { m.at = i }
+        return m
+    }
+
     func row(_ k: String, _ v: String, _ p: Palette, strong: Bool = false) -> some View {
         Cols(cells: [AnyView(Label(text: k)), AnyView(Text(v).foregroundStyle(strong ? p.ink : p.body))], weights: [0.9, 2])
+    }
+}
+
+/// "claude:haiku" as the menu says it: "Claude plan · claude:haiku".
+func planWords(_ spec: String) -> String {
+    if spec.hasPrefix("claude") { return "Claude plan · " + spec }
+    if spec.hasPrefix("chatgpt") { return "ChatGPT plan" + (spec.contains(":") ? " · " + spec.split(separator: ":", maxSplits: 1)[1] : "") }
+    return spec
+}
+
+/// A select as the boards draw it: the value, a ▾, a 1 px box (ink when it differs from the default).
+struct SelectBox: View {
+    let text: String
+    var strong = false
+    @Environment(\.colorScheme) var scheme
+    var body: some View {
+        let p = Palette.of(scheme)
+        HStack(spacing: 8) {
+            Text(text).foregroundStyle(p.ink).lineLimit(1)
+            Spacer(minLength: 4)
+            Text("▾").foregroundStyle(p.muted)
+        }
+        .font(PaperMono.font(12))
+        .padding(.horizontal, 8).frame(minHeight: 28)
+        .background(p.paper)
+        .overlay(Rectangle().strokeBorder(strong ? p.ink : p.line, lineWidth: 1))
+        .contentShape(Rectangle())
+    }
+}
+
+/// What a write said: working on it, done (an amber ✓), or didn't work.
+enum Said: Equatable {
+    case working(String), done(String), failed(String)
+    var working: Bool { if case .working = self { return true } else { return false } }
+}
+
+struct SaidLine: View {
+    let said: Said
+    var right: AnyView? = nil
+    @Environment(\.colorScheme) var scheme
+    var body: some View {
+        let p = Palette.of(scheme)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            switch said {
+            case .working(let t):
+                Rectangle().strokeBorder(p.muted, lineWidth: 1).frame(width: 8, height: 8)
+                Text(t)
+            case .done(let t):
+                Text("✓").foregroundStyle(p.accentText).fontWeight(.medium)
+                Text(t)
+            case .failed(let t):
+                Rectangle().strokeBorder(p.kind("open"), lineWidth: 1).frame(width: 8, height: 8)
+                Text(t).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            if let right { right }
+        }
+        .font(PaperMono.font(11.5)).foregroundStyle(p.muted)
     }
 }
 
@@ -349,11 +491,27 @@ struct CoordinationPanel: View {
     @EnvironmentObject var facts: Facts
     @Environment(\.colorScheme) var scheme
     static let when = ["same_copy": "two chats share one checkout", "conflict": "their edits conflict", "apart": "same file, different lines", "overlap": "changed lines overlap"]
+    static let actions = [("worktree", "stop once and move to its own worktree"), ("ask", "stop once and check with you"),
+                          ("tell", "let the edit through and mention it"), ("off", "do nothing")]
+    static let presetNames = ["recommended": "Recommended", "hands-off": "Hands-off", "tell": "Tell", "off": "Off"]
 
     var body: some View {
         let p = Palette.of(scheme)
+        let writes = library.canWrite("coordination")
+        let c = facts.coordination
         Panel(title: "Coordination rules", note: "when two chats touch the same work") {
-            ForEach(facts.coordination?.rules ?? []) { r in
+            if writes {
+                HStack(spacing: 10) {
+                    Label(text: "Preset").frame(width: 44, alignment: .leading)
+                    MenuButton(popups: library.popups, width: 360, menu: { presetMenu(c) }) {
+                        SelectBox(text: c.map { $0.preset.flatMap { Self.presetNames[$0] } ?? "Custom" } ?? "")
+                    }
+                    .frame(maxWidth: 220)
+                    Spacer()
+                }
+                .padding(.bottom, 7)
+            }
+            ForEach(c?.rules ?? []) { r in
                 VStack(spacing: 0) {
                     Rule()
                     HStack(spacing: 10) {
@@ -361,14 +519,102 @@ struct CoordinationPanel: View {
                         Text(Self.when[r.situation] ?? r.meaning ?? r.situation).foregroundStyle(p.ink).lineLimit(1)
                         Spacer(minLength: 6)
                         Label(text: "then")
-                        Text(r.action).foregroundStyle(p.ink)
-                            .padding(.horizontal, 8).frame(width: 96, height: 24, alignment: .leading)
-                            .overlay(Dotted(color: p.faint, dash: [3, 3]))
-                            .help((r.meaning ?? "") + (r.action == r.default ? " · the default" : "") + " · changing it comes in a later version")
+                        if writes {
+                            MenuButton(popups: library.popups, width: 320, menu: { actionMenu(r) }) {
+                                SelectBox(text: r.action, strong: r.action != r.default)
+                            }
+                            .frame(width: 104)
+                            .help(r.meaning ?? "")
+                        } else {
+                            Text(r.action).foregroundStyle(p.ink)
+                                .padding(.horizontal, 8).frame(width: 96, height: 24, alignment: .leading)
+                                .overlay(Dotted(color: p.faint, dash: [3, 3]))
+                                .help((r.meaning ?? "") + (r.action == r.default ? " · the default" : "") + (library.info == nil ? "" : " · " + updateToWrite))
+                        }
                     }
                     .padding(.vertical, 7)
                 }
             }
+            Rule()
+            if writes {
+                if let said = facts.coordNote {
+                    SaidLine(said: said, right: c?.preset == "recommended" ? nil : AnyView(back(p))).padding(.top, 10)
+                } else if let c, c.preset != "recommended" {
+                    HStack { Spacer(); back(p) }.padding(.top, 10)
+                }
+            } else if library.info != nil {
+                Text(updateToWrite).font(PaperMono.font(11.5)).foregroundStyle(p.muted).padding(.top, 10)
+            }
+        }
+    }
+
+    func back(_ p: Palette) -> some View {
+        Button { library.setCoordination(preset: "recommended") } label: {
+            Text("Back to Recommended").font(PaperMono.font(11.5)).foregroundStyle(p.ink).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    func presetMenu(_ c: Coordination?) -> MenuModel {
+        let names = ["recommended", "hands-off", "tell", "off"]
+        return MenuModel(title: "Preset", rows: names.map { n in
+            MenuRow(title: Self.presetNames[n] ?? n, detail: c?.presets?[n]?.meaning, checked: c?.preset == n,
+                    action: { [weak library] in library?.setCoordination(preset: n) })
+        })
+    }
+
+    func actionMenu(_ r: Coordination.Rule) -> MenuModel {
+        MenuModel(title: Self.when[r.situation] ?? r.situation, rows: Self.actions.map { a, what in
+            MenuRow(title: a, detail: what + (a == r.default ? " · recommended" : ""), checked: r.action == a,
+                    action: { [weak library] in library?.setCoordination(r.situation, a) })
+        })
+    }
+}
+
+extension Library {
+    /// Picks a model from the menu: recall makes one short test call and saves only if it answers.
+    func useModel(_ o: Models.Option) {
+        facts.modelNote = .working("Testing with one short call…")
+        API.send("PUT", "/v1/model", ["option": o.id], ModelSaved.self, timeout: 300) { [weak self] r in
+            guard let self else { return }
+            switch r {
+            case .success(let s): self.facts.modelNote = .done("Saved. Tonight's run uses \(s.label).")
+            case .failure(let f): self.facts.modelNote = .failed("That didn't work: \(f.message). Nothing changed.")
+            }
+            self.fetch("/v1/config", Config.self) { self.facts.config = $0 }
+            self.fetch("/v1/models", Models.self) { self.facts.models = $0 }
+        }
+    }
+
+    /// One rule's action, or a preset. Each saves at once; agents read it on their next edit.
+    func setCoordination(_ situation: String? = nil, _ action: String? = nil, preset: String? = nil) {
+        let body: [String: Any] = preset.map { ["preset": $0] } ?? ["rules": [situation ?? "": action ?? ""]]
+        API.send("PUT", "/v1/coordination", body, Coordination.self) { [weak self] r in
+            guard let self else { return }
+            switch r {
+            case .success(let c):
+                self.facts.coordination = c
+                if let situation, let was = c.was?[situation], was != action {
+                    self.facts.coordNote = .done("Saved · agents use it from their next edit · was \(was)")
+                } else {
+                    self.facts.coordNote = .done("Saved · agents use it from their next edit")
+                }
+            case .failure(let f): self.facts.coordNote = .failed("That didn't save: \(f.message)")
+            }
+        }
+    }
+
+    /// Removes every copy kept before an upgrade, as the confirm lists them.
+    func removeBackups(_ items: [Storage.Item]) {
+        facts.removeNote = .working("Removing…")
+        API.send("POST", "/v1/storage/remove", ["paths": items.map(\.path)], Removed.self) { [weak self] r in
+            guard let self else { return }
+            self.facts.confirmRemove = false
+            switch r {
+            case .success(let d): self.facts.removeNote = .done("Removed \(size(d.bytes)). Your chat index, notes and chat archive stay.")
+            case .failure(let f): self.facts.removeNote = .failed("Nothing was removed: \(f.message)")
+            }
+            self.fetch("/v1/storage", Storage.self) { self.facts.storage = $0 }
         }
     }
 }

@@ -1,7 +1,10 @@
-"""`recall api`: a read-only HTTP + JSON door to this recall instance, for the Mac app and the menu bar.
+"""`recall api`: an HTTP + JSON door to this recall instance, for the Mac app and the menu bar.
 
-It listens on a unix socket (running/api.sock in recall's data folder, mode 0600; no TCP) and answers GET
-requests under /v1. Live updates are server-sent events (/v1/events) fed by kqueue file events.
+It listens on a unix socket (running/api.sock in recall's data folder, mode 0600; no TCP) and answers
+requests under /v1. GET reads. A few writes (editing and forgetting notes, the coordination rules, the
+model, removing copies kept before an upgrade) go through recall's own modules, the same code the CLI
+runs, and all pass through change() here. Live updates are server-sent events (/v1/events) fed by
+kqueue file events.
 
 At rest it costs nothing: no timer loops, no polling. The one timer is the idle exit, armed when the
 last request or event stream ends. File watchers run only while an event stream is open.
@@ -26,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import __version__, paths
 
 API_VERSION = 1
+WRITES = ["notes", "coordination", "model", "storage"]  # what this server can change; /v1/info says so
 DEFAULT_IDLE = 300  # seconds with no request and no open event stream before the server exits
 RUNNING = os.path.join(paths.HOME, "running")  # files that exist only while recall runs
 SOCKET = os.path.join(RUNNING, "api.sock")
@@ -153,6 +157,7 @@ def info() -> dict:
         "started_at": _iso(STARTED),
         "idle_exit_seconds": STATE.idle if STATE else None,
         "live_updates": hasattr(select, "kqueue"),
+        "writes": WRITES,
         "home": _home(paths.HOME),
         "memory": _home(paths.MEMORY),
     }
@@ -226,208 +231,10 @@ def stats_view() -> dict:
     return out
 
 
-def _size(path: str) -> int:
-    total = 0
-    try:
-        if os.path.isfile(path) or os.path.islink(path):
-            return os.lstat(path).st_size
-        with os.scandir(path) as it:
-            for e in it:
-                if e.is_dir(follow_symlinks=False):
-                    total += _size(e.path)
-                elif e.is_file(follow_symlinks=False):
-                    total += e.stat(follow_symlinks=False).st_size
-    except OSError:
-        pass
-    return total
-
-
-# What each file under recall's data folder is. Every item is marked on its own, never a whole folder:
-# cache/ holds files that can be rebuilt next to ones that cannot (mail, edits).
-#   data         lost if deleted
-#   rebuildable  recall makes it again
-#   running      exists only while something runs
-#   settings     choices you made
-#   backup       a copy kept before an upgrade
-_HOME_ITEMS = {
-    "recall.db": ("Chat index and memory tables (chat copies, forgotten list, memory runs)", "data"),
-    "recall.db-wal": ("Chat index journal", "running"),
-    "recall.db-shm": ("Chat index shared memory", "running"),
-    "recall-vectors": ("Search vectors", "rebuildable"),
-    "usage.jsonl": ("Log of how recall was used", "data"),
-    "config.toml": ("Settings", "settings"),
-    "autopilot.json": ("Autopilot state", "settings"),
-    "evals": ("Your search and memory evals", "data"),
-    "deferred.json": ("Jobs waiting for power", "running"),
-    "catch-up.stamp": ("Last catch-up run", "running"),
-    "running": ("Sockets and locks while recall runs", "running"),
-    "logs": ("Logs", "running"),
-    "cache": ("Caches", None),
-    "backups": ("Backups", None),
-}
-_CACHE_ITEMS = {
-    "edits.jsonl": ('Record of edits agents made, for "which chat wrote this"', "data"),
-    "mail.jsonl": ("Messages between chats", "data"),
-    "mail-tokens.json": ("Message tokens", "data"),
-    "mail-read.json": ("Which messages were read", "data"),
-    "edit-index.json": ("Edit index", "rebuildable"),
-    "edit-warnings.json": ("Edit warnings already shown", "rebuildable"),
-    "rc-scans.json": ("Scan of agent rule files", "rebuildable"),
-    "status.json": ("Status cache", "rebuildable"),
-    "jit": ("Memory handed to sessions", "rebuildable"),
-    "embed-ok": ("Embedding check", "rebuildable"),
-    "embed-warm": ("Embedding warm-up", "rebuildable"),
-}
-
-
-def _item(label, path, kind, bytes_=None, **more) -> dict:
-    exists = os.path.lexists(path) if path else False
-    return {
-        "label": label,
-        "path": _home(path) if path else None,
-        "bytes": (_size(path) if bytes_ is None and exists else bytes_) or 0,
-        "kind": kind,
-        "exists": exists,
-    } | more
-
-
-def _home_items() -> list[dict]:
-    items = []
-    try:
-        names = sorted(os.listdir(paths.HOME))
-    except OSError:
-        return items
-    for name in names:
-        full = os.path.join(paths.HOME, name)
-        label, kind = _HOME_ITEMS.get(name, (None, None))
-        if name.endswith(".lock"):
-            label, kind = "Lock file", "running"
-        elif name.startswith("config.toml."):
-            label, kind = "Earlier settings, kept before an upgrade", "backup"
-        elif label is None:
-            label, kind = f"Other: {name}", "data"  # unknown files count as yours until recall says otherwise
-        if name == "cache":
-            items += _folder_items(full, _CACHE_ITEMS, "rebuildable", "cache")
-        elif name == "backups":
-            items += [
-                _item(
-                    "Menu bar app, copy from before an upgrade" if e.endswith(".app") else f"Backup: {e}",
-                    os.path.join(full, e),
-                    "backup",
-                )
-                for e in sorted(os.listdir(full))
-            ]
-        elif name == "logs":
-            items += [_item(f"Log: {e}", os.path.join(full, e), "running") for e in sorted(os.listdir(full))]
-        elif name == "running":
-            items += [_item(f"Running: {e}", os.path.join(full, e), "running") for e in sorted(os.listdir(full))]
-        else:
-            items.append(_item(label, full, kind))
-    return items
-
-
-def _folder_items(folder: str, table: dict, other_kind: str, name: str) -> list[dict]:
-    out = []
-    for e in sorted(os.listdir(folder)):
-        label, kind = table.get(e) or (
-            ("Lock file", "running") if e.endswith(".lock") else (f"Other in {name}/: {e}", "data")
-        )
-        out.append(_item(label, os.path.join(folder, e), kind))
-    return out
-
-
-def _installs() -> list[dict]:
-    """The recall program as installed, wherever it was put: the command on PATH or in
-    ~/.local/bin, and the folder it lives in."""
-    import shutil
-
-    found, seen = [], set()
-    for cand in (os.path.expanduser("~/.local/bin/recall"), shutil.which("recall")):
-        if not cand or not os.path.lexists(cand):
-            continue
-        real = os.path.realpath(cand)
-        if real in seen:
-            continue
-        seen.add(real)
-        found.append(_item("The recall command", cand, "rebuildable", bytes_=0))
-        tool = os.path.dirname(os.path.dirname(real))  # .../tools/recall-agents/bin/recall -> .../recall-agents
-        if os.path.basename(tool) != "bin" and os.path.isdir(tool):
-            found.append(_item("The installed recall program", tool, "rebuildable"))
-    return found
-
-
-def _keychain() -> dict:
-    """Whether recall has a key in the Keychain. Asks for the item's attributes only, never its secret."""
-    from . import keys
-
-    present = False
-    if sys.platform == "darwin":
-        try:
-            r = subprocess.run(
-                ["security", "find-generic-password", "-s", keys.SERVICE], capture_output=True, timeout=10
-            )
-            present = r.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            pass
-    return {
-        "label": "Model API key in the Keychain",
-        "path": "macOS Keychain",
-        "bytes": 0,
-        "kind": "settings",
-        "exists": present,
-    }
-
-
-def _outside_items() -> list[dict]:
-    home = os.path.expanduser("~")
-    items = [
-        _item("Your notes, a git repo", paths.MEMORY, "data", history_bytes=_size(os.path.join(paths.MEMORY, ".git")))
-    ]
-    items += _installs()
-    agents = os.path.join(home, "Library", "LaunchAgents")
-    try:
-        plists = sorted(f for f in os.listdir(agents) if f.startswith(("dev.recall.", "com.rererecall.")))
-    except OSError:
-        plists = []
-    items += [_item(f"Background job: {f[:-6]}", os.path.join(agents, f), "settings") for f in plists]
-    for app in ("~/Applications/Recall.app", "/Applications/Recall.app"):
-        if os.path.exists(os.path.expanduser(app)):
-            items.append(_item("The menu bar app", os.path.expanduser(app), "rebuildable"))
-    items.append(
-        _item(
-            "Menu bar app settings (an earlier build)",
-            os.path.join(home, "Library/Preferences/dev.recall.app.plist"),
-            "settings",
-        )
-    )
-    items.append(
-        _item("Scratch files from an earlier build", os.path.join(home, "Library/Caches/recall"), "rebuildable")
-    )
-    if sys.platform == "darwin":
-        items.append(_keychain())
-    return [i for i in items if i["exists"] or i["path"] == "macOS Keychain"]  # the Keychain item says present or not
-
-
 def storage_view() -> dict:
-    def make():
-        items = _home_items() + _outside_items()
-        totals: dict[str, int] = {}
-        for i in items:
-            totals[i["kind"]] = totals.get(i["kind"], 0) + i["bytes"]
-        return {
-            "items": items,
-            "totals": totals,
-            "total_bytes": sum(totals.values()),
-            "kinds": {
-                "data": "lost if deleted",
-                "rebuildable": "recall makes it again",
-                "running": "exists only while something runs",
-                "settings": "choices you made",
-                "backup": "a copy kept before an upgrade",
-            },
-        }
+    from . import storage
 
-    return _cached("storage", 30, make)
+    return _cached("storage", 30, storage.inventory)
 
 
 _COUNTS_SKIP = {"batches", "batched_calls", "cost_usd"}
@@ -638,6 +445,7 @@ def coordination_view() -> dict:
 
     now = status.rules()
     return {
+        "preset": status.preset_of(now),
         "rules": [
             {
                 "situation": k,
@@ -891,6 +699,7 @@ def note_view(note_id: str) -> dict:
 
     return _note_row(n) | {
         "body": n.body,
+        "stamp": n.stamp,
         "supersedes": n.supersedes,
         "superseded_by": n.superseded_by,
         "reach": n.reach,
@@ -1062,6 +871,75 @@ def search_view(q, kind, agent, project, since, until, limit, client) -> dict:
         raise ApiError(400, "bad_window", str(e)) from e
     out["took_ms"] = usage.ms_since(started)
     return out
+
+
+# --- writes -------------------------------------------------------------------------
+# Each write is a call into recall's own modules (memory/edit.py, status.py, onboarding.py,
+# storage.py), which the CLI uses too. These functions only find what the call needs.
+
+
+def _note_path(note_id: str) -> str:
+    notes, _ = _notes()
+    n = notes.get(note_id)
+    if not n:
+        raise ApiError(404, "no_such_note", f"no note {note_id!r}")
+    return n.path
+
+
+def note_preview(note_id: str, text: str) -> dict:
+    from .memory import edit
+
+    return edit.preview(_note_path(note_id), text)
+
+
+def reindex(notes: dict | None, digest: str | None) -> dict:
+    """The notes search tables, brought up to date after a note changed (on the database thread)."""
+    from .memory import edit
+
+    started = time.perf_counter()
+    with contextlib.suppress(ApiError):  # no index yet: nothing to refresh
+        edit.reindex(_con(), notes, digest)
+    return {"index_ms": round((time.perf_counter() - started) * 1000)}
+
+
+def models_view() -> dict:
+    from . import onboarding
+
+    def make():
+        cfg = _config()["model"]
+        return {"options": onboarding.model_options(), "fallback": cfg.get("fallback"), "more": "recall model"}
+
+    return _cached("models", 30, make)
+
+
+def model_set(option: str) -> dict:
+    from . import onboarding
+    from .llm import FatalError, LLMError
+
+    try:
+        out = onboarding.use_model(option)
+    except (FatalError, LLMError, ValueError) as e:
+        raise ApiError(422, "test_failed", str(e)) from e
+    finally:
+        _ttl.pop("models", None)
+    return out
+
+
+def coordination_set(preset: str | None, rules: dict | None) -> dict:
+    from . import status
+
+    was = status.rules()
+    status.set_rules(rules, preset)
+    return coordination_view() | {"was": was}
+
+
+def storage_remove(chosen: list) -> dict:
+    from . import storage
+
+    try:
+        return storage.remove([str(c) for c in chosen])
+    finally:
+        _ttl.pop("storage", None)
 
 
 # --- live updates -------------------------------------------------------------------
@@ -1380,6 +1258,54 @@ def build_app():
         )
         return reply(await on_db(search_view, *args))
 
+    async def h_note_preview(request):
+        body = await _json(request)
+        return reply(await off_db(note_preview, request.path_params["note_id"], str(body.get("text") or "")))
+
+    async def h_note_edit(request):
+        from .memory import edit
+
+        body = await _json(request)
+        args = (request.path_params["note_id"], str(body.get("text") or ""), body.get("stamp"))
+        return reply(await change(edit.edit, *args, notes=True))
+
+    async def h_note_forget(request):
+        from .memory import edit
+
+        body = await _json(request)
+        return reply(await change(edit.forget, request.path_params["note_id"], body.get("stamp"), notes=True))
+
+    async def h_note_restore(request):
+        from .memory import edit
+
+        body = await _json(request)
+        return reply(
+            await change(edit.restore, request.path_params["note_id"], str(body.get("commit") or ""), notes=True)
+        )
+
+    async def h_coord_set(request):
+        body = await _json(request)
+        rules = body.get("rules")
+        if body.get("preset") is None and not isinstance(rules, dict):
+            raise ApiError(400, "bad_parameter", "send a preset, or rules: {situation: action}")
+        return reply(await change(coordination_set, body.get("preset"), rules, topics=["config"]))
+
+    async def h_models(request):
+        return reply(await off_db(models_view))
+
+    async def h_model_set(request):
+        body = await _json(request)
+        if not body.get("option"):
+            raise ApiError(400, "bad_parameter", "option is one of /v1/models' option ids")
+        return reply(await change(model_set, str(body["option"]), topics=["config"]))
+
+    async def h_storage_remove(request):
+        body = await _json(request)
+        chosen = body.get("paths")
+        if not isinstance(chosen, list) or not chosen:
+            raise ApiError(400, "bad_parameter", "paths is a list of /v1/storage paths tagged backup")
+        return reply(await change(storage_remove, chosen))
+
     async def h_events(request):
         q = await HUB.join()
 
@@ -1409,10 +1335,18 @@ def build_app():
         Route("/v1/runs/latest", h_run_latest),
         Route("/v1/config", h_config),
         Route("/v1/coordination", h_coord),
+        Route("/v1/coordination", h_coord_set, methods=["PUT"]),
+        Route("/v1/models", h_models),
+        Route("/v1/model", h_model_set, methods=["PUT"]),
+        Route("/v1/storage/remove", h_storage_remove, methods=["POST"]),
         Route("/v1/doctor", h_doctor),
         Route("/v1/projects", h_projects),
         Route("/v1/notes", h_notes),
         Route("/v1/notes/{note_id}", h_note),
+        Route("/v1/notes/{note_id}", h_note_edit, methods=["PUT"]),
+        Route("/v1/notes/{note_id}/preview", h_note_preview, methods=["POST"]),
+        Route("/v1/notes/{note_id}/forget", h_note_forget, methods=["POST"]),
+        Route("/v1/notes/{note_id}/restore", h_note_restore, methods=["POST"]),
         Route("/v1/chats", h_chats),
         Route("/v1/chats/{chat_id}/messages", h_chat),
         Route("/v1/search", h_search),
@@ -1426,8 +1360,55 @@ def usage_client(request) -> str:
     return (request.headers.get("x-recall-client") or "app")[:40]
 
 
+BODY_MAX = 1_000_000
+
+
+async def _json(request) -> dict:
+    raw = await request.body()
+    if len(raw) > BODY_MAX:
+        raise ApiError(413, "too_large", f"a request body is at most {BODY_MAX} bytes")
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError as e:
+        raise ApiError(400, "bad_json", "the body is not JSON") from e
+    if not isinstance(data, dict):
+        raise ApiError(400, "bad_json", "the body is a JSON object")
+    return data
+
+
+async def change(fn, *args, notes: bool = False, topics: list[str] | None = None) -> dict:
+    """Every write goes through here, so a check that applies to all of them (step 5's per-device
+    token) sits in one place. Runs the write off the event loop and the database thread, refreshes
+    the notes search index after a notes change, and tells open event streams what changed."""
+    from .memory.edit import Refused
+
+    started = time.perf_counter()
+    try:
+        out = await off_db(fn, *args)
+    except Refused as e:
+        raise ApiError(e.status, e.code, e.message) from e
+    except ValueError as e:
+        raise ApiError(400, "refused", str(e)) from e
+    took = {"write_ms": round((time.perf_counter() - started) * 1000)}
+    loaded, digest = out.pop("_notes", None), out.pop("_digest", None)
+    if notes:
+        took |= await on_db(reindex, loaded, digest)
+        topics = ["notes"]
+    if topics:
+        await _announce(topics)
+    return out | {"took": took}
+
+
+async def _announce(topics: list[str]) -> None:
+    """Say what changed now, rather than when the file watcher's two-second window closes, and let the
+    watcher know, so it doesn't say it again."""
+    HUB.announce(topics)
+    if HUB.watcher is not None:
+        await HUB.watcher.prime()
+
+
 ENDPOINTS = {
-    "/v1/info": "version, API version, instance name",
+    "/v1/info": "version, API version, instance name, what this server can change (writes)",
     "/v1/status": "live sessions, overlaps, outlived servers, power, roots (?since=12h)",
     "/v1/stats": "chats and messages by agent, with each agent's latest chat",
     "/v1/storage": "bytes by part: index, vectors, notes, backups, rest",
@@ -1443,6 +1424,14 @@ ENDPOINTS = {
     "/v1/chats/{id}/messages": "a chat's messages (?offset&limit&max_chars)",
     "/v1/search": "search chats and notes (?q&kind&agent&project&since&until&limit)",
     "/v1/events": "server-sent events: hello, then changed {topics}",
+    "PUT /v1/notes/{id}": "save a note's text {text, stamp}: busy and conflict refuse it",
+    "POST /v1/notes/{id}/preview": "what saving {text} would record, rule by rule; writes nothing",
+    "POST /v1/notes/{id}/forget": "delete a note {stamp} so it is not learned again; returns the commit",
+    "POST /v1/notes/{id}/restore": "put back a note forget deleted {commit}",
+    "PUT /v1/coordination": "set the coordination rules {preset} or {rules: {situation: action}}",
+    "/v1/models": "the models that can write memories here now, each with an option id",
+    "PUT /v1/model": "switch the model {option} after one test call",
+    "POST /v1/storage/remove": "delete copies kept before an upgrade {paths}",
 }
 
 
@@ -1516,6 +1505,11 @@ def run(idle: float = DEFAULT_IDLE, path: str | None = None, launchd: bool = Fal
 
     global STATE
     path = path or SOCKET
+    from .integrations import scheduler
+
+    # Started by an app or launchd, PATH is bare and misses the agent CLIs (claude, codex) and local
+    # model servers: give it the folders the nightly run gets, so the model menu sees what the run will.
+    os.environ["PATH"] = scheduler.with_job_path(os.environ.get("PATH"))
     if launchd:  # launchd owns the socket file: no lock, no cleanup
         sock, lock, inode = _launchd_socket(), None, None
     else:
