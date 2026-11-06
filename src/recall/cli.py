@@ -1243,7 +1243,11 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-minutes", type=int)
     sp.add_argument("--max-calls", type=int, help="cap on model calls per night")
     command("serve", cmd_serve, "run the MCP server over stdio")
-    sp = command("api", cmd_api, "serve recall's data to apps over a local socket (read-only); exits when idle")
+    sp = command(
+        "api",
+        cmd_api,
+        "serve recall's data to apps over a local socket, and the few changes an app makes; exits when idle",
+    )
     sp.add_argument("--idle", type=float, default=300, help="exit after this many seconds with no client (0: never)")
     sp.add_argument("--socket", help="socket path (default: running/api.sock in recall's data folder)")
     sp.add_argument("--launchd", action="store_true", help="take the socket from launchd (socket activation)")

@@ -1,6 +1,8 @@
 """`recall setup`: choose agents and a model, then index, connect, schedule and start."""
 
 import os
+import re
+import shutil
 import subprocess
 import sys
 
@@ -249,20 +251,187 @@ def _store_key(ask: Prompter, kind: str) -> str:
 
 
 def _test(provider: Provider) -> None:
+    problem = provider.check()
+    if problem:
+        raise ValueError(problem)
+    print(f"   testing {provider.label}…", end=" ", flush=True)
+    learned = try_model(provider)
+    print("ok")
+    where = "nothing leaves this machine" if provider.private else f"chat excerpts go to {provider.destination}"
+    print(f"   {where}. Learned from the test chat: {learned}")
+
+
+TEST_CHAT = (
+    "=== CHAT 1\nChat setup-check | agent: claude | date: today\nProject: none\nTitle: check\n"
+    "[U1] When I say commit, I always mean commit and push."
+)
+
+
+def try_model(provider: Provider) -> list[str]:
+    """One short call to the model with an invented chat, the check `recall setup` and `recall model`
+    make before saving a model. Raises (ValueError, FatalError, LLMError) if it does not answer;
+    returns the titles it learned from the test chat."""
     from .memory import extract
 
     problem = provider.check()
     if problem:
         raise ValueError(problem)
-    print(f"   testing {provider.label}…", end=" ", flush=True)
-    sample = (
-        "=== CHAT 1\nChat setup-check | agent: claude | date: today\nProject: none\nTitle: check\n"
-        "[U1] When I say commit, I always mean commit and push."
-    )
-    data = Client(provider).json("setup-check", extract.SYSTEM, sample, extract.SCHEMA)
-    print("ok")
-    where = "nothing leaves this machine" if provider.private else f"chat excerpts go to {provider.destination}"
-    print(f"   {where}. Learned from the test chat: {[m['title'] for m in extract.memories(data, 1)[1]]}")
+    data = Client(provider).json("setup-check", extract.SYSTEM, TEST_CHAT, extract.SCHEMA)
+    return [m["title"] for m in extract.memories(data, 1)[1]]
+
+
+# --- the model menu: what already works here --------------------------------------------------
+# An app offers these instead of asking questions: nothing here takes or shows a key. Adding a key
+# or a new provider stays `recall model`, in a terminal.
+
+KEY_KINDS = ("anthropic", "openai", "openrouter")
+NAMES = {
+    "anthropic": "Anthropic API",
+    "openai": "OpenAI API",
+    "openrouter": "OpenRouter",
+    "custom": "Your server",
+    "claude": "Claude plan",
+    "chatgpt": "ChatGPT plan",
+    "local": "Local",
+}
+
+
+def model_options() -> list[dict]:
+    """The models that can write memories on this machine now, found the way `recall model` finds
+    them: the model set now, a signed-in Claude or ChatGPT plan, each model of a running local server,
+    and an API provider whose key recall already stored. Each option has an id for use_model(), a
+    label and a detail line; none carries a key or settings."""
+    return [{k: v for k, v in o.items() if k != "settings"} for o in _options()]
+
+
+def use_model(option: str) -> dict:
+    """Switch the model that writes memories to one of model_options(), after one short test call.
+    Saves [model] only if the test answers; raises otherwise and nothing changes."""
+    found = next((o for o in _options() if o["id"] == option), None)
+    if found is None:
+        raise ValueError(f"no model option {option!r} here now")
+    current = config.load()["model"]
+    settings = _switched(current, found["settings"])
+    provider = build(settings)
+    learned = try_model(provider)
+    if settings != current:
+        config.update("model", settings)
+    return {
+        "label": found["label"],
+        "learned": learned,
+        "private": provider.private,
+        "destination": None if provider.private else provider.destination,
+        "fallback": settings.get("fallback"),
+    }
+
+
+def _options() -> list[dict]:
+    current = config.load()["model"]
+    out: list[dict] = []
+    if current.get("provider"):
+        out.append(_option("current", current, now=True))
+    claude, chatgpt = Claude(), ChatGPT("")
+    if claude.check() is None:
+        out.append(_option("claude:haiku", {"provider": "claude", "name": "haiku"}))
+    if chatgpt.check() is None:
+        name = _small_first(chatgpt.models())
+        out.append(_option(f"chatgpt:{name}", {"provider": "chatgpt", "name": name, "effort": "medium"}))
+    for server, url in _running_local_servers().items():
+        settings = {"provider": "local", "base_url": url, "server": "ollama" if server == "Ollama" else "openai"}
+        try:
+            names = build({**settings, "name": ""}).models()
+        except (FatalError, LLMError, OSError):
+            names = []
+        for name in names:
+            if "embed" not in name.lower():  # an embedding model can't write notes
+                out.append(_option(f"local:{server}:{name}", {**settings, "name": name}))
+    for kind in KEY_KINDS:
+        ref = _stored_key(kind)
+        if not ref or current.get("provider") == kind:
+            continue
+        settings = {"provider": kind, "api_key": ref}
+        try:
+            name = _newest_small(build({**settings, "name": ""}).models())
+        except (FatalError, LLMError, OSError, ValueError):
+            continue
+        if name:
+            out.append(_option(f"{kind}:{name}", {**settings, "name": name}))
+    seen, unique = set(), []
+    for o in out:  # the model set now is listed once, as itself
+        key = (o["settings"].get("provider"), o["settings"].get("name"), o["settings"].get("base_url"))
+        if key not in seen:
+            seen.add(key)
+            unique.append(o)
+    return unique
+
+
+def _newest_small(models: list[str]) -> str:
+    """The newest of the smallest-sounding models: an API lists old versions beside new ones, in no
+    order to rely on."""
+    for hint in SMALL_MODEL_HINTS:
+        found = [m for m in models if hint in m.lower()]
+        if found:
+            return max(found, key=lambda m: [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", m.lower())])
+    return models[0] if models else ""
+
+
+def _option(oid: str, settings: dict, now: bool = False) -> dict:
+    kind = settings.get("provider", "")
+    name = settings.get("name") or ""
+    shown = f"claude:{name}" if kind == "claude" else name
+    label = " · ".join(x for x in (NAMES.get(kind, kind), shown) if x)
+    if kind == "claude":
+        detail = "through Claude Code · no key"
+    elif kind == "chatgpt":
+        detail = "through Codex · no key"
+    elif kind == "local":
+        server = "Ollama" if settings.get("server") == "ollama" else "a local server"
+        detail = f"{server} on this Mac · nothing leaves the machine · slower"
+    else:
+        detail = _key_words(settings.get("api_key"))
+        if str(settings.get("batch", "auto")).lower() not in ("off", "false", "no") and kind in ("anthropic", "openai"):
+            detail += " · batch when it's cheaper"
+    if now:
+        detail += " · now"
+    return {"id": oid, "label": label, "detail": detail, "now": now, "provider": kind, "settings": settings}
+
+
+def _key_words(ref) -> str:
+    ref = str(ref or "")
+    if ref == "keychain":
+        return "key in " + keys.storage_name().replace("macOS ", "")
+    if ref == "file":
+        return "key in keys.json"
+    if ref.startswith("env:"):
+        return f"key in ${ref[4:]}"
+    return "no key" if not ref else "key in config.toml"
+
+
+def _stored_key(kind: str) -> str | None:
+    """Where recall stored a key for this provider, if it did, asking the key store for the item's
+    attributes only, never its secret."""
+    if sys.platform == "darwin" and shutil.which("security"):
+        r = subprocess.run(["security", "find-generic-password", "-s", keys.SERVICE, "-a", kind], capture_output=True)
+        if r.returncode == 0:
+            return "keychain"
+    elif shutil.which("secret-tool"):
+        r = subprocess.run(["secret-tool", "search", "service", keys.SERVICE, "account", kind], capture_output=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return "keychain"
+    return "file" if kind in keys._read_file() else None
+
+
+def _switched(current: dict, new: dict) -> dict:
+    """The [model] table after a switch. The same provider keeps what else was set for it (batch,
+    fallback, a consolidation model, effort); another provider starts fresh, with a signed-in plan
+    to fall back on when an API key's credits run out, as `recall model` offers."""
+    if current.get("provider") == new.get("provider"):
+        return {**current, **new}
+    out = dict(new)
+    plan = {"anthropic": ("claude:haiku", Claude()), "openai": ("chatgpt", ChatGPT(""))}.get(new.get("provider"))
+    if plan and plan[1].check() is None:
+        out["fallback"] = plan[0]
+    return out
 
 
 def _grok_bot(ask: Prompter, cfg: dict, chats: int) -> None:

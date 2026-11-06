@@ -8,7 +8,13 @@ import AppKit
 
 enum API {
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
-    static let socketPath = home + "/.agents/recall/running/api.sock"
+    /// recall's data folder: RECALL_HOME when the app was started with one (a scratch copy, as
+    /// recall itself honours it), ~/.agents/recall otherwise. The recall api the app starts inherits it.
+    static let recallHome: String = {
+        if let h = ProcessInfo.processInfo.environment["RECALL_HOME"], !h.isEmpty { return (h as NSString).expandingTildeInPath }
+        return home + "/.agents/recall"
+    }()
+    static let socketPath = recallHome + "/running/api.sock"
     static let minimumAPI = 1
     static let queue = DispatchQueue(label: "recall.api", qos: .userInitiated, attributes: .concurrent)
 
@@ -46,19 +52,28 @@ enum API {
         return fd
     }
 
-    static func send(_ fd: Int32, _ path: String) -> Bool {
-        let request = "GET \(path) HTTP/1.1\r\nHost: recall\r\nX-Recall-Client: app\r\nConnection: close\r\n\r\n"
-        let data = Array(request.utf8)
-        return data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) } == data.count
+    static func send(_ fd: Int32, _ path: String, method: String = "GET", body: Data? = nil) -> Bool {
+        var head = "\(method) \(path) HTTP/1.1\r\nHost: recall\r\nX-Recall-Client: app\r\nConnection: close\r\n"
+        if let body { head += "Content-Type: application/json\r\nContent-Length: \(body.count)\r\n" }
+        var data = Array((head + "\r\n").utf8)
+        if let body { data += Array(body) }
+        var sent = 0
+        while sent < data.count {
+            let n = data.withUnsafeBytes { write(fd, $0.baseAddress! + sent, data.count - sent) }
+            if n <= 0 { return false }
+            sent += n
+        }
+        return true
     }
 
-    /// One GET, read to the end. Blocking: call it off the main thread.
-    static func raw(_ path: String) -> Result<Data, Failure> {
+    /// One request, read to the end. Blocking: call it off the main thread. `timeout` is how long a
+    /// read may wait: a model's test call takes longer than anything else here.
+    static func raw(_ path: String, method: String = "GET", body: Data? = nil, timeout: Int = 30) -> Result<Data, Failure> {
         let started = Date()
-        defer { if Probe.on { FileHandle.standardError.write(Data(String(format: "  %4.0f ms %@\n", Date().timeIntervalSince(started) * 1000, path).utf8)) } }
-        guard let fd = connect() else { return .failure(Failure(message: "recall isn't running")) }
+        defer { if Probe.on { FileHandle.standardError.write(Data(String(format: "  %4.0f ms %@ %@\n", Date().timeIntervalSince(started) * 1000, method, path).utf8)) } }
+        guard let fd = connect(timeout: timeout) else { return .failure(Failure(message: "recall isn't running")) }
         defer { close(fd) }
-        guard send(fd, path) else { return .failure(Failure(message: "Couldn't ask recall")) }
+        guard send(fd, path, method: method, body: body) else { return .failure(Failure(message: "Couldn't ask recall")) }
         var all = Data()
         var buf = [UInt8](repeating: 0, count: 65536)
         while true {
@@ -90,6 +105,21 @@ enum API {
             let result = raw(path).flatMap { data -> Result<T, Failure> in
                 do { return .success(try JSONDecoder().decode(T.self, from: data)) } catch {
                     return .failure(Failure(code: "decode", message: "Couldn't read recall's answer to \(path.split(separator: "?").first ?? "")"))
+                }
+            }
+            DispatchQueue.main.async { done(result) }
+        }
+    }
+
+    /// A write: `method` with a JSON body, decoded on the API queue, answered on the main thread.
+    /// The failure carries recall's own code (busy, conflict, test_failed…).
+    static func send<T: Decodable>(_ method: String, _ path: String, _ body: [String: Any], _ type: T.Type, timeout: Int = 30,
+                                   _ done: @escaping (Result<T, Failure>) -> Void) {
+        let data = try? JSONSerialization.data(withJSONObject: body)
+        queue.async {
+            let result = raw(path, method: method, body: data ?? Data("{}".utf8), timeout: timeout).flatMap { data -> Result<T, Failure> in
+                do { return .success(try JSONDecoder().decode(T.self, from: data)) } catch {
+                    return .failure(Failure(code: "decode", message: "Couldn't read recall's answer to \(path)"))
                 }
             }
             DispatchQueue.main.async { done(result) }
@@ -302,6 +332,9 @@ struct Info: Decodable {
     let live_updates: Bool?
     let home: String?
     let memory: String?
+    /// What this server can change (notes, coordination, model, storage). Absent on a recall api from
+    /// before these writes: the window then shows its controls read-only.
+    let writes: [String]?
 }
 
 struct Stats: Decodable {
@@ -351,10 +384,12 @@ struct Note: Decodable {
     let title: String
     let confidence: String?
     let status: String?
+    let archived: Bool?
     let created: String?
     let updated: String?
     let last_seen: String?
     let body: String?
+    let stamp: String?
     let path: String?
     let source_chats: [Source]?
     let rules_all: [Rule]?
@@ -429,7 +464,11 @@ struct Runs: Decodable {
 }
 
 struct Storage: Decodable {
-    struct Item: Decodable, Identifiable { let label: String; let path: String; let bytes: Int; let kind: String; let exists: Bool?; var id: String { path } }
+    struct Item: Decodable, Identifiable {
+        let label: String; let path: String; let bytes: Int; let kind: String; let exists: Bool?
+        let version: String?; let date: String?  // a copy kept before an upgrade: what it was and when
+        var id: String { path }
+    }
     let items: [Item]
     let totals: [String: Int]?
     let total_bytes: Int?
@@ -451,8 +490,40 @@ struct Config: Decodable {
 
 struct Coordination: Decodable {
     struct Rule: Decodable, Identifiable { let situation: String; let meaning: String?; let action: String; let `default`: String?; var id: String { situation } }
+    struct Preset: Decodable { let rules: [String: String]; let meaning: String? }
     let rules: [Rule]
+    let preset: String?
+    let actions: [String]?
+    let presets: [String: Preset]?
+    let was: [String: String]?  // after a change: the rules before it
 }
+
+// MARK: Writes (step 4)
+
+/// What saving a note's text records, rule by rule: kept, reworded, removed, new, merged or restored.
+struct NoteReading: Decodable {
+    struct Change: Decodable, Identifiable {
+        let kind: String; let rule_id: String; let text: String
+        let said_by: String?; let was: String?; let into: String?
+        var id: String { kind + rule_id }
+    }
+    let stamp: String?
+    let empty: Bool?
+    let changes: [Change]
+    let counts: [String: Int]?
+}
+
+struct Edited: Decodable { let note_id: String; let changed: Bool; let commit: String?; let counts: [String: Int]? }
+struct Forgotten: Decodable { let note_id: String; let title: String; let commit: String? }
+
+struct Models: Decodable {
+    struct Option: Decodable, Identifiable { let id: String; let label: String; let detail: String?; let now: Bool?; let provider: String? }
+    let options: [Option]
+    let fallback: String?
+}
+
+struct ModelSaved: Decodable { let label: String; let `private`: Bool?; let fallback: String? }
+struct Removed: Decodable { struct Item: Decodable { let path: String; let bytes: Int }; let removed: [Item]; let bytes: Int }
 
 struct Doctor: Decodable {
     struct Root: Decodable { let root: String?; let agent: String; let state: String?; let connected: Bool?; let indexed_at: Double? }

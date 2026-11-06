@@ -245,6 +245,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Probe.appearance()
         if CommandLine.arguments.contains("--open") { openWindow() }
         if let dir = Probe.value("--shot") { openWindow(); Probe.shots(windows, to: dir) }
+        if let dir = Probe.value("--write-shots") { openWindow(); Probe.writeShots(windows, to: dir) }
+        if let option = Probe.value("--model-test") { openWindow(); Probe.modelTest(windows, option, to: Probe.value("--shots-to")) }
         if CommandLine.arguments.contains("--scroll-notes") { openWindow(); Probe.scrollNotes(windows) }
         if CommandLine.arguments.contains("--scroll-chat") { openWindow(); Probe.scrollChat(windows) }
         if let s = Probe.value("--open-after").flatMap(Double.init) {
@@ -311,6 +313,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return i
             }(),
             item("Find in Chat", #selector(WindowController.findInChat), "f", target: windows),
+            .separator(),
+            item("Edit Note", #selector(WindowController.editNote), "e", target: windows),
+            item("Save Note", #selector(WindowController.saveNote), "s", target: windows),
         ])
         add("Go", [
             item("Search, or Go Anywhere", #selector(WindowController.focusSearch), "k", target: windows),
@@ -654,7 +659,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
             // With recall's other files, not in ~/Library/Caches.
-            let dir = URL(fileURLWithPath: API.home + "/.agents/recall/cache/diffs")
+            let dir = URL(fileURLWithPath: API.recallHome + "/cache/diffs")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let url = dir.appendingPathComponent("\((o.file as NSString).lastPathComponent)-both-changes.diff")
             try? text.write(to: url, atomically: true, encoding: .utf8)

@@ -98,8 +98,24 @@ final class WindowController: NSObject, NSWindowDelegate {
             library.find.step(e.modifierFlags.contains(.shift) ? -1 : 1)
             return true
         }
+        // Editing a note: esc cancels, as the Cancel button's key cap says (a text view would take it).
+        if e.keyCode == 53, library.section == .memory, let ed = library.notes.editor, library.notes.note?.note_id == ed.noteId {
+            library.notes.cancelEdit()
+            return true
+        }
+        let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
         if window?.firstResponder is NSText { return false }
-        if !e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty { return false }
+        // ⌘Z while "Forgot …" shows puts the note back.
+        if mods == .command, e.charactersIgnoringModifiers == "z", library.toast != nil {
+            library.undoForget()
+            return true
+        }
+        if !mods.isEmpty { return false }
+        // ⌫ in the notes list: Forget…
+        if e.keyCode == 51, library.section == .memory {
+            library.askForget()
+            return true
+        }
         switch e.keyCode {
         case 125: return library.key(.down)
         case 126: return library.key(.up)
@@ -179,6 +195,12 @@ final class WindowController: NSObject, NSWindowDelegate {
     @objc func focusSearch() { library?.palette.open() }
     @objc func findInChat() { library?.find.show() }
     @objc func copyNote() { library?.notes.copyMarkdown() }
+    @objc func editNote() {
+        guard let library else { return }
+        library.go(.memory)
+        library.notes.edit()
+    }
+    @objc func saveNote() { library?.notes.editor?.save() }
     @objc func goMemory() { library?.go(.memory) }
     @objc func goChats() { library?.go(.chats) }
     @objc func goThisMac() { library?.go(.thisMac) }
@@ -218,6 +240,9 @@ struct RootView: View {
                 content(p)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .overlay(alignment: .bottom) {
+            if let t = library.toast { ToastView(toast: t, library: library).padding(.bottom, 22) }
         }
         .background(p.paper)
         .ignoresSafeArea()
@@ -531,26 +556,43 @@ struct TagButton: View {
     }
 }
 
-/// A board button. `soon` draws it dashed and does nothing: it's a write that arrives in step 4.
+/// A board button. `soon` draws it dashed and does nothing: a write this recall can't make (it
+/// predates them, or it arrives later); `why` says which. `style` is the boards' primary (ink filled)
+/// or risk (the open-question hue) button; `keys` adds a key cap.
 struct WindowButton: View {
+    enum Style { case plain, primary, risk }
     let title: String
     var soon = false
+    var style: Style = .plain
+    var keys: String? = nil
+    var small = false
+    var why = "Comes with editing, in a later version"
     var action: () -> Void = {}
     @StateObject var hover = Hover()
     @Environment(\.colorScheme) var scheme
     var body: some View {
         let p = Palette.of(scheme)
+        let risk = p.kind("open")
+        let text = soon ? p.faint : style == .primary ? p.paper : style == .risk ? risk : p.ink
+        let edge = soon ? p.faint : style == .primary ? p.ink : style == .risk ? risk : (hover.on ? p.ink : p.line)
         Button(action: action) {
-            Text(title).font(PaperMono.font(12, 500))
-                .foregroundStyle(soon ? p.faint : p.ink)
-                .padding(.horizontal, 12).frame(minHeight: 30)
-                .overlay(Rectangle().strokeBorder(soon ? p.faint : (hover.on ? p.ink : p.line), style: StrokeStyle(lineWidth: 1, dash: soon ? [3, 3] : [])))
-                .contentShape(Rectangle())
+            HStack(spacing: 8) {
+                Text(title).font(PaperMono.font(small ? 11.5 : 12, 500)).foregroundStyle(text)
+                if let keys, !soon {
+                    Text(keys).font(PaperMono.font(10.5)).foregroundStyle(text.opacity(style == .primary ? 0.7 : 1))
+                        .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 17)
+                        .overlay(Rectangle().strokeBorder(style == .primary ? p.paper.opacity(0.7) : p.grid, lineWidth: 1))
+                }
+            }
+            .padding(.horizontal, small ? 9 : 12).frame(minHeight: small ? 26 : 30)
+            .background(style == .primary && !soon ? (hover.on ? p.ink.opacity(0.88) : p.ink) : Color.clear)
+            .overlay(Rectangle().strokeBorder(edge, style: StrokeStyle(lineWidth: 1, dash: soon ? [3, 3] : [])))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(soon)
         .onHover { hover.on = $0 }
-        .help(soon ? "Comes with editing, in a later version" : "")
+        .help(soon ? why : "")
     }
 }
 
