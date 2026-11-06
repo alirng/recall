@@ -28,8 +28,9 @@ in llm_cache and llm_calls with its batch price, as a synchronous call would.
   the calls go directly. When that cannot be told, the batch is recorded as `unknown` in
   llm_batches (look for it in the provider's console), its estimate counts as spent, and its
   calls fail; recall never collects an `unknown` row.
-- Credits: when the API account is out of credits, the client switches to its fallback
-  provider (synchronous) or the round's calls fail with BudgetExceeded and the run stops.
+- Credits: when the API account is out of credits or at its spend limit, the client switches to
+  its fallback provider (synchronous) or the round's calls fail with BudgetExceeded and the run
+  stops. A batch that cannot be read because of it is not lost: it stays running for the next run.
 """
 
 import json
@@ -217,6 +218,10 @@ class Batcher:
             for o in list(opened):
                 try:
                     ended, progress = o.provider.poll(o.batch_id)
+                except CreditsExhausted as e:
+                    self._blocked(o, e, out, direct)
+                    opened.remove(o)
+                    continue
                 except FatalError as e:
                     self._mark(o.batch_id, "lost")
                     for s in o.sent.values():
@@ -267,12 +272,30 @@ class Batcher:
             self.client.budget.settle(s.estimate, s.estimate)
             out[s.index] = BudgetExceeded(f"batch {o.batch_id}: {reason}")
 
+    def _blocked(self, o: _Open, e: CreditsExhausted, out: list, direct: list) -> None:
+        """The account ran out of credits or hit its spend limit while a batch ran, and the batch
+        cannot be read now. It is not lost: it stays `running` for the next run to collect, and its
+        estimate counts as spent (it may bill). Its calls go to the fallback, or fail if there is none."""
+        self.log(f"batch {o.batch_id} cannot be read now ({str(e)[:160]}); the next run collects it")
+        for s in o.sent.values():
+            self.client.budget.settle(s.estimate, s.estimate)
+        try:
+            self.client.out_of_credits(o.provider, e)
+        except BudgetExceeded as stop:
+            for s in o.sent.values():
+                out[s.index] = stop
+            return
+        direct += [(s.index, "", 0) for s in o.sent.values()]
+
     def _collect(self, o: _Open, out: list, direct: list) -> bool:
         """An ended batch: accept each valid answer; ask again what failed or was never answered.
         False when the answers could not be read: the batch stays `running` for the next run."""
         client = self.client
         try:
             answers = self._results(o)
+        except CreditsExhausted as e:
+            self._blocked(o, e, out, direct)
+            return False
         except FatalError as e:
             self.log(f"batch {o.batch_id} is gone ({str(e)[:120]})")
             self._mark(o.batch_id, "lost")
@@ -387,6 +410,10 @@ class Batcher:
             for o in list(opened):
                 try:
                     ended, _ = o.provider.poll(o.batch_id)
+                except CreditsExhausted as e:  # the account is blocked, the batch is not gone
+                    self.log(f"  batch {o.batch_id} cannot be read now ({str(e)[:160]}); it stays for the next run")
+                    opened.remove(o)
+                    continue
                 except FatalError as e:
                     self.log(f"  batch {o.batch_id}: {str(e)[:120]}")
                     self._mark(o.batch_id, "lost")

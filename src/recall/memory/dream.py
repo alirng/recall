@@ -239,11 +239,12 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
     collector = extract.Collector(batches)
     stats = Counter()
     stop_reason = None
+    reasons = set()  # why calls failed, each said once in the log
 
     def finish(session, candidates, digest_hash, status="done", error=None):
         extract.store(con, session, status, candidates, digest_hash, label, error)
         con.commit()
-        stats["chats"] += 1
+        stats["chats" if status == "done" else "failed"] += 1
         stats["candidates"] += len(candidates)
 
     def handle(batch, result, error) -> None:
@@ -251,10 +252,16 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
         if isinstance(error, BudgetExceeded):
             stop_reason = stop_reason or str(error)
         elif isinstance(error, (LLMError, OSError)):  # one bad batch must not sink the run
+            failed = 0
             for unit in batch:
                 session = collector.fail(unit)
                 if session is not None:
                     finish(session, [], None, "failed", str(error)[:300])
+                    failed += 1
+            reason = str(error).split("\n")[0][:300]
+            if failed and reason not in reasons and len(reasons) < 5:
+                reasons.add(reason)
+                log(f"reading failed for {failed} chats ({reason}); the next run tries them again")
         elif error is not None:
             raise error
         else:
@@ -300,7 +307,8 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
     con.commit()
     if stop_reason:
         log(f"stopped early ({stop_reason}); unread chats carry over to the next run")
-    log(f"read {stats['chats']} chats · {stats['candidates']} candidate memories")
+    failed = f" · {stats['failed']} failed, tried again next run" if stats["failed"] else ""
+    log(f"read {stats['chats']} chats · {stats['candidates']} candidate memories{failed}")
     return stats
 
 

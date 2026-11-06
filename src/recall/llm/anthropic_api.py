@@ -158,7 +158,7 @@ def _errors():
         if isinstance(e, anthropic.APIStatusError) and (
             e.status_code == 402 or any(m in str(e) for m in CREDIT_ERRORS)
         ):
-            raise CreditsExhausted(f"Anthropic API: {e}") from e
+            raise CreditsExhausted(f"Anthropic API: {_detail(e)}") from e
         fatal = (
             anthropic.AuthenticationError,
             anthropic.PermissionDeniedError,
@@ -166,10 +166,20 @@ def _errors():
             anthropic.BadRequestError,
         )
         if isinstance(e, fatal):
-            raise FatalError(f"Anthropic API: {e}") from e
+            raise FatalError(f"Anthropic API: {_detail(e)}") from e
         if isinstance(e, (anthropic.APIStatusError, anthropic.APIConnectionError)):
-            raise LLMError(f"Anthropic API: {e}") from e
+            raise LLMError(f"Anthropic API: {_detail(e)}") from e
         raise
+
+
+def _detail(e) -> str:
+    """The API's own words for a failed call ("400 invalid_request_error: You have reached ..."),
+    rather than the SDK's repr of the whole reply."""
+    body = getattr(e, "body", None)
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict) and error.get("message"):
+        return f"{e.status_code} {error.get('type', 'error')}: {error['message']}"
+    return str(e)
 
 
 def _result(message, seconds: float, batch: bool = False) -> Result:
