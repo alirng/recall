@@ -331,10 +331,13 @@ final class Forgetting: ObservableObject {
     @Published var waiting = false
     @Published var sending = false
     @Published var error: String?
+    /// An edit of this note is open with changes not saved: forgetting drops it too (see forgot()).
+    let hasDraft: Bool
 
     init(_ note: Note, library: Library) {
         self.note = note
         self.library = library
+        hasDraft = library.notes.editor.map { $0.noteId == note.note_id && $0.dirty } ?? false
     }
 
     func go() {
@@ -383,6 +386,7 @@ struct ForgetSheet: View {
                     fact(chats == 1 ? "recall won't learn it again from the chat it came from. That chat stays searchable."
                          : "recall won't learn it again from the chats it came from. Those chats stay searchable.", p)
                     fact("recall keeps only its title, scope and project, to know what not to relearn. The old text stays in the notes folder's git history.", p)
+                    if model.hasDraft { fact("Your unsaved edit is dropped too.", p) }
                     Rule()
                 }
                 if let e = model.error {
@@ -426,7 +430,19 @@ extension Library {
 
     /// Opens the Forget sheet for the note in the reader (Forget… or ⌫ in the list).
     func askForget() {
-        guard section == .memory, let n = notes.note, notes.editable(n), !popups.isOpen, let w = popups.parent else { return }
+        guard section == .memory, !popups.isOpen, let id = notes.selected else { return }
+        // The sheet is for the note highlighted in the list. If the reader still shows another one (the
+        // highlight just moved), fetch the highlighted note first rather than forgetting what is on screen.
+        if let n = notes.note, n.note_id == id { present(forgetting: n); return }
+        API.get("/v1/notes/\(API.q(id))", Note.self) { [weak self] r in
+            guard let self, self.section == .memory, self.notes.selected == id, case .success(let n) = r else { return }
+            self.notes.note = n
+            self.present(forgetting: n)
+        }
+    }
+
+    private func present(forgetting n: Note) {
+        guard notes.editable(n), !popups.isOpen, let w = popups.parent else { return }
         let f = Forgetting(n, library: self)
         forgetting = f
         let scheme: ColorScheme = w.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light

@@ -18,6 +18,7 @@ import copy
 import os
 import re
 import subprocess
+import sys
 
 from .notes import (
     MERGED_BY_HAND,
@@ -63,6 +64,22 @@ class Conflict(Refused):
 
 class Missing(Refused):
     status = 404
+
+
+def load_notes(store: NoteStore, include_archived: bool = False) -> dict[str, Note]:
+    """store.load(), except that a note file recall cannot parse is skipped and logged, one file at
+    a time, so a single malformed note does not stop every other note from being read or changed."""
+    notes: dict[str, Note] = {}
+    for path in store.files(include_archived):
+        try:
+            note = read_note_file(path)
+        except Exception as e:
+            print(f"recall: skipping note {path}: {type(e).__name__}: {e}", file=sys.stderr)
+            continue
+        if note:
+            notes[note.id] = note
+            store.titles[note.id] = note.title
+    return notes
 
 
 # --- reading an edit ------------------------------------------------------------------------
@@ -155,13 +172,15 @@ def edit(note_id: str, body: str, stamp: str | None, timeout: float = LOCK_WAIT)
     """Save `body` as an active note's text. `stamp` is the note's stamp as the caller read it; a
     file changed since is not overwritten (Conflict). An emptied body is refused: forget the note."""
     body = _clean(body)
+    if not stamp:
+        raise Refused("bad_parameter", "stamp is required: send the note's stamp as you read it")
     if not body:
         raise Refused("empty", "a note needs at least one rule; to drop the whole note, forget it")
     with writing(timeout) as free:
         if not free:
             raise Busy()
         store = NoteStore()
-        notes = store.load()  # every note, so the footer's links keep their titles
+        notes = load_notes(store)  # every note, so the footer's links keep their titles
         note = _current(store, notes, note_id, stamp)
         before = copy.deepcopy(note.rules)
         rules, changed = _reread(note, body)
@@ -193,11 +212,13 @@ def edit(note_id: str, body: str, stamp: str | None, timeout: float = LOCK_WAIT)
 def forget(note_id: str, stamp: str | None, timeout: float = LOCK_WAIT) -> dict:
     """Delete an active note's file and record it as rejected, so no run learns it again from the
     same chats. Returns the commit, which restore() takes to put it back."""
+    if not stamp:
+        raise Refused("bad_parameter", "stamp is required: send the note's stamp as you read it")
     with writing(timeout) as free:
         if not free:
             raise Busy()
         store = NoteStore()
-        notes = store.load()
+        notes = load_notes(store)
         note = _current(store, notes, note_id, stamp)
         os.remove(note.path)
         del notes[note.id]
@@ -227,6 +248,9 @@ def restore(note_id: str, commit: str, timeout: float = LOCK_WAIT) -> dict:
         rel = _deleted_in(store.root, commit, note_id)
         if not rel:
             raise Missing("not_deleted_there", f"commit {commit} did not delete note {note_id}")
+        subject = (_git(store.root, "show", "-s", "--format=%s", commit) or "").strip()
+        if note_id not in store._read_ledger().get("rejected", {}) and not subject.startswith("forgotten: "):
+            raise Refused("not_forgotten", "only a note that was forgotten can be restored")
         if any(os.path.basename(p) == f"{note_id}.md" for p in store.files(include_archived=True)):
             raise Conflict("a note with this id is back already")
         text = _git(store.root, "show", f"{commit}^:{rel}")
@@ -238,7 +262,7 @@ def restore(note_id: str, commit: str, timeout: float = LOCK_WAIT) -> dict:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
         os.replace(tmp, path)
-        notes = store.load()
+        notes = load_notes(store)
         note = notes.get(note_id)
         if note:
             _ledger(store, note, rejected=False)
@@ -276,7 +300,7 @@ def _current(store: NoteStore, notes: dict[str, Note], note_id: str, stamp: str 
     """The active note as its file is now, or why it can't be changed."""
     note = notes.get(note_id)
     if note is None:
-        if note_id in store.load(include_archived=True):
+        if note_id in load_notes(store, include_archived=True):
             raise Refused("archived", "this note is archived; only active notes can be edited or forgotten")
         if stamp:
             raise Conflict("this note's file is gone since you read it")

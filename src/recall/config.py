@@ -85,38 +85,67 @@ def update(key: str, value) -> None:
 
 def save(cfg: dict) -> None:
     """Write config.toml in one step: a temp file beside it, then a rename, so a hook reading the
-    settings mid-save sees the old file or the new one, never half of it."""
+    settings mid-save sees the old file or the new one, never half of it. The text is read back before
+    the rename and must equal what was asked to be saved (empty values and tables aside, which are
+    left out); otherwise nothing is written and ValueError says so. A new file is readable only by you."""
     import tempfile
 
-    os.makedirs(paths.HOME, exist_ok=True)
+    want = _clean(cfg, top=True)
     lines = ["# recall settings. Run `recall setup` to change them interactively, or edit here.", ""]
-    for key, value in cfg.items():
+    for key, value in want.items():
         if not isinstance(value, dict):
-            lines.append(f"{key} = {_toml(value)}")
-    for key, table in cfg.items():
-        if isinstance(table, dict) and table:
-            plain = {k: v for k, v in table.items() if not isinstance(v, dict) and v not in (None, "")}
-            if plain or not any(isinstance(v, dict) for v in table.values()):
-                lines += ["", f"[{key}]"]
-                lines += [f"{k} = {_toml(v)}" for k, v in plain.items()]
-            for sub, values in table.items():  # a table of tables: [roots.claude-work]
-                if isinstance(values, dict) and values:
-                    lines += ["", f"[{key}.{_key(sub)}]"]
-                    lines += [f"{k} = {_toml(v)}" for k, v in values.items() if v not in (None, "")]
+            lines.append(f"{_key(key)} = {_toml(value)}")
+    for key, table in want.items():
+        if isinstance(table, dict):
+            _emit([key], table, lines)
+    text = "\n".join(lines) + "\n"
+    try:
+        if tomllib.loads(text) != want:
+            raise ValueError("it would not read back the same")
+    except (tomllib.TOMLDecodeError, ValueError) as e:
+        raise ValueError(f"config.toml not saved: {e}; the file is unchanged") from e
+    os.makedirs(paths.HOME, exist_ok=True)
     try:
         mode = os.stat(paths.CONFIG).st_mode & 0o777
     except OSError:
-        mode = 0o644
+        mode = 0o600
     fd, tmp = tempfile.mkstemp(dir=paths.HOME, prefix=".config-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write(text)
         os.chmod(tmp, mode)
         os.replace(tmp, paths.CONFIG)
     except BaseException:
         with contextlib.suppress(OSError):
             os.remove(tmp)
         raise
+
+
+def _clean(value, top: bool = False):
+    """The settings as they are written: no None, no empty strings inside a table, no empty tables,
+    tuples as lists. What save() checks the written file against."""
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            v = _clean(v)
+            if v is None or (v == "" and not top) or (isinstance(v, dict) and not v):
+                continue
+            out[str(k)] = v
+        return out
+    if isinstance(value, list | tuple):
+        return [_clean(v) for v in value]
+    return value
+
+
+def _emit(path: list, table: dict, lines: list) -> None:
+    """A table and, below it, its sub-tables at any depth: [roots.claude-work.extra]."""
+    plain = {k: v for k, v in table.items() if not isinstance(v, dict)}
+    if plain:
+        lines += ["", "[" + ".".join(_key(p) for p in path) + "]"]
+        lines += [f"{_key(k)} = {_toml(v)}" for k, v in plain.items()]
+    for sub, values in table.items():
+        if isinstance(values, dict):
+            _emit([*path, sub], values, lines)
 
 
 def _key(name) -> str:
@@ -128,6 +157,8 @@ def _toml(value) -> str:
         return "true" if value else "false"
     if isinstance(value, int | float):
         return str(value)
-    if isinstance(value, list):
+    if isinstance(value, list | tuple):
         return "[" + ", ".join(_toml(v) for v in value) + "]"
+    if isinstance(value, dict):  # inside an array: an inline table
+        return "{" + ", ".join(f"{_key(k)} = {_toml(v)}" for k, v in value.items()) + "}"
     return json.dumps(str(value))  # a JSON string is a valid TOML basic string

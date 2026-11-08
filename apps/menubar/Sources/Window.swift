@@ -105,8 +105,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         }
         let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
         if window?.firstResponder is NSText { return false }
-        // ⌘Z while "Forgot …" shows puts the note back.
-        if mods == .command, e.charactersIgnoringModifiers == "z", library.toast != nil {
+        // ⌘Z while "Forgot …" shows puts the note back, and only on the Memory section.
+        if mods == .command, e.charactersIgnoringModifiers == "z", library.section == .memory, library.toast != nil {
             library.undoForget()
             return true
         }

@@ -304,15 +304,27 @@ def model_options() -> list[dict]:
     return [{k: v for k, v in o.items() if k != "settings"} for o in _options()]
 
 
-def use_model(option: str) -> dict:
+class NeedsConsent(ValueError):
+    """Switching from a model that keeps chats on this Mac to one that sends excerpts away."""
+
+    def __init__(self, destination: str):
+        super().__init__(f"this model sends chat excerpts to {destination}; confirm to switch to it")
+        self.destination = destination
+
+
+def use_model(option: str, accept_destination: str | None = None) -> dict:
     """Switch the model that writes memories to one of model_options(), after one short test call.
-    Saves [model] only if the test answers; raises otherwise and nothing changes."""
+    Saves [model] only if the test answers; raises otherwise and nothing changes. From a private model
+    (nothing leaves this Mac) to one that is not, `accept_destination` must name the new model's
+    destination exactly, or NeedsConsent is raised before anything is sent."""
     found = next((o for o in _options() if o["id"] == option), None)
     if found is None:
         raise ValueError(f"no model option {option!r} here now")
     current = config.load()["model"]
     settings = _switched(current, found["settings"])
     provider = build(settings)
+    if not provider.private and _was_private(current) and accept_destination != provider.destination:
+        raise NeedsConsent(provider.destination)
     learned = try_model(provider)
     if settings != current:
         config.update("model", settings)
@@ -323,6 +335,13 @@ def use_model(option: str) -> dict:
         "destination": None if provider.private else provider.destination,
         "fallback": settings.get("fallback"),
     }
+
+
+def _was_private(current: dict) -> bool:
+    try:
+        return bool(current.get("provider")) and build(current).private
+    except (FatalError, LLMError, OSError, ValueError, KeyError):
+        return False
 
 
 def _options() -> list[dict]:
