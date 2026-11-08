@@ -5,6 +5,67 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-08
+
+Most of this release is the engine work behind recall desktop, the new Mac app: `recall api` and
+the changes an app may make through it. The app's own changes are in
+[its changelog](https://github.com/alirng/recall/blob/main/apps/menubar/CHANGELOG.md).
+
+### Added
+
+- **`recall api` makes the few changes an app may make.** New endpoints edit a note (`PUT
+  /v1/notes/{id}`, with `POST …/preview` to see what saving would record), forget one and put it
+  back (`POST …/forget`, `POST …/restore`), set the coordination rules (`PUT /v1/coordination`),
+  list the models that work here and switch to one after a test call (`GET /v1/models`, `PUT
+  /v1/model`), and remove copies kept before an upgrade (`POST /v1/storage/remove`). Each runs
+  recall's own code and takes the same notes lock as a memory run, answering `409 busy` while one
+  runs and `409 conflict` when the note's file changed since the client read it. `/v1/info` lists
+  them under `writes`, and `/v1/notes/{id}` gains `stamp`. Started by an app or launchd, `recall
+  api` adds the nightly run's folders to its `PATH`, so it finds Claude Code, Codex and local model
+  servers. See docs/api.md.
+- **`recall api`:** an HTTP and JSON door to your chats, notes, memory runs and status, on a local
+  unix socket (mode 0600, no network port), with live updates as server-sent events. It starts on
+  demand and exits after five idle minutes, and an open event stream costs no CPU while nothing
+  changes. Apps use it instead of opening the index. See docs/api.md.
+  `/v1/status` takes `?fresh=1` to skip its 15-second cache.
+
+### Changed
+
+- **Benchmark figures show 0.5.2.** The README, [docs/benchmarks.md](docs/benchmarks.md) and the
+  charts now quote what 0.5.2 measured on 3 and 4 November beside 0.5.1: search and the other
+  model-free results are unchanged, and the agent evals sit within run noise of 0.5.1 apart from a
+  dip on my own questions about past work, which the page shows as one. `store.py record` gains
+  `--home`, naming the eval index a run's throwaway copy was made from.
+
+### Fixed
+
+- **A config.toml key with a space no longer breaks the file.** Saving settings quotes every key,
+  writes nested tables properly, checks the text reads back as what was saved before replacing the
+  file (and refuses otherwise), and creates a new config.toml readable only by you.
+- **`recall api` no longer repeats an API key in an error, and hides crash details.** An unknown key
+  reference is reported without its text, every error message goes through the credential redaction
+  the indexer uses, and an unexpected failure answers with a generic message while the detail goes
+  to api.log.
+- **Switching from a private model to one that sends excerpts away needs your consent.** `PUT
+  /v1/model` answers `409 needs_consent` with the destination unless the body repeats it as
+  `accept_destination`.
+- **Edits and forgets must carry the note's stamp**, and a forgotten chat no longer shows in the
+  API's chat list, messages, search results or counts. One malformed note no longer breaks every
+  notes endpoint: it is skipped and logged. Restore only puts back a note that was forgotten, `PUT
+  /v1/coordination` answers 400 for values of the wrong type, and `recall api` refuses to replace a
+  file or link at its socket path.
+- **config.toml is written in one step**, a temp file then a rename, so a hook reading the settings
+  while they're saved sees the old file or the new one, never half of it.
+- **An API key at its spend limit now falls back.** Anthropic answers a key past its monthly spend
+  limit with a 400 ("You have reached your specified API usage limits"), which recall took for a
+  broken setup rather than an empty account. A nightly run with `[model] fallback` set never
+  switched to it, marked every chat failed, and logged "read 19 chats · 0 candidate memories". That
+  reply now counts as out of credits: the run carries on with the fallback (or stops cleanly without
+  one), and a batch an earlier run left running is kept for the next run rather than marked lost.
+  The read step now logs why its calls failed and counts failed chats apart from read ones (`failed`
+  in the run's counts), and Anthropic errors are logged in the API's own words rather than as the
+  SDK's dump of the reply.
+
 ## [0.5.2] - 2026-11-04
 
 ### Upgrading
@@ -759,7 +820,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/alirng/recall/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/alirng/recall/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/alirng/recall/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/alirng/recall/compare/v0.4.2...v0.5.0

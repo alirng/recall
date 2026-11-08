@@ -878,7 +878,7 @@ wheels = [
 
 [[package]]
 name = "recall-agents"
-version = "0.5.2"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
