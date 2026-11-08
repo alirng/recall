@@ -263,7 +263,7 @@
         "question_type": {"values": ["single-session-user", "single-session-assistant", "single-session-preference", "multi-session", "knowledge-update", "temporal-reasoning", "abstention"]},
         "method": {"about": "third-party rows: the system's setting, as the source names it"}
       },
-      "comparable_on": ["model", "judge", "conditions.context", "conditions.sample", "conditions.question_type"],
+      "comparable_on": ["model", "judge", "judge_version", "conditions.context", "conditions.sample", "conditions.question_type"],
       "same_day": false,
       "metrics": {
         "accuracy": {"unit": "fraction", "better": "higher", "key": "accuracy", "breakdown": {"question_type": "accuracy_by_type.*"}},
