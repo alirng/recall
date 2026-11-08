@@ -21,6 +21,7 @@ import plistlib
 import re
 import select
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -39,8 +40,8 @@ SSE_PING = 3600  # sse-starlette pings every 15 s unless told otherwise; an open
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str):
-        self.status, self.code, self.message = status, code, message
+    def __init__(self, status: int, code: str, message: str, **extra):
+        self.status, self.code, self.message, self.extra = status, code, message, extra  # extra: more error fields
 
 
 # --- the database thread ------------------------------------------------------------
@@ -141,8 +142,22 @@ def _cached(key: str, seconds: float, make):
     return value
 
 
+def _safe(text) -> str:
+    """An error message as a client may see it: credentials cut out, as the indexer does for chats."""
+    from .chats.redact import redact
+
+    return redact(str(text))
+
+
 def _home(path: str) -> str:
     return path.replace(os.path.expanduser("~"), "~", 1)
+
+
+def _live(con, alias: str = "s") -> str:
+    """SQL (starting with "and") that leaves out chats `recall forget` removed, whose rows an older
+    release may still have written into the index. Empty when the index has no such list."""
+    has = con.execute("select 1 from sqlite_master where name = 'forgotten_chats'").fetchone()
+    return f" and {alias}.id not in (select id from forgotten_chats)" if has else ""
 
 
 # --- instance -----------------------------------------------------------------------
@@ -208,11 +223,25 @@ def stats_view() -> dict:
 
     con = _con()
     by_agent = store.stats(con)
+    if _live(con):  # chats counted here exclude the forgotten ones
+        shown = {
+            r["agent"]: r
+            for r in con.execute(
+                "select agent, count(*) n, sum(n_messages) m, max(updated_at) last from sessions s"
+                f" where 1 {_live(con)} group by agent"
+            )
+        }
+        for agent in list(by_agent):
+            r = shown.get(agent)
+            if r is None:
+                del by_agent[agent]
+            else:
+                by_agent[agent] |= {"chats": r["n"], "messages": r["m"], "latest": store.fmt_time(r["last"])}
     for agent, row in by_agent.items():
         row["latest"] = _day(row.get("latest"))
         latest = con.execute(
-            "select id, title, project_name, updated_at from sessions where agent = ? and n_messages > 0"
-            " and origin is not 'subagent' order by updated_at desc limit 1",
+            "select id, title, project_name, updated_at from sessions s where agent = ? and n_messages > 0"
+            f" and origin is not 'subagent' {_live(con)} order by updated_at desc limit 1",
             (agent,),
         ).fetchone()
         row["latest_chat"] = (
@@ -492,6 +521,7 @@ _notes_cache: list = []
 
 def _notes() -> tuple[dict, str]:
     """Every note (archived ones included), re-read only when a note file changed."""
+    from .memory.edit import load_notes
     from .memory.notes import NoteStore
 
     if not os.path.isdir(paths.MEMORY):
@@ -500,7 +530,7 @@ def _notes() -> tuple[dict, str]:
     digest = store.digest()
     if _notes_cache and _notes_cache[0] == digest:
         return _notes_cache[1], digest
-    notes = store.load(include_archived=True)
+    notes = load_notes(store, include_archived=True)
     _notes_cache[:] = [digest, notes]
     return notes, digest
 
@@ -681,7 +711,8 @@ def note_view(note_id: str) -> dict:
         con = _con()
         marks = ",".join("?" * len(everything))
         for r in con.execute(
-            f"select id, agent, title, project_name, updated_at, n_messages from sessions where id in ({marks})",
+            f"select id, agent, title, project_name, updated_at, n_messages from sessions s where id in ({marks})"
+            + _live(con),
             list(everything),
         ):
             found[r["id"]] = {
@@ -774,7 +805,7 @@ def chats_view(agent, project, since, until, limit, offset, subagents) -> dict:
     except ValueError as e:
         raise ApiError(400, "bad_window", str(e)) from e
     skip = "" if subagents else "and s.origin is not 'subagent'"
-    base = f"from sessions s where n_messages > 0 {skip} {fsql}"
+    base = f"from sessions s where n_messages > 0 {skip} {fsql} {_live(con)}"
     total = con.execute(f"select count(*) {base}", fargs).fetchone()[0]
     rows = con.execute(f"select * {base} order by updated_at desc limit ? offset ?", [*fargs, limit, offset])
     return {"total": total, "limit": limit, "offset": offset, "chats": [_chat_row(r) for r in rows]}
@@ -784,7 +815,10 @@ def chat_view(chat_id, offset, limit, max_chars) -> dict:
     from .chats import store
 
     con = _con()
-    out = store.read(con, chat_id, None, offset, limit, max_chars=max_chars)
+    sid = store.resolve_id(con, chat_id)
+    if sid and con.execute(f"select 1 from sessions s where s.id = ? {_live(con)}", (sid,)).fetchone() is None:
+        sid = None  # forgotten: as good as gone
+    out = store.read(con, sid, None, offset, limit, max_chars=max_chars) if sid else None
     if not out:
         raise ApiError(404, "no_such_chat", f"no chat {chat_id!r}")
     out["project_name"] = (
@@ -799,8 +833,8 @@ def projects_view() -> dict:
     con = _con()
     rows = con.execute(
         "select project_name, count(*) chats, max(updated_at) last, count(distinct agent) agents,"
-        " group_concat(distinct agent) names from sessions where n_messages > 0 and origin is not 'subagent'"
-        " and project_name is not null and project_name != '' group by project_name order by last desc"
+        " group_concat(distinct agent) names from sessions s where n_messages > 0 and origin is not 'subagent'"
+        f" and project_name is not null and project_name != '' {_live(con)} group by project_name order by last desc"
     )
     notes, _ = _notes()
     n_notes = _count(n.project_name for n in notes.values() if n.project_name and n.status == "active")
@@ -842,7 +876,10 @@ def search_view(q, kind, agent, project, since, until, limit, client) -> dict:
     out: dict = {"query": q, "filters": tags}
     try:
         if kind in ("all", "chats"):
-            where = (" and s.project_name = ?", [project]) if project else None
+            where = (
+                (" and s.project_name = ?" if project else "") + _live(con),
+                [project] if project else [],
+            )
             out["chats"] = store.search(con, q, agent, None, since, limit, until, where=where)
             names = {}
             if out["chats"]:
@@ -912,12 +949,14 @@ def models_view() -> dict:
     return _cached("models", 30, make)
 
 
-def model_set(option: str) -> dict:
+def model_set(option: str, accept_destination: str | None = None) -> dict:
     from . import onboarding
     from .llm import FatalError, LLMError
 
     try:
-        out = onboarding.use_model(option)
+        out = onboarding.use_model(option, accept_destination)
+    except onboarding.NeedsConsent as e:
+        raise ApiError(409, "needs_consent", str(e), destination=e.destination) from e
     except (FatalError, LLMError, ValueError) as e:
         raise ApiError(422, "test_failed", str(e)) from e
     finally:
@@ -1285,8 +1324,14 @@ def build_app():
 
     async def h_coord_set(request):
         body = await _json(request)
-        rules = body.get("rules")
-        if body.get("preset") is None and not isinstance(rules, dict):
+        rules, preset = body.get("rules"), body.get("preset")
+        if preset is not None and not isinstance(preset, str):
+            raise ApiError(400, "bad_parameter", "preset is a string")
+        if rules is not None and not (
+            isinstance(rules, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in rules.items())
+        ):
+            raise ApiError(400, "bad_parameter", "rules is {situation: action}, both strings")
+        if preset is None and not isinstance(rules, dict):
             raise ApiError(400, "bad_parameter", "send a preset, or rules: {situation: action}")
         return reply(await change(coordination_set, body.get("preset"), rules, topics=["config"]))
 
@@ -1297,7 +1342,10 @@ def build_app():
         body = await _json(request)
         if not body.get("option"):
             raise ApiError(400, "bad_parameter", "option is one of /v1/models' option ids")
-        return reply(await change(model_set, str(body["option"]), topics=["config"]))
+        accept = body.get("accept_destination")
+        if accept is not None and not isinstance(accept, str):
+            raise ApiError(400, "bad_parameter", "accept_destination is a string")
+        return reply(await change(model_set, str(body["option"]), accept, topics=["config"]))
 
     async def h_storage_remove(request):
         body = await _json(request)
@@ -1320,10 +1368,15 @@ def build_app():
         return EventSourceResponse(stream(), ping=SSE_PING)
 
     async def on_error(request, exc):
-        return reply({"error": {"code": exc.code, "message": exc.message}}, exc.status)
+        return reply({"error": {"code": exc.code, "message": _safe(exc.message), **exc.extra}}, exc.status)
 
     async def on_crash(request, exc):
-        return reply({"error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}"}}, 500)
+        import traceback
+
+        print(f"recall api: {request.method} {request.url.path}\n{_safe(traceback.format_exc())}", file=sys.stderr)
+        return reply(
+            {"error": {"code": "internal", "message": "something went wrong; the details are in api.log"}}, 500
+        )
 
     routes = [
         Route("/v1", h_root),
@@ -1466,7 +1519,10 @@ def _bind(path: str) -> tuple[socket.socket, object]:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         sys.exit(0)  # another recall api holds the lock: it is running or starting
-    if os.path.exists(path):
+    if os.path.lexists(path):
+        mode = os.lstat(path).st_mode  # lstat: a symlink here is refused, not followed
+        if not stat.S_ISSOCK(mode):
+            sys.exit(f"recall api: {path} exists and is not a socket; move it away or pass --socket elsewhere")
         probe = socket.socket(socket.AF_UNIX)
         try:
             probe.connect(path)

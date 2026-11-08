@@ -70,7 +70,7 @@ def load(ref: str | None, account: str) -> str | None:
         if r.returncode != 0:
             return None
         return r.stdout.strip() or None
-    raise ValueError(f"unknown key reference {ref!r}; use env:NAME, keychain or file")
+    raise ValueError("unknown key reference in config.toml; use env:NAME, keychain or file")
 
 
 def find(account: str) -> str | None:

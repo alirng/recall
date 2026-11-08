@@ -12,13 +12,22 @@ import AppKit
 import SwiftUI
 
 extension Probe {
-    static var scratch: Bool { API.recallHome != API.home + "/.agents/recall" }
+    /// A path as it really is on disk: ~ expanded, symlinks followed, . and .. folded.
+    static func real(_ path: String) -> String {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).resolvingSymlinksInPath().standardized.path
+    }
+
+    static let realHome = real(API.home + "/.agents/recall")
+    static let realMemory = real(API.home + "/.agents/memory")
+
+    static var scratch: Bool { real(API.recallHome) != realHome }
 
     /// The server serves a scratch copy: its data folder and its notes are both away from the real
-    /// ones. RECALL_HOME alone isn't enough: without RECALL_MEMORY, the notes would be the real ones.
+    /// ones, compared as real paths so a symlink or a ../ cannot stand in for them. RECALL_HOME alone
+    /// isn't enough: without RECALL_MEMORY, the notes would be the real ones.
     static func scratchServer(_ lib: Library) -> Bool {
         guard let i = lib.info, let home = i.home, let memory = i.memory else { return false }
-        return home != "~/.agents/recall" && memory != "~/.agents/memory"
+        return real(home) != realHome && real(memory) != realMemory
     }
 
     static func log(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }

@@ -16,6 +16,8 @@ enum API {
     }()
     static let socketPath = recallHome + "/running/api.sock"
     static let minimumAPI = 1
+    static let maxBody = 64 << 20  // the most a single answer may be
+    static let maxBlock = 1 << 20  // the most of one server-sent event (or its header) that is held
     static let queue = DispatchQueue(label: "recall.api", qos: .userInitiated, attributes: .concurrent)
 
     struct Failure: Error {
@@ -76,10 +78,15 @@ enum API {
         guard send(fd, path, method: method, body: body) else { return .failure(Failure(message: "Couldn't ask recall")) }
         var all = Data()
         var buf = [UInt8](repeating: 0, count: 65536)
+        // Each read waits at most `timeout`; the whole answer gets a deadline too, and a size cap, so a
+        // server that trickles bytes or never stops can't hold the caller or fill memory.
+        let deadline = Date().addingTimeInterval(Double(max(timeout, 30)) * 2)
         while true {
             let n = read(fd, &buf, buf.count)
             if n <= 0 { break }
             all.append(buf, count: n)
+            if all.count > maxBody { return .failure(Failure(message: "recall's answer was too large")) }
+            if Date() > deadline { return .failure(Failure(message: "recall took too long to answer")) }
         }
         guard let split = all.range(of: Data("\r\n\r\n".utf8)) else {
             return .failure(Failure(message: "recall gave no answer"))
@@ -90,6 +97,7 @@ enum API {
         if head.contains("transfer-encoding: chunked") {
             var chunks = Chunks()
             body = chunks.feed(Data(body))[...]
+            if chunks.failed { return .failure(Failure(message: "recall's answer was malformed")) }
         }
         if status >= 400 {
             struct Wrapped: Decodable { struct E: Decodable { let code: String; let message: String }; let error: E }
@@ -144,6 +152,21 @@ enum API {
         return out.map { $0 + extra }
     }
 
+    static let notInstalled = "recall isn't set up on this Mac. Install it with uv tool install 'recall-agents[embeddings]', then run recall install."
+
+    /// The installed `recall`, found as commands() finds it; nil when there is none.
+    static func installed() -> String? {
+        [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"].map { $0 + "/recall" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// `recall status --json`'s command, or its other subcommands once "status" is cut off: the dev
+    /// checkout build.sh wrote into Info.plist (only when RECALL_DEV_PROJECT was set), else the installed one.
+    static func recallCommand() -> [String]? {
+        if let dev = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String], !dev.isEmpty { return dev }
+        return installed().map { [$0, "status", "--json"] }
+    }
+
     static let starting = NSLock()
 
     /// Starts `recall api` if nothing answers on the socket, and waits up to 10 s for it. The server
@@ -155,7 +178,7 @@ enum API {
         if let fd = connect(timeout: 2) { close(fd); return nil }
         let commands = commands(idle.map { ["--idle", String($0)] } ?? [])
         if commands.isEmpty {
-            return Failure(code: "not_installed", message: "recall isn't set up on this Mac. Install it with uv tool install 'recall-agents[embeddings]', then run recall install.")
+            return Failure(code: "not_installed", message: notInstalled)
         }
         var tooOld: String?
         for command in commands {
@@ -215,6 +238,8 @@ struct Chunks {
     var buffer = Data()
     var need: Int?  // bytes left in the current chunk, nil while reading a size line
     var done = false
+    var failed = false  // a chunk size that is negative, unreadable or over maxChunk: the stream is dropped
+    static let maxChunk = 16 << 20
 
     mutating func feed(_ data: Data) -> Data {
         buffer.append(data)
@@ -229,7 +254,13 @@ struct Chunks {
                 guard let eol = buffer.range(of: Data("\r\n".utf8)) else { break }
                 let line = String(decoding: buffer[..<eol.lowerBound], as: UTF8.self)
                 buffer.removeSubrange(..<eol.upperBound)
-                let size = Int(line.split(separator: ";").first ?? "", radix: 16) ?? 0
+                let text = String(line.split(separator: ";").first ?? "").trimmingCharacters(in: .whitespaces)
+                guard let size = Int(text, radix: 16), size >= 0, size <= Chunks.maxChunk else {
+                    failed = true
+                    done = true
+                    buffer.removeAll()
+                    break
+                }
                 if size == 0 { done = true } else { need = size }
             }
         }
@@ -282,13 +313,16 @@ final class Events {
             var data = Data(buf[0..<n])
             if !headerDone {
                 pending.append(data)
+                if pending.count > API.maxBlock { break }
                 guard let split = pending.range(of: Data("\r\n\r\n".utf8)) else { continue }
                 chunked = String(decoding: pending[..<split.lowerBound], as: UTF8.self).lowercased().contains("chunked")
                 data = Data(pending[split.upperBound...])
                 headerDone = true
             }
             if chunked { data = chunks.feed(data) }
+            if chunks.failed { break }
             text += String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n")
+            if text.utf8.count > API.maxBlock && !text.contains("\n\n") { break }
             while let end = text.range(of: "\n\n") {
                 let block = String(text[..<end.lowerBound])
                 text.removeSubrange(..<end.upperBound)

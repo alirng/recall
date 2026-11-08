@@ -371,7 +371,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// One line in recall's usage log (the action and the time, nothing else), so a later look at
     /// whether the menu bar earns its place has numbers: `recall menubar-use open|show|resolve`.
     func logUse(_ action: String) {
-        var command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
+        guard var command = API.recallCommand() else { return }
         if let at = command.lastIndex(of: "status") { command.removeSubrange(at...) }
         command += ["menubar-use", action]
         DispatchQueue.global(qos: .utility).async { _ = Self.run(command) }
@@ -424,7 +424,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Today's way, and the fallback: one `recall status --json` run.
     static func fetchCLI() -> Result<Status, RunError> {
-        let command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
+        guard let command = API.recallCommand() else { return .failure(RunError(message: API.notInstalled)) }
         switch run(command) {
         case .success(let data):
             do { return .success(try JSONDecoder().decode(Status.self, from: data)) } catch {
@@ -616,7 +616,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// edit, turn end or prompt. The row shows Sending… until the refresh brings back sent_at.
     func resolve(_ o: Overlap) {
         logUse("resolve")
-        var command = Bundle.main.object(forInfoDictionaryKey: "RecallCommand") as? [String] ?? ["recall", "status", "--json"]
+        guard var command = API.recallCommand() else { return }
         if let at = command.lastIndex(of: "status") { command.removeSubrange(at...) }
         command += ["resolve", "--repo", o.repo, "--file", o.file, "--json"]
         store.sending.insert(o.id)
@@ -651,7 +651,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 done.insert(side.checkout)
                 let who = o.sides.filter { $0.checkout == side.checkout }.map { "“\(titles[$0.session] ?? $0.session)”" }
                 text += "# \(o.file) on \(side.branch ?? "detached") (\(side.checkout))\n# changed by \(who.joined(separator: " and "))\n\n"
-                let diff = Self.run(["/usr/bin/git", "-C", side.checkout, "diff", side.base ?? "HEAD", "--", o.file])
+                // No textconv or external diff driver (a repo's own config would run a program), and a base
+                // that looks like an option is not one; `--` keeps the file from being read as an option.
+                let base = side.base.flatMap { $0.hasPrefix("-") ? nil : $0 } ?? "HEAD"
+                let diff = Self.run(["/usr/bin/git", "-C", side.checkout, "diff", "--no-textconv", "--no-ext-diff", base, "--", o.file])
                 if case .success(let data) = diff, let s = String(data: data, encoding: .utf8), !s.isEmpty {
                     text += s + "\n"
                 } else {
@@ -660,9 +663,18 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             // With recall's other files, not in ~/Library/Caches.
             let dir = URL(fileURLWithPath: API.recallHome + "/cache/diffs")
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let fm = FileManager.default
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            // A diff holds code: drop the ones from earlier than a day ago before writing another.
+            let cutoff = Date().addingTimeInterval(-86400)
+            for old in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+                if let m = try? old.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, m < cutoff {
+                    try? fm.removeItem(at: old)
+                }
+            }
             let url = dir.appendingPathComponent("\((o.file as NSString).lastPathComponent)-both-changes.diff")
-            try? text.write(to: url, atomically: true, encoding: .utf8)
+            try? fm.removeItem(at: url)
+            fm.createFile(atPath: url.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600])
             DispatchQueue.main.async {
                 if let cursor = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.todesktop.230313mzl4w4u92") {
                     NSWorkspace.shared.open([url], withApplicationAt: cursor, configuration: NSWorkspace.OpenConfiguration())
