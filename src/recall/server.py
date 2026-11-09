@@ -280,6 +280,7 @@ def _merge(lists: list[list[dict]]) -> list[dict]:
             have = {h["seq"] for h in rows[cid]["hits"]}
             rows[cid]["hits"] += [h for h in r.get("hits") or [] if h["seq"] not in have]
             rows[cid]["matches"] = max(rows[cid].get("matches") or 0, r.get("matches") or 0)
+            rows[cid]["via"] = list(dict.fromkeys([*(rows[cid].get("via") or []), *(r.get("via") or [])]))
     for r in rows.values():
         r["hits"] = r["hits"][: store.TOP_HITS]
     return [rows[c] for c in sorted(score, key=score.get, reverse=True)]
@@ -302,7 +303,8 @@ def _result_block(row: dict) -> str:
     no field names, quotes or escapes."""
     where = (row.get("project") or "") + (f" ({row['branch']})" if row.get("branch") else "")
     size = f"{row['messages']} messages" + (f", {row['matches']} matching" if row.get("matches") else "")
-    head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
+    why = "via " + "+".join(row["via"]) if row.get("via") else None
+    head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size, why) if x)
     lines = [f"[{h['seq']}] {' '.join(h['snippet'].split())}" for h in row.get("hits") or []]
     if not lines and row.get("snippet"):
         lines = [f"opening message: {' '.join(row['snippet'].split())}"]

@@ -1,0 +1,1 @@
+**Why each search hit was found.** `search_chats` results end their first line with `via words`, `via title` or `via meaning` (any mix), so an agent can tell a keyword match from one found by meaning. Result rows only; no tool descriptions changed.

@@ -690,8 +690,22 @@ def search(
         d["snippet"] = found[0]["snippet"] if found else sessions[sid]["first_prompt"][:200]
         d["match_at"] = found[0]["seq"] if found else None
         d["hits"] = found
+        d["via"] = _via(sid, rankings)
         out.append(d)
     return out
+
+
+VIA_DEPTH = 10  # a chat counts as found by a signal when that ranking puts it this high
+
+
+def _via(sid: str, rankings) -> list[str]:
+    """Which signals found a chat: words (a keyword ranking), title, meaning (the embedding)."""
+    names = {"best": "words", "sum": "words", "all": "words", "title": "title", "dense": "meaning"}
+    found = []
+    for name, ranking in rankings:
+        if sid in ranking[:VIA_DEPTH] and names[name] not in found:
+            found.append(names[name])
+    return found
 
 
 def _subagent_threads(con) -> dict[str, str]:
