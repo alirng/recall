@@ -971,6 +971,7 @@ def cmd_eval(a) -> None:
                 a.qa,
                 a.qa_sample,
                 judge=a.judge,
+                votes=a.judge_votes or 1,
                 context=a.context,
                 top_k=a.top_k,
                 embedder=embedder,
@@ -1005,6 +1006,13 @@ def _eval_v2(a) -> None:
     from . import evals_harness as harness
 
     kinds = {"search": "search_v2", "agent": "qa_v2", "memory": "memory_v2"}
+    if a.rejudge:
+        if a.kind != "agent" or not a.out:
+            sys.exit("--rejudge applies to `eval agent --v2` and needs --out FILE")
+        from . import evals_agent
+
+        evals_agent.rejudge(a.rejudge, a.judge or harness.JUDGE, a.judge_votes or evals_agent.VOTES, a.out, a.workers)
+        return
     if a.kind not in kinds:
         sys.exit(f"--v2 applies to search and memory, not {a.kind}")
     cases = harness.load_cases(kinds[a.kind], a.split, a.cases, a.case, a.limit)
@@ -1026,6 +1034,7 @@ def _eval_v2(a) -> None:
             a.consistency,
             a.skill,
             a.against,
+            a.judge_votes or evals_agent.VOTES,
         )
     elif a.kind == "memory":
         from . import evals_memory
@@ -1292,6 +1301,16 @@ def _parser() -> argparse.ArgumentParser:
         metavar="MODEL",
         help="--qa, beam: grade with MODEL, never the reader (default claude:claude-opus-5-5); "
         "agent, memory --v2: default claude:claude-sonnet-5-5",
+    )
+    sp.add_argument(
+        "--judge-votes",
+        type=int,
+        choices=[1, 3],
+        help="agent --v2, longmemeval --qa: grade each answer this many times and take the majority "
+        "(agent default 3, longmemeval 1; 1 is the single judge)",
+    )
+    sp.add_argument(
+        "--rejudge", metavar="RUN_DIR", help="agent --v2: grade the stored replies of RUN_DIR again (no agent runs)"
     )
     sp.add_argument(
         "--context", choices=["sessions", "windows", "oracle"], default="sessions", help="--qa: what it reads"

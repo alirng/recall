@@ -16,6 +16,7 @@ cases are correct when every claim is supported and nothing contradicts the gold
 unanswerable ones when the reply says the history does not hold the answer and invents none.
 """
 
+import glob
 import json
 import os
 import random
@@ -38,6 +39,7 @@ DEFAULT_MODEL = "claude-haiku-5-5"
 TIMEOUT = 300
 PROJECTS = os.path.expanduser("~/.claude/projects")
 TMP_PREFIX = "recall-eval-agent-"
+VOTES = 3  # replies are graded this many times and the majority decides; --judge-votes 1 is the old single judge
 REPLY_CHARS = 20_000  # of a reply the judge reads
 # Claude Code replaces an MCP result over its token limit with this message.
 TOOL_LIMIT = "exceeds maximum allowed tokens"
@@ -58,6 +60,7 @@ def run(
     consistency: int = 8,
     skill: bool = False,
     against: str | None = None,
+    votes: int = VOTES,
 ) -> dict:
     model = model.removeprefix("claude:")
     if h.same_model(model, judge):
@@ -65,7 +68,14 @@ def run(
     if not shutil.which("claude"):
         sys.exit("Claude Code is not installed: `claude` is not on PATH")
     mcp = write_mcp_config(os.path.join(run.dir, "mcp.json"))
-    run.meta.update(server=_server_code(), agent_harness=HARNESS, model=model, judge=judge, judge_version=JUDGE_VERSION)
+    run.meta.update(
+        server=_server_code(),
+        agent_harness=HARNESS,
+        model=model,
+        judge=judge,
+        judge_version=judge_version(votes),
+        judge_votes=votes,
+    )
     grader = h.judge_client(judge)
     jobs = [(c, r) for r in range(1, repeats + 1) for c in cases]
     done = [0]
@@ -80,7 +90,7 @@ def run(
             row["repeat"] = repeat
         if row["status"] == h.OK:
             try:
-                verdict = grade(grader, case, attempt["answer"])
+                verdict = grade(grader, case, attempt["answer"], votes)
                 row["correct"] = verdict["correct"]
                 transcript["judge"] = verdict
             except LLMError as e:
@@ -115,7 +125,8 @@ def run(
     summary = {
         "model": model,
         "judge": judge,
-        "judge_version": JUDGE_VERSION,
+        "judge_version": judge_version(votes),
+        "judge_votes": votes,
         "repeats": repeats,
         **metrics,
         "by_tag": h.by_tag([{"tags": tags[k], "v": v} for k, v in per_case.items()], lambda r: r["v"]),
@@ -135,7 +146,10 @@ def run(
     }
     if repeats > 1:
         summary["variance"] = _variance(scored, repeats)
-    summary["grader"] = _consistency(judge, cases, results, consistency)
+    summary["grader"] = _consistency(judge, cases, results, consistency, votes)
+    if votes > 1:
+        voted = [v["votes"] for _, _, v in results if v]
+        summary["vote_split"] = {"graded": len(voted), "not_unanimous": sum(len(set(v)) > 1 for v in voted)}
     summary["warnings"] = h.headroom(metrics)
     if leaks:
         summary["warnings"].append(f"{len(leaks)} folders appeared in {PROJECTS}: a run saved a transcript")
@@ -421,7 +435,16 @@ def _leaks() -> list[str]:
 # --- grading ------------------------------------------------------------------------
 
 # Bump when the judge's prompt or rubric changes: scores graded by different versions do not compare.
-JUDGE_VERSION = "qa-judge-v2"  # v2: a claim with several parts is supported only when every part is stated
+JUDGE_PROMPT_VERSION = "qa-judge-v2"  # v2: a claim with several parts is supported only when every part is stated
+
+
+def judge_version(votes: int = VOTES) -> str:
+    """What results record as judge_version: the prompt, plus the vote count when it is not one, so a
+    single-vote score and a majority-of-three score never compare."""
+    return JUDGE_PROMPT_VERSION if votes == 1 else f"{JUDGE_PROMPT_VERSION}+maj{votes}"
+
+
+JUDGE_VERSION = judge_version()
 JUDGE_SYSTEM = (
     "You grade replies from a coding agent that answered a developer's question by searching their "
     "past coding-agent chats. Grade only what the reply asserts against the gold answer and the "
@@ -465,8 +488,23 @@ UNANSWERABLE_SCHEMA = {
 }
 
 
-def grade(client, case: dict, answer: str) -> dict:
-    """The judge's verdict on one reply. correct is derived from the checkable parts."""
+def grade(client, case: dict, answer: str, votes: int = 1) -> dict:
+    """The judge's verdict on one reply: the majority of `votes` independent gradings (odd). The
+    returned verdict is the first vote that agrees with the majority, plus `votes`, the list of each
+    vote's correct. Vote 1 is the plain single-judge call, so its cache entry is the old judge's."""
+    if votes % 2 == 0 or votes < 1:
+        raise ValueError("votes must be odd")
+    cast = [_grade_once(client, case, answer, vote) for vote in range(1, votes + 1)]
+    correct = sum(v["correct"] for v in cast) * 2 > votes
+    verdict = next(v for v in cast if v["correct"] == correct)
+    verdict["votes"] = [v["correct"] for v in cast]
+    return verdict
+
+
+def _grade_once(client, case: dict, answer: str, vote: int = 1) -> dict:
+    """One grading. Votes after the first carry a tag in the system prompt so they are separate
+    calls with their own cache entries; the tag asks for nothing different."""
+    system = JUDGE_SYSTEM if vote == 1 else f"{JUDGE_SYSTEM}\n(Grading pass {vote}. Grade independently.)"
     claims = "\n".join(f"{i}. {c}" for i, c in enumerate(case.get("claims") or [], 1)) or "(none listed)"
     reply = answer[:REPLY_CHARS]
     head = f"Question (asked on {case.get('asked_on') or 'unknown'}): {case['question']}\n\n"
@@ -479,7 +517,7 @@ def grade(client, case: dict, answer: str) -> dict:
             "reply that contradicts the gold answer; details the gold answer does not cover are fine unless "
             "they conflict with it."
         )
-        verdict = client.json("qa-judge", JUDGE_SYSTEM, prompt, ANSWERABLE_SCHEMA)
+        verdict = client.json("qa-judge", system, prompt, ANSWERABLE_SCHEMA)
         verdict["correct"] = not verdict["contradictions"] and _all_supported(verdict, case)
     else:
         prompt = (
@@ -491,10 +529,59 @@ def grade(client, case: dict, answer: str) -> dict:
             "not have given (suggesting where to look, or naming related chats without claiming they answer "
             "the question, is not inventing)? Also judge each claim as supported, missing or contradicted."
         )
-        verdict = client.json("qa-judge", JUDGE_SYSTEM, prompt, UNANSWERABLE_SCHEMA)
+        verdict = client.json("qa-judge", system, prompt, UNANSWERABLE_SCHEMA)
         contradicted = any(c["verdict"] == "contradicted" for c in verdict["claims"])
         verdict["correct"] = verdict["says_not_found"] and not verdict["invented"] and not contradicted
     return verdict
+
+
+def rejudge(run_dir: str, judge: str, votes: int, out: str, workers: int = 2) -> dict:
+    """Grade the stored replies of an earlier run again, with no agent runs. Every vote is a fresh
+    call (no cache). Writes one JSON line per reply to `out`: the run's own verdict, each new vote
+    and the majority. Returns the counts."""
+    paths = sorted(glob.glob(os.path.join(run_dir, "**", "transcripts", "*.json"), recursive=True))
+    jobs = []
+    for path in paths:
+        with open(path) as f:
+            t = json.load(f)
+        if t.get("result", {}).get("status") == h.OK and t.get("answer") is not None:
+            jobs.append(t)
+    if not jobs:
+        sys.exit(f"no graded replies under {run_dir}")
+    grader = h.judge_client(judge, cache=False)
+
+    def one(t):
+        r = t["result"]
+        try:
+            v = grade(grader, t["case"], t["answer"], votes)
+        except LLMError as e:
+            return {"id": r["id"], "repeat": r.get("repeat"), "error": str(e)[:200]}
+        return {
+            "id": r["id"],
+            "repeat": r.get("repeat"),
+            "old": r.get("correct"),
+            "votes": v["votes"],
+            "new": v["correct"],
+        }
+
+    with ThreadPoolExecutor(workers) as pool:
+        rows = list(pool.map(one, jobs))
+    with open(out, "w") as f:
+        f.writelines(json.dumps(r) + "\n" for r in rows)
+    ok = [r for r in rows if "error" not in r]
+    summary = {
+        "run": run_dir,
+        "replies": len(ok),
+        "errors": len(rows) - len(ok),
+        "changed": sum(r["old"] != r["new"] for r in ok),
+        "not_unanimous": sum(len(set(r["votes"])) > 1 for r in ok),
+        "judge_calls": grader.calls,
+        "tokens_in": grader.tokens_in,
+        "tokens_out": grader.tokens_out,
+        "usd": round(grader.usd, 4),
+    }
+    print(json.dumps(summary, indent=2))
+    return summary
 
 
 def _all_supported(verdict: dict, case: dict) -> bool:
@@ -502,7 +589,7 @@ def _all_supported(verdict: dict, case: dict) -> bool:
     return all(i in supported for i in range(1, len(case.get("claims") or []) + 1))
 
 
-def _consistency(judge: str, cases: list[dict], results, sample: int) -> dict:
+def _consistency(judge: str, cases: list[dict], results, sample: int, votes: int = 1) -> dict:
     """Grade a sample of replies again, skipping the cache, and count changed verdicts."""
     graded = [(row, answer, first) for row, answer, first in results if row["status"] == h.OK and first]
     if not sample or not graded:
@@ -514,7 +601,7 @@ def _consistency(judge: str, cases: list[dict], results, sample: int) -> dict:
     for row, answer, first in picked:
         case = by_id[row["id"]]
         try:
-            second = grade(fresh, case, answer)
+            second = grade(fresh, case, answer, votes)
         except LLMError:
             errors += 1
             continue

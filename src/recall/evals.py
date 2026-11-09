@@ -297,6 +297,7 @@ def run_longmemeval_qa(
     model: str,
     sample: int = 200,
     judge: str | None = None,
+    votes: int = 1,
     context: str = "sessions",
     top_k: int = 10,
     max_tokens: int = 90_000,
@@ -351,7 +352,12 @@ def run_longmemeval_qa(
         reply = client.json("lme-answer", "You answer questions from chat history.", prompt, _ANSWER_SCHEMA)
         seconds = time.time() - started
         response = f"{reply['steps']}\n\nAnswer: {reply['answer']}"
-        verdict = grader.json("lme-judge", "You grade answers.", _judge_prompt(q, response), _VERDICT_SCHEMA)
+        yes = 0
+        for vote in range(1, votes + 1):  # majority of `votes`; vote 1 is the plain single-judge call
+            system = "You grade answers." if vote == 1 else f"You grade answers. (Grading pass {vote}.)"
+            verdict = grader.json("lme-judge", system, _judge_prompt(q, response), _VERDICT_SCHEMA)
+            yes += verdict["verdict"] == "yes"
+        verdict = {"verdict": "yes" if yes * 2 > votes else "no"}
         return {
             "question_id": q["question_id"],
             "type": "abstention" if q["question_id"].endswith("_abs") else q["question_type"],
@@ -395,6 +401,7 @@ def run_longmemeval_qa(
     result = {
         "model": client.provider.label,
         "judge": grader.provider.label,
+        "judge_version": None if votes == 1 else f"lme-judge-v1+maj{votes}",  # no version = the original single judge
         "context": context,
         "questions": n,
         "failed": len(failed),
