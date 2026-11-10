@@ -377,10 +377,8 @@ def _apply(
             proposed = texts or (fallback if kind in ("add", "create") else [])
             title = clean_title(op["title"]) or clean_title(candidates[0]["title"])
             makes_note = kind == "create" or (kind == "add" and not b.note(op["note_id"]))
-            # A retire takes words away, so it goes through; any deleted words it offers as a replacement go below.
-            if kind != "retire" and (
-                (proposed and all(_key(t) in removed for t in proposed))
-                or (makes_note and _key(title) in group.deleted_titles)
+            if (proposed and all(_key(t) in removed for t in proposed)) or (
+                makes_note and _key(title) in group.deleted_titles
             ):
                 stats["refused, deleted by the developer"] += 1
                 log(f"  refused {kind}: the developer deleted this")
