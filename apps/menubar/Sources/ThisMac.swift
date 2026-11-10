@@ -203,7 +203,11 @@ struct RunPanel: View {
             }
         } else if let run = facts.runs?.latest, let start = date(run.started) {  // no steps to draw: it has only just begun, or stopped without saying so
             Panel(title: "Last night’s memory run", note: clock(start)) {
-                Text(run.status == "running" ? "Running now." : "No steps were logged for this run.").foregroundStyle(p.muted)
+                if run.status == "running" {
+                    Text("Running now.").foregroundStyle(p.muted)
+                } else if run.error == nil {
+                    Text("It stopped before finishing.").foregroundStyle(p.muted)
+                }
                 if let e = run.error { Text(e).font(PaperMono.font(11.5)).foregroundStyle(p.accentText).padding(.top, 4) }
             }
         } else {
