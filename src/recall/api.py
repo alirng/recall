@@ -1026,7 +1026,9 @@ def fingerprints() -> dict:
         con = _con()
         out["chats"] = tuple(con.execute("select count(*), max(updated_at) from sessions").fetchone())
         try:
-            out["runs"] = (con.execute("select max(id) from dream_runs").fetchone()[0], _mtime(scheduler.LOG))
+            # max(finished) too: a run's row is written as it starts, and one started by hand logs nowhere when it ends.
+            row = con.execute("select max(id), max(finished) from dream_runs").fetchone()
+            out["runs"] = (row[0], row[1], _mtime(scheduler.LOG))
         except Exception:
             out["runs"] = (None, _mtime(scheduler.LOG))
     except ApiError:

@@ -102,6 +102,7 @@ def _run(opts: Options, log, con, run_id: int, started: float) -> dict:
         log("calls go through the batch API at half price; answers can take minutes")
         batcher.resume()
     stats = Counter()
+    busy: list[str] = []  # why the notes could not be finished: another process held them too long
     # Before reading, so a long backlog of chats cannot spend the calls it needs.
     placed = _place(client, log) if opts.fold and contexts.roots() else 0
     if opts.read and not moved:
@@ -117,7 +118,7 @@ def _run(opts: Options, log, con, run_id: int, started: float) -> dict:
     if opts.fold and not (moved := moved or _moved(con)):  # routing and said.py read the chat tables
         if batcher:
             batcher.deadline = deadline
-        stats.update(_fold(con, client, log, placed, batcher, deadline))
+        stats.update(_fold(con, client, log, placed, batcher, deadline, busy))
     if moved:
         log(moved)
     cost = round(client.usd, 4) if metered and not client.unpriced else None
@@ -130,7 +131,7 @@ def _run(opts: Options, log, con, run_id: int, started: float) -> dict:
         log(f"cost: ${cost:.4f}" + (f" ({batched} calls batched at half price)" if batched else ""))
     con.execute(
         "update dream_runs set finished=?, backend=?, chats=?, candidates=?, stats=?, tokens_in=?, tokens_out=?,"
-        " llm_calls=?, error=?, status='done' where id=?",
+        " llm_calls=?, error=?, status=? where id=?",
         (
             time.time(),
             provider.label,
@@ -140,7 +141,8 @@ def _run(opts: Options, log, con, run_id: int, started: float) -> dict:
             client.tokens_in,
             client.tokens_out,
             client.calls,
-            moved,
+            moved or (f"{busy[0]}; the next run finishes the notes" if busy else None),
+            "failed" if busy else "done",
             run_id,
         ),
     )
@@ -330,15 +332,22 @@ def _place(client: Client, log, notes_store: NoteStore | None = None, notes: dic
         return 0
 
 
-def _fold(con, client: Client, log, placed: int = 0, batcher=None, deadline: float | None = None) -> Counter:
+def _fold(
+    con, client: Client, log, placed: int = 0, batcher=None, deadline: float | None = None, busy: list | None = None
+) -> Counter:
+    """`busy` collects why, when another process held the notes so long that this run could not finish them."""
+    busy = [] if busy is None else busy
     try:
-        return _fold_notes(con, client, log, placed, batcher, deadline)
+        return _fold_notes(con, client, log, placed, batcher, deadline, busy)
     except NotesBusy as e:
         log(f"notes left for the next run: {e}")
+        busy.append(str(e))
         return Counter()
 
 
-def _fold_notes(con, client: Client, log, placed: int = 0, batcher=None, deadline: float | None = None) -> Counter:
+def _fold_notes(
+    con, client: Client, log, placed: int = 0, batcher=None, deadline: float | None = None, busy: list | None = None
+) -> Counter:
     """The notes lock is taken only to write (notes.turn): while a model answers, `recall remember`
     and the app can change notes, and the close below reads them again so that what landed is kept."""
     notes_store = NoteStore()
@@ -357,11 +366,15 @@ def _fold_notes(con, client: Client, log, placed: int = 0, batcher=None, deadlin
             _in_rounds(fold, batcher, log)
         else:
             consolidate.drain(fold, client, deadline)
-    except (BudgetExceeded, LLMError) as e:
+    except (BudgetExceeded, LLMError, NotesBusy) as e:  # what was applied stands, and the close below is still tried
         log(f"consolidation stopped early ({e}); the next run continues from here")
+        if isinstance(e, NotesBusy) and busy is not None:
+            busy.append(str(e))
     stats = fold.finish()
     changes = {k: v for k, v in stats.items() if v and k != "batches"}
-    if contexts.roots():  # what tonight wrote or reworded: before the indexes, so it loads in the right place
+    if (
+        contexts.roots() and not busy
+    ):  # what tonight wrote or reworded: before the indexes, so it loads in the right place
         placed += _place(client, log, notes_store, notes)
     if placed:
         changes["placed"] = placed

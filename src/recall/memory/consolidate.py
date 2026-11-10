@@ -40,6 +40,7 @@ from .notes import (
     CONFIDENCE,
     REMOVED_BY_HAND,
     Note,
+    NotesBusy,
     NoteStore,
     Rule,
     clean_title,
@@ -279,8 +280,11 @@ class Consolidation:
         if unfinished:
             self.log(f"expiry skipped: {unfinished} groups still have candidates to read")
         else:
-            with turn():
-                self.stats["expired"] = expire(self.store, self.notes)
+            try:
+                with turn():
+                    self.stats["expired"] = expire(self.store, self.notes)
+            except NotesBusy as e:  # nothing is lost: a later run expires them, and the caller can still close
+                self.log(f"expiry skipped: {e}")
         return self.stats
 
 

@@ -201,9 +201,9 @@ struct RunPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let e = run.error { Text(e).font(PaperMono.font(11.5)).foregroundStyle(p.accentText).padding(.top, 4) }
             }
-        } else if let run = facts.runs?.latest, let start = date(run.started) {  // no steps to draw: it has only just begun, or ended early
+        } else if let run = facts.runs?.latest, let start = date(run.started) {  // no steps to draw: it has only just begun, or stopped without saying so
             Panel(title: "Last night’s memory run", note: clock(start)) {
-                Text(run.status == "running" ? "Running now." : "It ended before reading any chats.").foregroundStyle(p.muted)
+                Text(run.status == "running" ? "Running now." : "No steps were logged for this run.").foregroundStyle(p.muted)
                 if let e = run.error { Text(e).font(PaperMono.font(11.5)).foregroundStyle(p.accentText).padding(.top, 4) }
             }
         } else {
