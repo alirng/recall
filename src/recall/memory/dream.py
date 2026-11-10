@@ -222,7 +222,7 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
             # Oldest first: chats that arrive before the next run join the last call instead of shifting
             # every call's chats, so answers a left-running batch gave are still the next run's cache hits.
             chats = sorted(chats, key=lambda s: s["updated_at"])
-        messages = "select seq, role, text from messages where session_id=? order by seq"
+        messages = "select seq, role, text, ts from messages where session_id=? order by seq"
         items = [(s, con.execute(messages, (s["id"],)).fetchall()) for s in chats]
     except sqlite3.OperationalError:
         if not (moved := _moved(con)):
@@ -230,6 +230,7 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
         raise ChatsMoved(moved) from None
     if moved := _moved(con):  # rebuilt mid-read: chats whose messages came back empty would be marked skipped
         raise ChatsMoved(moved)
+    said = {s["id"]: m for s, m in items}  # for dating each candidate by the message it came from
     batches, skipped = extract.plan(items, client.provider.profile)
     label = client.provider.for_purpose("extract").label
     for s in skipped:
@@ -242,7 +243,7 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
     reasons = set()  # why calls failed, each said once in the log
 
     def finish(session, candidates, digest_hash, status="done", error=None):
-        extract.store(con, session, status, candidates, digest_hash, label, error)
+        extract.store(con, session, status, candidates, digest_hash, label, error, said.get(session["id"]))
         con.commit()
         stats["chats" if status == "done" else "failed"] += 1
         stats["candidates"] += len(candidates)

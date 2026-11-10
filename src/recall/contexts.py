@@ -154,6 +154,27 @@ def of_chats(chat_ids, table: dict[str, list[str]] | None = None) -> set[str]:
     return {c for _, folder in _chats(chat_ids) if (c := of_folder(folder, table))}
 
 
+def chat_contexts(chat_ids, table: dict[str, list[str]]) -> dict[str, str]:
+    """chat id -> the context it ran in, for the chats that ran in one. One read for many chats."""
+    ids = sorted(set(chat_ids))
+    if not ids or not table:
+        return {}
+    out = {}
+    try:
+        con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True)
+        for i in range(0, len(ids), 900):
+            chunk = ids[i : i + 900]
+            for chat, folder in con.execute(
+                f"select id, project from sessions where id in ({','.join('?' * len(chunk))})", chunk
+            ):
+                if c := of_folder(folder, table):
+                    out[chat] = c
+        con.close()
+    except sqlite3.Error:
+        return {}
+    return out
+
+
 def projects_of_chats(chat_ids) -> set[str]:
     """The project keys a set of chats ran in."""
     return {key for key, _ in _chats(chat_ids) if key}
