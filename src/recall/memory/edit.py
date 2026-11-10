@@ -18,7 +18,6 @@ import copy
 import os
 import re
 import subprocess
-import sys
 
 from .notes import (
     MERGED_BY_HAND,
@@ -67,19 +66,7 @@ class Missing(Refused):
 
 
 def load_notes(store: NoteStore, include_archived: bool = False) -> dict[str, Note]:
-    """store.load(), except that a note file recall cannot parse is skipped and logged, one file at
-    a time, so a single malformed note does not stop every other note from being read or changed."""
-    notes: dict[str, Note] = {}
-    for path in store.files(include_archived):
-        try:
-            note = read_note_file(path)
-        except Exception as e:
-            print(f"recall: skipping note {path}: {type(e).__name__}: {e}", file=sys.stderr)
-            continue
-        if note:
-            notes[note.id] = note
-            store.titles[note.id] = note.title
-    return notes
+    return store.load(include_archived)
 
 
 # --- reading an edit ------------------------------------------------------------------------

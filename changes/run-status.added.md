@@ -1,0 +1,1 @@
+**A memory run that fails now says so.** Each run is recorded when it starts and closed however it ends, `recall doctor` reports a failed, crashed or overdue run, and the Mac app shows it. One malformed note no longer stops every note from loading; `recall doctor` names it.

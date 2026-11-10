@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from itertools import combinations
 
@@ -39,7 +40,7 @@ HOT_FILE_SECONDS = 15 * 60
 NEAR_CHAT_SECONDS = 30 * 60
 NEAR_FILE_SECONDS = 60 * 60
 CACHE = os.path.join(paths.HOME, "cache", "status.json")
-CACHE_VERSION = 3  # bump when _read's record changes, so old entries are read again (3: redacted)
+CACHE_VERSION = 4  # bump when _read's record changes, so old entries are read again (4: tries)
 WARNED = os.path.join(paths.HOME, "cache", "edit-warnings.json")
 # Every agent's edit hook adds a line here, so agents whose history recall cannot read yet
 # still show up, and an edit counts before the agent's own transcript is written.
@@ -122,6 +123,8 @@ class Live:
     source: str | None = None  # its transcript, which an edit hook also reports
     # path -> when it was last edited (None if the agent records no times), oldest first
     edits: dict[str, float | None] = field(default_factory=dict)
+    # path -> how many edit tool calls its transcript shows, those the edit hook refused among them
+    tries: dict[str, int] = field(default_factory=dict)
     checkout: str | None = None  # the worktree it last edited in, else the one it runs in
     # (checkout, repo-relative path, when), one per file, oldest edit first
     touched: list[tuple[str, str, float | None]] = field(default_factory=list)
@@ -169,26 +172,32 @@ def _named(agent: str, d: dict, cwd: str | None) -> list[str]:
     return out
 
 
-def _tool_edits(path: str) -> dict[str, float | None]:
+def _tool_edits(path: str) -> tuple[dict[str, float | None], Counter]:
     """Files named by edit tool calls in a Claude Code or Cursor transcript, with when each
-    was last edited, oldest first."""
+    was last edited, oldest first, and how many calls named each. A transcript keeps a call the
+    edit hook refused like any other (Cursor's has no results at all), so the edit log's count of
+    refusals says which were not edits (_sessions)."""
     from .chats.sources import iso_ts, read_jsonl
 
     out: dict[str, float | None] = {}
+    tries: Counter = Counter()
     for d in read_jsonl(path):
         for target in _named("claude", d, None):
             _edited(out, target, iso_ts(d.get("timestamp")))
-    return out
+            tries[target] += 1
+    return out, tries
 
 
-def _codex_edits(path: str, cwd: str | None) -> dict[str, float | None]:
+def _codex_edits(path: str, cwd: str | None) -> tuple[dict[str, float | None], Counter]:
     from .chats.sources import iso_ts, read_jsonl
 
     out: dict[str, float | None] = {}
+    tries: Counter = Counter()
     for d in read_jsonl(path):
         for target in _named("codex", d, cwd):
             _edited(out, target, iso_ts(d.get("timestamp")))
-    return out
+            tries[target] += 1
+    return out, tries
 
 
 def _line(text: str, n: int) -> str:
@@ -219,7 +228,7 @@ def _read(agent: str, path: str, catalog) -> dict | None:
         return None
     # What the person typed; `!` shell commands and other tool-tagged turns are not requests.
     asks = [m.text for m in s.messages if m.role == "user" and m.text.strip() and not m.text.lstrip().startswith("<")]
-    edits = _codex_edits(path, s.project) if agent == "codex" else _tool_edits(path)
+    edits, tries = _codex_edits(path, s.project) if agent == "codex" else _tool_edits(path)
     return {
         "id": s.id,
         "agent": s.agent,
@@ -230,6 +239,7 @@ def _read(agent: str, path: str, catalog) -> dict | None:
         "ask": _quoted(asks[-1], 200) if asks else "",
         "source": os.path.realpath(path),
         "edits": list(edits.items()),
+        "tries": dict(tries),
     }
 
 
@@ -351,6 +361,10 @@ def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
             found.append(s)
             by_id[sid] = s
         s.updated_at = max(s.updated_at, e["at"])
+        for f in list(s.edits) if e["refused"] else ():  # every call its transcript shows for this file was refused
+            full = os.path.realpath(f if os.path.isabs(f) or not s.folder else os.path.join(s.folder, f))
+            if s.tries.get(f, 0) <= e["refused"].get(full, 0):
+                del s.edits[f]
         for f, at in e["files"].items():
             _edited(s.edits, f, max(at, s.edits.get(f) or 0))
         for f, spans in e["regions"].items():
@@ -361,13 +375,21 @@ def _sessions(since: float, only: dict[str, str] | None = None) -> list[Live]:
 
 
 def _log(
-    agent: str, session: str, path: str, cwd: str | None, transcript: str | None, lines: list[list[int]] | None = None
+    agent: str,
+    session: str,
+    path: str,
+    cwd: str | None,
+    transcript: str | None,
+    lines: list[list[int]] | None = None,
+    refused: bool = False,
 ) -> None:
     entry = {"at": time.time(), "agent": agent, "session": session, "file": path, "cwd": cwd}
     if transcript:
         entry["transcript"] = os.path.realpath(transcript)
     if lines:
         entry["lines"] = lines
+    if refused:  # the hook refused the attempt it logged last: that edit never happened (_standing)
+        entry["refused"] = True
     with contextlib.suppress(OSError):
         os.makedirs(os.path.dirname(EDITS), exist_ok=True)
         if os.path.exists(EDITS) and os.path.getsize(EDITS) > 512_000:
@@ -390,18 +412,54 @@ def _log_lines() -> list[dict]:
     return out
 
 
+def _standing(lines: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The edit log's lines as (edits, refusals): each line that says the hook refused an edit takes
+    away the attempt it follows, which never reached the file. The hook logs before it decides, so
+    that two chats editing at once see each other."""
+    kept: list[dict | None] = []
+    attempts: dict[tuple, list[int]] = {}
+    refused = []
+    for x in lines:
+        key = (x.get("agent"), x.get("session"), x.get("file"))
+        if x.get("refused"):
+            refused.append(x)
+            if attempts.get(key):
+                kept[attempts[key].pop()] = None
+        else:
+            attempts.setdefault(key, []).append(len(kept))
+            kept.append(x)
+    return [x for x in kept if x], refused
+
+
 def _logged(since: float) -> dict[str, dict]:
-    """Chats seen by the edit hooks since `since`: agent, folder, transcript, and each file
-    with when it was last edited, oldest first."""
+    """Chats seen by the edit hooks since `since`: agent, folder, transcript, each file with when
+    it was last edited, oldest first, and how many edits of each the hook refused."""
     out: dict[str, dict] = {}
-    for x in _log_lines():
-        if x.get("at", 0) < since or not all(k in x for k in ("agent", "session", "file")):
-            continue
+    edits, refusals = _standing(_log_lines())
+
+    def entry(x: dict) -> dict:
         e = out.setdefault(
             f"{x['agent']}:{x['session']}",
-            {"agent": x["agent"], "cwd": x.get("cwd"), "transcript": x.get("transcript"), "files": {}, "regions": {}},
+            {
+                "agent": x["agent"],
+                "cwd": x.get("cwd"),
+                "transcript": x.get("transcript"),
+                "files": {},
+                "regions": {},
+                "refused": {},
+            },
         )
-        e["at"] = x["at"]
+        e["at"] = max(e.get("at", 0), x["at"])
+        return e
+
+    for x in refusals:
+        if x.get("at", 0) >= since and all(k in x for k in ("agent", "session", "file")):
+            e = entry(x)
+            e["refused"][x["file"]] = e["refused"].get(x["file"], 0) + 1
+    for x in edits:
+        if x.get("at", 0) < since or not all(k in x for k in ("agent", "session", "file")):
+            continue
+        e = entry(x)
         _edited(e["files"], x["file"], x["at"])
         if spans := x.get("lines"):
             e["regions"].setdefault(x["file"], []).extend(spans)
@@ -617,7 +675,7 @@ def _others_may_edit(
 
     me, hit, out, logged = f"{agent}:{session}", False, {}, {}
     places: dict[str, set[str]] = {}
-    for x in _log_lines():
+    for x in _standing(_log_lines())[0]:
         if x.get("at", 0) < since or not all(k in x for k in ("agent", "session", "file")):
             continue
         if f"{x['agent']}:{x['session']}" != me and (t := checkout_of(x["file"])) is not None:
@@ -1551,4 +1609,8 @@ def on_edit(event):
     logged = re.sub(r'token="\w+"', 'token="…"', message)
     usage.record("hook", "check_edit", {"files": event.files, "action": action}, logged, client=event.agent)
     refuse = action in ("worktree", "ask")
+    if refuse:  # the whole tool call is refused, so none of its files were edited
+        for f in event.files:
+            full = os.path.realpath(f if os.path.isabs(f) or not event.cwd else os.path.join(event.cwd, f))
+            _log(event.agent, event.session, full, event.cwd, event.transcript, refused=True)
     return Reply(context=None if refuse else message, deny=message if refuse else None, notice=found[0].notice)

@@ -485,6 +485,7 @@ struct Runs: Decodable {
         let started: String?
         let finished: String?
         let seconds: Double?
+        let status: String?  // running, done, failed or crashed; absent on a recall from before runs had one
         let backend: String?
         let chats_read: Int?
         let model_calls: Int?
