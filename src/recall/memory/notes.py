@@ -770,18 +770,21 @@ def _by_context(prefs: list[Note], table: dict[str, list[str]]) -> list[tuple[st
     return [(heading, items, keeps.get(heading)) for heading, items in groups.items()]
 
 
-def _shown_in(where: str, table: dict[str, list[str]], said: dict[str, str]):
+def _shown_in(where: str, table: dict[str, list[str]], said: dict[str, str] | None):
     """Which of a tied note's rules a context shows."""
     return lambda n, r: _said_in(n, r, where, table, said)
 
 
-def _said_in(n: Note, r: Rule, where: str, table: dict[str, list[str]], said: dict[str, str]) -> bool:
+def _said_in(n: Note, r: Rule, where: str, table: dict[str, list[str]], said: dict[str, str] | None) -> bool:
     """Was this rule said in this context? A rule with no chat behind it (written by hand) goes
-    wherever its note goes."""
+    wherever its note goes; one whose chats ran outside every context, or have left the index, goes
+    to none. `said` None: the chat index could not be read, which must not hide every rule."""
+    if said is None:
+        return True
     seen = {said[s] for s in r.sources if s in said}
     if r.stated and n.stated_in and (c := contexts.of_folder(n.stated_in, table)):
         seen.add(c)
-    return not seen or where in seen
+    return where in seen or not (seen or r.sources)
 
 
 def audience(n: Note, table: dict[str, list[str]], said: dict[str, str] | None = None) -> str | None:

@@ -154,8 +154,9 @@ def of_chats(chat_ids, table: dict[str, list[str]] | None = None) -> set[str]:
     return {c for _, folder in _chats(chat_ids) if (c := of_folder(folder, table))}
 
 
-def chat_contexts(chat_ids, table: dict[str, list[str]]) -> dict[str, str]:
-    """chat id -> the context it ran in, for the chats that ran in one. One read for many chats."""
+def chat_contexts(chat_ids, table: dict[str, list[str]]) -> dict[str, str] | None:
+    """chat id -> the context it ran in, for the chats that ran in one. One read for many chats.
+    None when the index could not be read, which says nothing about where any chat ran."""
     ids = sorted(set(chat_ids))
     if not ids or not table:
         return {}
@@ -171,7 +172,7 @@ def chat_contexts(chat_ids, table: dict[str, list[str]]) -> dict[str, str]:
                     out[chat] = c
         con.close()
     except sqlite3.Error:
-        return {}
+        return None
     return out
 
 
