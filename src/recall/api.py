@@ -270,15 +270,19 @@ _COUNTS_SKIP = {"batches", "batched_calls", "cost_usd"}
 
 
 def _run_row(r) -> dict:
+    from .memory import runs
+
     try:
         stats = json.loads(r["stats"] or "{}")
     except ValueError:
         stats = {}
+    status = runs.status(r)
     return {
         "id": r["id"],
         "started": _iso(r["started"]),
         "finished": _iso(r["finished"]),
         "seconds": round(r["finished"] - r["started"], 1) if r["finished"] and r["started"] else None,
+        "status": status,
         "backend": r["backend"],
         "chats_read": r["chats"],
         "candidates": r["candidates"],
@@ -288,7 +292,7 @@ def _run_row(r) -> dict:
         "cost_usd": stats.get("cost_usd"),
         "batches": stats.get("batches"),
         "counts": {k: v for k, v in stats.items() if k not in _COUNTS_SKIP and isinstance(v, int)},
-        "error": r["error"],
+        "error": r["error"] or (runs.STOPPED if status == "crashed" else None),
     }
 
 
@@ -306,10 +310,11 @@ _STEP_KINDS = (
 )
 
 
-def run_log(started: float | None) -> dict:
-    """The last run's log lines and its phases, dated from the run record. The log is plain text with
+def run_log(started: float | None, run_id: int | None = None) -> dict:
+    """A run's log lines and its phases, dated from the run record. The log is plain text with
     times of day only, so both are read out of text: a line recall words differently later falls
-    under kind "other" and a phase with no lines is left out."""
+    under kind "other" and a phase with no lines is left out. A run marks where its lines start
+    (dream.run); for one from before that mark, the last run the log shows."""
     from datetime import datetime, timedelta
 
     from .integrations import scheduler
@@ -320,11 +325,17 @@ def run_log(started: float | None) -> dict:
             lines = f.read().splitlines()
     except OSError:
         return empty
-    start = next((i for i in range(len(lines) - 1, -1, -1) if _STEP.match(lines[i]) and " model: " in lines[i]), None)
+    mark = f" run {run_id} started"
+    marked = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].endswith(mark)), None)
+    start = marked
     if start is None:
-        return empty
-    if start and lines[start - 1][9:].startswith("commit links"):
-        start -= 1
+        start = next(
+            (i for i in range(len(lines) - 1, -1, -1) if _STEP.match(lines[i]) and " model: " in lines[i]), None
+        )
+        if start is None:
+            return empty
+        if start and lines[start - 1][9:].startswith("commit links"):
+            start -= 1
     day = datetime.fromtimestamp(started) if started else datetime.now()
     day = day.replace(hour=0, minute=0, second=0, microsecond=0)
     steps, last = [], None
@@ -398,7 +409,7 @@ def runs_view(limit: int, with_steps: bool = False) -> dict:
     runs = [_run_row(r) for r in rows]
     out: dict = {"runs": runs}
     if with_steps:
-        out["latest"] = (runs[0] | run_log(rows[0]["started"])) if runs else None
+        out["latest"] = (runs[0] | run_log(rows[0]["started"], rows[0]["id"])) if runs else None
     return out
 
 
@@ -494,6 +505,7 @@ def doctor_view() -> dict:
         from . import autopilot, power
         from .chats import indexer
         from .chats.sources import codex
+        from .memory import runs
 
         rows = autopilot.report()
         for r in rows:
@@ -508,7 +520,7 @@ def doctor_view() -> dict:
             },
             "parked_chats": len(indexer.parked()),
             "power": power.summary(),
-            "notes": [n for n in (codex.unreadable_note(),) if n],
+            "notes": [n for n in (codex.unreadable_note(),) if n] + runs.health(),
         }
 
     return _cached("doctor", 30, make)
@@ -1014,7 +1026,9 @@ def fingerprints() -> dict:
         con = _con()
         out["chats"] = tuple(con.execute("select count(*), max(updated_at) from sessions").fetchone())
         try:
-            out["runs"] = (con.execute("select max(id) from dream_runs").fetchone()[0], _mtime(scheduler.LOG))
+            # max(finished) too: a run's row is written as it starts, and one started by hand logs nowhere when it ends.
+            row = con.execute("select max(id), max(finished) from dream_runs").fetchone()
+            out["runs"] = (row[0], row[1], _mtime(scheduler.LOG))
         except Exception:
             out["runs"] = (None, _mtime(scheduler.LOG))
     except ApiError:

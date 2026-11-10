@@ -31,6 +31,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
@@ -59,6 +60,7 @@ REMOVED_BY_HAND = "removed by hand"  # the only reason that feeds consolidation'
 MERGED_BY_HAND = "merged by hand"  # the developer folded it into another rule, which replaced it
 HOOK_CHARS = 160
 TITLE_CHARS = 120  # a title is one line: written in the index raw, a newline in it would forge lines
+STALE_GIT_LOCK = 600  # seconds after which .git/index.lock is a crashed git's leftover: recall's git calls take moments
 README = (
     "# Agent memory\n\nMaintained by recall from your coding-agent chats. Start at MEMORY.md. "
     "Every note is plain markdown: edit or delete anything, and recall respects it on its next run. "
@@ -168,6 +170,7 @@ class NoteStore:
         os.makedirs(self._meta, exist_ok=True)
         self.registry = _read_json(os.path.join(self._meta, "projects.json"))  # project key -> folder
         self.titles: dict[str, str] = {}  # note id -> title, for rendering links
+        self.commit_failed: str | None = None  # why the last commit() could not commit, when it could not
         if not os.path.isdir(os.path.join(root, ".git")):
             subprocess.run(["git", "init", "-q", root], check=False)
             with open(os.path.join(root, "README.md"), "w") as f:
@@ -187,13 +190,33 @@ class NoteStore:
                     yield os.path.join(dirpath, name)
 
     def load(self, include_archived: bool = False) -> dict[str, Note]:
+        """Every note that can be read. A file that cannot is skipped and logged, so one bad note
+        does not stop the nightly run, a search or an edit from reading the others."""
         notes = {}
         for path in self.files(include_archived):
-            note = read_note_file(path)
+            try:
+                note = read_note_file(path)
+            except Exception as e:
+                print(f"recall: skipping note {path}: {type(e).__name__}: {e}", file=sys.stderr)
+                continue
             if note:
                 notes[note.id] = note
                 self.titles[note.id] = note.title
         return notes
+
+    def unreadable(self) -> list[str]:
+        """Note files that have a header recall cannot read, so load() leaves them out. A markdown
+        file with no header at all is not a note and is not listed."""
+        out = []
+        for path in self.files(include_archived=True):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text = f.read()
+                if text.startswith("---\n") and parse_note(text, path) is None:
+                    out.append(path)
+            except Exception:
+                out.append(path)
+        return out
 
     def digest(self) -> str:
         """A hash of every note file's path and bytes (about 10 ms for 700 notes, where load() takes
@@ -217,8 +240,7 @@ class NoteStore:
         directory = self._dir_for(note)
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, f"{note.id}.md")
-        if note.path and os.path.abspath(note.path) != os.path.abspath(path) and os.path.exists(note.path):
-            os.remove(note.path)  # the note moved: archived, or its project folder changed
+        moved_from = note.path if note.path and os.path.abspath(note.path) != os.path.abspath(path) else None
         meta = {k: v for k, v in asdict(note).items() if k not in _NOT_FRONTMATTER and v not in (None, [], "")}
         if note.rules:
             meta["rules"] = [_rule_meta(r) for r in note.rules]
@@ -237,6 +259,10 @@ class NoteStore:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
         os.replace(tmp, path)
+        if moved_from and os.path.exists(
+            moved_from
+        ):  # archived, or its project folder changed: only once the new file is there
+            os.remove(moved_from)
         note.path, note.stamp = path, _stamp(text)
 
     def reread(self, note: Note) -> Note | None:
@@ -292,11 +318,17 @@ class NoteStore:
 
     def reconcile(self, notes: dict[str, Note]) -> int:
         """Record notes deleted by hand as rejected; remember the rest as known. A rejected
-        note back on disk (a git revert) is no longer rejected. Returns how many deletions
-        were found."""
+        note back on disk (a git revert) is no longer rejected. A file that does not parse is
+        still on disk, so it is not a deletion. Returns how many deletions were found."""
         ledger = self._read_ledger()
+        if not ledger and self._ledger_torn():  # it can't be read and no commit has it: saving now would empty it
+            print(
+                f"recall: {self._ledger} cannot be read; deletions are not recorded until it is fixed", file=sys.stderr
+            )
+            return 0
         known, rejected = ledger.get("known", {}), ledger.get("rejected", {})
         on_disk = set(notes) | set(self.load(include_archived=True))
+        on_disk |= {os.path.basename(p)[:-3] for p in self.files(include_archived=True)}
         gone = [k for k in known if k not in on_disk]
         for k in gone:
             rejected[k] = known[k]
@@ -306,8 +338,12 @@ class NoteStore:
         return len(gone)
 
     def _read_ledger(self) -> dict:
-        """The ledger, rewritten without the note bodies that earlier releases kept in it."""
+        """The ledger, rewritten without the note bodies that earlier releases kept in it. One that
+        cannot be read comes back from the last commit: read as empty, the next reconcile would save
+        that, and every deletion would be forgotten."""
         ledger = _read_json(self._ledger)
+        if not ledger and self._ledger_torn() and (ledger := self._committed_ledger()):
+            _write_json(self._ledger, ledger)
         parts = {p: ledger.get(p) or {} for p in ("known", "rejected")}
         if any(isinstance(v, dict) and v.get("body") for part in parts.values() for v in part.values()):
             ledger = {
@@ -324,6 +360,26 @@ class NoteStore:
     @property
     def _ledger(self) -> str:
         return os.path.join(self._meta, "notes.json")
+
+    def _ledger_torn(self) -> bool:
+        """Whether the ledger file exists and is not JSON."""
+        try:
+            with open(self._ledger) as f:
+                json.load(f)
+        except OSError:
+            return False
+        except json.JSONDecodeError:
+            return True
+        return False
+
+    def _committed_ledger(self) -> dict:
+        """The ledger as of the last commit of the notes folder; empty when there is none."""
+        rel = os.path.relpath(self._ledger, self.root)
+        r = subprocess.run(["git", "-C", self.root, "show", f"HEAD:{rel}"], capture_output=True, text=True)
+        try:
+            return json.loads(r.stdout) if r.returncode == 0 else {}
+        except json.JSONDecodeError:
+            return {}
 
     # --- indexes ----------------------------------------------------------------
 
@@ -387,22 +443,45 @@ class NoteStore:
         return f"- **{name}**: {len(items)} notes ([index](projects/{folder}/MEMORY.md)) · `{repo}`"
 
     def commit(self, message: str) -> str | None:
-        """Commit every change in the memory folder; returns the short sha, or None if nothing changed."""
+        """Commit every change in the memory folder; returns the short sha, or None if nothing was
+        committed. When that is because git refused, commit_failed says why (a crashed git's leftover
+        lock is cleared and the commit tried again)."""
+        self.commit_failed = None
         git = ["git", "-C", self.root]
-        subprocess.run([*git, "add", "-A"], capture_output=True)
-        r = subprocess.run(
-            [*git, "-c", "user.name=recall", "-c", "user.email=recall@localhost", "commit", "-q", "-m", message],
-            capture_output=True,
-        )
-        if r.returncode != 0:
-            return None
-        return subprocess.run([*git, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+        who = ["-c", "user.name=recall", "-c", "user.email=recall@localhost"]
+        for again in (True, False):
+            r = subprocess.run([*git, "add", "-A"], capture_output=True, text=True)
+            if r.returncode == 0:
+                if subprocess.run([*git, "diff", "--cached", "--quiet"], capture_output=True).returncode == 0:
+                    return None
+                r = subprocess.run([*git, *who, "commit", "-q", "-m", message], capture_output=True, text=True)
+                if r.returncode == 0:
+                    return subprocess.run(
+                        [*git, "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+                    ).stdout.strip()
+            if not (again and self._clear_stale_git_lock()):
+                break
+        self.commit_failed = (r.stderr or r.stdout or "git failed").strip().split("\n")[0][:200]
+        print(f"recall: could not commit the notes folder: {self.commit_failed}", file=sys.stderr)
+        return None
+
+    def _clear_stale_git_lock(self) -> bool:
+        """Remove .git/index.lock when a crashed git left it: old enough that no git of recall's holds it."""
+        lock = os.path.join(self.root, ".git", "index.lock")
+        try:
+            if time.time() - os.path.getmtime(lock) < STALE_GIT_LOCK:
+                return False
+            os.remove(lock)
+            return True
+        except OSError:
+            return False
 
 
 @contextmanager
 def writing(timeout: float = 0):
-    """Take turns changing notes: a memory run folding in new memories, and `recall memory
-    link` recomputing links. Yields False if the lock was not free within `timeout` seconds."""
+    """Take turns changing notes: a memory run folding in new memories, `recall remember`, an edit
+    from the app, and `recall memory link` recomputing links. Yields False if the lock was not free
+    within `timeout` seconds. Nothing holds it through a model call, so a turn lasts moments."""
     os.makedirs(paths.HOME, exist_ok=True)
     with open(os.path.join(paths.HOME, "notes.lock"), "w") as lock:
         deadline = time.time() + timeout
@@ -416,6 +495,20 @@ def writing(timeout: float = 0):
                     return
                 time.sleep(0.1)
         yield True
+
+
+class NotesBusy(Exception):
+    """Something held the notes for longer than a turn should take."""
+
+
+@contextmanager
+def turn(timeout: float = 60):
+    """writing() for a long run, which takes the lock each time it writes and lets go while a model
+    answers. Without the lock it does not write: NotesBusy says so, and the next run carries on."""
+    with writing(timeout) as free:
+        if not free:
+            raise NotesBusy(f"another process held the notes for over {timeout:.0f} seconds")
+        yield
 
 
 def read_note_file(path: str) -> Note | None:
@@ -448,6 +541,8 @@ def parse_note(text: str, path: str) -> Note | None:
     try:
         meta = _frontmatter(m.group(1))
     except yaml.YAMLError:
+        return None
+    if not isinstance(meta, dict):  # a plain line or a list between two rules of dashes
         return None
     fields = {k: v for k, v in meta.items() if k in Note.__dataclass_fields__ and k not in _NOT_FRONTMATTER}
     fields.setdefault("id", os.path.basename(path)[:-3])
@@ -884,6 +979,10 @@ def _write_json(path: str, data: dict) -> None:
 
 
 def _write_text(path: str, text: str) -> None:
+    """Replace a file in one step: a crash halfway through, or a hook reading it meanwhile, must not
+    find it cut short. The deletion ledger read as empty would forget every deletion."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
+    os.replace(tmp, path)

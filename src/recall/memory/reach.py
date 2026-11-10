@@ -7,7 +7,7 @@ about the words it was given: when consolidation gives such a note new words, it
 
 from ..llm import Client
 from . import prompts
-from .notes import Note, NoteStore
+from .notes import Note, NoteStore, turn
 
 SYSTEM, VERSION = prompts.load("reach")
 BATCH = 25
@@ -45,18 +45,20 @@ def run(client: Client, store: NoteStore, notes: dict[str, Note]) -> int:
     for i in range(0, len(pending), BATCH):
         batch = {n.id: n for n in pending[i : i + BATCH]}
         prompt = "\n\n".join(f"note_id: {n.id}\ntitle: {n.title}\n{n.body}" for n in batch.values())
-        for answer in client.json("reach", SYSTEM, prompt, SCHEMA)["notes"]:
-            # The file as it is now, so a hand edit made while the model answered survives.
-            note = store.reread(batch[answer["note_id"]]) if answer["note_id"] in batch else None
-            if (
-                note
-                and note.status == "active"
-                and note.scope == "global"
-                and not note.reach
-                and not note.edited_by_hand
-            ):
-                note.reach = answer["reach"]
-                store.write(note)
-                notes[note.id] = note
-                judged += 1
+        answers = client.json("reach", SYSTEM, prompt, SCHEMA)["notes"]  # nothing holds the notes while it answers
+        with turn():
+            for answer in answers:
+                # The file as it is now, so a hand edit made while the model answered survives.
+                note = store.reread(batch[answer["note_id"]]) if answer["note_id"] in batch else None
+                if (
+                    note
+                    and note.status == "active"
+                    and note.scope == "global"
+                    and not note.reach
+                    and not note.edited_by_hand
+                ):
+                    note.reach = answer["reach"]
+                    store.write(note)
+                    notes[note.id] = note
+                    judged += 1
     return judged
