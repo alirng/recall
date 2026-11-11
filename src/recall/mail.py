@@ -18,6 +18,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -198,6 +199,12 @@ def _send(token: str, to: str, text: str, sender_title: str | None) -> tuple[boo
     return True, f"Sent to {who}. Its answer, if any, reaches you the same way."
 
 
+def _one_line(text) -> str:
+    """Agent-written text that sits outside the quoted block: one line, no quotes or control characters,
+    so it cannot pass itself off as a note from recall."""
+    return re.sub(r'[\x00-\x1f\x7f"]', " ", str(text)).strip()[:200]
+
+
 def hand_off(
     sender: str, sender_source: str | None, title: str | None, who: str, to: str, to_source: str | None, text: str
 ):
@@ -224,7 +231,7 @@ def hand_off(
                     "to_source": to_source,
                     "from": sender,
                     "from_title": title or sender,
-                    "from_who": who.strip()[:200] or None,
+                    "from_who": _one_line(who) or None,
                     "text": text,
                     "by": "agent",
                     **({"sender_source": sender_source} if sender_source else {}),
@@ -333,8 +340,10 @@ def render(messages: list[dict], token: str | None) -> str:
         if m.get("by") != "recall":
             limit = MAX_CHARS if file else MAX_HANDOFF_CHARS
             quoted = "\n".join("> " + line for line in m["text"][:limit].splitlines())
-            who = f' ("{m["from_who"]}", in its own words)' if m.get("from_who") else ""
-            head = f'recall · the chat "{m.get("from_title") or m["from"]}" ({m["from"]}){who}, another coding agent,'
+            if m.get("from_who"):  # the sender's own words, so inside the quote, never in recall's header
+                quoted = f"> Says it is: {_one_line(m['from_who'])}\n{quoted}"
+            title, sender = _one_line(m.get("from_title") or m["from"]), _one_line(m["from"])
+            head = f'recall · the chat "{title}" ({sender}), another coding agent,'
             if file:
                 lines.append(
                     f"{head} wrote about {file}:\n{quoted}\n"
