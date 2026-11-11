@@ -130,6 +130,12 @@ def cmd_show(a) -> None:
         print(f"── {m['seq']} {m['role']} {m['time'] or ''}\n{m['text']}\n")
 
 
+def cmd_wake(a) -> None:
+    from . import wake
+
+    print(f"{a.chat_id}: {wake.run(a.chat_id)}")
+
+
 def cmd_forget(a) -> None:
     from . import forget
     from .chats import indexer, store
@@ -1199,6 +1205,8 @@ def _parser() -> argparse.ArgumentParser:
     sp = command("rules", cmd_rules, "what each agent is told about a repo, and closing the gaps")
     sp.add_argument("target", nargs="*", help="a project's name or a folder (default: the current folder)")
     sp.add_argument("--write", action="store_true", help="make the changes shown in the diff")
+    sp = command("wake", cmd_wake, "deliver a waiting message to a chat, waking it if it is idle")
+    sp.add_argument("chat_id")
     sp = command("status", cmd_status, "what your agents are working on now, and files two of them both changed")
     sp.add_argument("--since", default="12h", help="how far back, e.g. 2h, 12h or 1d")
     sp.add_argument("--json", action="store_true")
