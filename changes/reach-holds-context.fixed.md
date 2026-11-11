@@ -1,0 +1,1 @@
+**Contexts no longer leak through unjudged or merged notes.** A global note the nightly run has not judged stays in the contexts it was learned in. A note judged to hold everywhere is judged again when it gains new words, and a note holding rules from several contexts shows each context only the rules said there.

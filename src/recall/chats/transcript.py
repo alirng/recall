@@ -43,7 +43,7 @@ class Session:
 # extraction reads user turns as the developer speaking, so hook output, other agents'
 # messages and tool output must never stay in them. Some blocks carry attributes.
 _INJECTED = re.compile(
-    r"<(system-reminder|environment_context|user_instructions|app-context|recommended_plugins|"
+    r"<(system-reminder|uploaded_files|environment_context|user_instructions|app-context|recommended_plugins|"
     r"permissions instructions|collaboration_mode|multi_agent_[a-z_]+|local-command-[a-z]+|"
     r"command-[a-z]+|timestamp|image_files|attached_files|additional_data|user_info|rules|"
     r"agent_skills?|open_and_recently_viewed_files|git_status|turn_aborted|task-notification|"

@@ -590,6 +590,9 @@ OTHERS: dict[str, Other] = {
             "VS Code Copilot Chat",
             tuple(f"{{support}}/{e}/User" for e in ("Code", "Code - Insiders", "VSCodium")),
         ),
+        Other("chatgpt", "ChatGPT", ()),  # no folder: its chats arrive by `recall import`
+        Other("claudeai", "claude.ai", ()),  # no folder: its chats arrive by `recall import`
+        Other("cowork", "Claude Cowork", ("{support}/Claude/local-agent-mode-sessions",)),
         Other("zed", "Zed", ("{support}/Zed", "{data}/zed")),
         Other("amp", "Amp", ("{data}/amp",), ("AMP_DATA_DIR", "")),
         Other("muse", "Muse Code", ("{data}/muse",)),

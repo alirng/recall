@@ -82,4 +82,4 @@ change.
   `~/.agents/recall`. Nothing else is written outside those folders and the agent configs.
 - `recall projects suggest --write` drafts a list of their projects from their history, which
   they can then edit; `recall rules` shows which instructions each agent reads in a repo.
-- To undo everything: `recall uninstall && recall schedule disable && uv tool uninstall recall-agents`.
+- To undo everything: `recall uninstall && uv tool uninstall recall-agents`. `recall uninstall` also removes the nightly run.

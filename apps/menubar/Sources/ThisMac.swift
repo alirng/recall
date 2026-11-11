@@ -5,6 +5,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The page's two row heights: data, and a row that holds a control; column heads are shorter.
 enum RowHeight {
@@ -24,7 +25,7 @@ struct ThisMacView: View {
     @Environment(\.colorScheme) var scheme
 
     /// The panels the palette can go to, by title.
-    static let panels = ["Versions", "Storage", "Last memory run", "Sources", "Model and schedule", "Coordination rules", "Access"]
+    static let panels = ["Versions", "Storage", "Last memory run", "Sources", "Import chats", "Model and schedule", "Coordination rules", "Access"]
 
     var body: some View {
         let p = Palette.of(scheme)
@@ -39,6 +40,8 @@ struct ThisMacView: View {
                         RunPanel(library: library).id("Last memory run")
                         Rule()
                         SourcesPanel(library: library).id("Sources")
+                        Rule()
+                        ImportPanel(library: library).id("Import chats")
                         Rule()
                         ModelPanel(library: library).id("Model and schedule")
                         Rule()
@@ -198,6 +201,69 @@ extension SourcesPanel {
     }
 }
 
+/// claude.ai and ChatGPT keep their chats on the server, so they come in as account exports: dropped
+/// here, chosen from a file panel, or handed to an agent, which runs `recall import`.
+struct ImportPanel: View {
+    let library: Library
+    @EnvironmentObject var facts: Facts
+    @State private var targeted = false
+    @Environment(\.colorScheme) var scheme
+    static let services = [
+        ("claudeai", "claude.ai", "Settings › Privacy › Export data"),
+        ("chatgpt", "ChatGPT", "Settings › Data controls › Export data"),
+    ]
+
+    var body: some View {
+        let p = Palette.of(scheme)
+        let w: [CGFloat] = [1.2, 0.6, 1.1]
+        let canImport = library.canWrite("imports")
+        let working = facts.importNote?.working == true
+        Panel(title: "Import chats", note: "account exports") {
+            Cols(cells: ["Service", "Chats", "Newest chat"].map { AnyView(Label(text: $0)) }, weights: w, top: false)
+            ForEach(Self.services, id: \.0) { key, name, _ in
+                let n = facts.agents.first { $0.name == key }?.chats
+                Cols(cells: [
+                    AnyView(HStack(spacing: 8) { DiamondMark(color: p.agent(key)); Text(name).foregroundStyle(p.ink) }),
+                    AnyView(Text(n.map { count($0) } ?? "–")),
+                    AnyView(Text(shortStamp(facts.stats?.agents[key]?.latest))),
+                ], weights: w)
+            }
+            Rule()
+            VStack(spacing: 10) {
+                Text(working ? "Importing…" : "Drop an export ZIP here").foregroundStyle(p.ink)
+                WindowButton(title: "Choose export…", soon: !canImport || working, small: true,
+                             why: working ? "An import is running" : (library.info == nil ? "" : updateToWrite)) { choose() }
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 18)
+            .background(targeted ? p.accentSoft : Color.clear)
+            .overlay(Rectangle().strokeBorder(targeted ? p.accent : p.line, style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+            .padding(.top, 12)
+            .dropDestination(for: URL.self) { urls, _ in
+                guard canImport, !working, let url = urls.first else { return false }
+                library.importExport(url.path)
+                return true
+            } isTargeted: { targeted = $0 }
+            if let said = facts.importNote { SaidLine(said: said).padding(.top, 10) }
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Self.services, id: \.0) { _, name, how in Text("\(name): \(how)") }
+                Text("Or tell your agent where the file is. New chats need a new export.").padding(.top, 4)
+            }
+            .font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 10)
+        }
+    }
+
+    func choose() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a claude.ai or ChatGPT export"
+        panel.allowedContentTypes = [.zip, .json, .folder]
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url { library.importExport(url.path) }
+    }
+}
+
 struct RunPanel: View {
     let library: Library
     @EnvironmentObject var facts: Facts
@@ -248,6 +314,15 @@ struct RunPanel: View {
                 Text(footer(run)).font(PaperMono.font(11)).foregroundStyle(p.muted).padding(.top, 8)
                     .fixedSize(horizontal: false, vertical: true)
                 if let e = run.error { Text(e).font(PaperMono.font(11)).foregroundStyle(p.accentText).padding(.top, 4) }
+            }
+        } else if let run = facts.runs?.latest, let start = date(run.started) {  // no steps to draw: it has only just begun, or stopped without saying so
+            Panel(title: "Last night’s memory run", note: clock(start)) {
+                if run.status == "running" {
+                    Text("Running now.").foregroundStyle(p.muted)
+                } else if run.error == nil {
+                    Text("It stopped before finishing.").foregroundStyle(p.muted)
+                }
+                if let e = run.error { Text(e).font(PaperMono.font(11.5)).foregroundStyle(p.accentText).padding(.top, 4) }
             }
         } else {
             Panel(title: "Last memory run") {
@@ -743,6 +818,17 @@ extension Library {
     }
 
     /// Removes every copy kept before an upgrade, as the confirm lists them.
+    func importExport(_ path: String) {
+        facts.importNote = .working("Importing \((path as NSString).lastPathComponent)…")
+        API.send("POST", "/v1/import", ["path": path], Imported.self, timeout: 900) { [weak self] r in
+            guard let self else { return }
+            switch r {
+            case .success(let d): self.facts.importNote = .done("\(d.service): \(d.indexed) new or updated, \(d.unchanged) unchanged.")
+            case .failure(let f): self.facts.importNote = .failed("Nothing was imported: \(f.message)")
+            }
+        }
+    }
+
     func removeBackups(_ items: [Storage.Item]) {
         facts.removeNote = .working("Removing…")
         API.send("POST", "/v1/storage/remove", ["paths": items.map(\.path)], Removed.self) { [weak self] r in
@@ -755,6 +841,12 @@ extension Library {
             self.fetch("/v1/storage", Storage.self) { self.facts.storage = $0 }
         }
     }
+}
+
+struct Imported: Decodable {
+    let service: String
+    let indexed: Int
+    let unchanged: Int
 }
 
 struct AccessPanel: View {

@@ -612,7 +612,7 @@ def _mcp_grok(cmd: str, dry_run: bool, remove: bool) -> str:
 
 def _entries(agent: str, cmd: str) -> list[tuple[str, dict]]:
     """recall's entries for one agent, from hooks.INSTALL: every one runs `recall hook`."""
-    command = f"{cmd} hook --agent {agent}"
+    command = f"{shlex.quote(cmd)} hook --agent {agent}"  # agents run it through a shell
     out = []
     for event, matcher, *extras in edit_hooks.INSTALL[agent]:
         if agent == "cursor":  # Cursor lists commands directly under each event
@@ -664,7 +664,7 @@ def _hook_opencode(cmd: str, dry_run: bool = False, remove: bool = False) -> str
             os.remove(OPENCODE_PLUGIN)
         return "edit plugin removed" if installed else "no edit plugin installed"
     with open(OPENCODE_SOURCE) as f:
-        plugin = f.read().replace("__RECALL__", cmd)
+        plugin = f.read().replace('"__RECALL__"', json.dumps(cmd))
     if installed and _read(OPENCODE_PLUGIN) == plugin:
         return "edit plugin already installed"
     if not dry_run:
@@ -767,7 +767,7 @@ def _reconcile(
                 satisfied.add(key)
                 exe = _runs(e, agent, flat)
                 stays = exe and _exists(exe) and (not repoint or _same(exe, cmd))
-                target = _rebase(wanted[key], cmd, exe) if stays else wanted[key]
+                target = _rebase(wanted[key], shlex.quote(cmd), shlex.quote(exe)) if stays else wanted[key]
                 if e != target:
                     changed.append(kind(*key))
                 keep.append(target if e != target else e)
@@ -786,13 +786,29 @@ def _reconcile(
 def _runs(entry: dict, agent: str, flat: bool) -> str | None:
     """The executable a hook entry runs, if it is `<recall> hook --agent <agent>`."""
     for h in [entry] if flat else entry.get("hooks", []):
-        try:
-            words = shlex.split(h.get("command", ""))
-        except ValueError:
-            continue
+        words = _argv(h.get("command", ""))
         if len(words) >= 4 and os.path.basename(words[0]) == NAME and words[1:3] == ["hook", "--agent"]:
             return words[0] if words[3] == agent else None
     return None
+
+
+def _argv(command: str) -> list[str]:
+    """A hook command's words. Releases up to 0.6.0 wrote recall's path unquoted, so a path with a space in
+    it splits in the wrong place (and fails in the agent's shell): that form is read by where it ends, when
+    the path it gives is there or its first word is no program at all, so someone's own wrapper around
+    recall stays theirs."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return []
+    if not words or os.path.basename(words[0]) == NAME:
+        return words
+    head, found, rest = command.rpartition(f"{os.sep}{NAME} ")
+    exe = head + os.sep + NAME
+    if found and os.path.isabs(head) and (os.path.exists(exe) or not _exists(words[0])):
+        with contextlib.suppress(ValueError):
+            return [exe, *shlex.split(rest)]
+    return words
 
 
 def _exists(exe: str) -> bool:
@@ -840,10 +856,7 @@ def _rebase(entry: dict, old: str, new: str):
 
 def _is_ours(hook: dict) -> bool:
     """recall's own entries: its executable running hook, or the older context/status --hook."""
-    try:
-        words = shlex.split(hook.get("command", ""))
-    except ValueError:
-        return False
+    words = _argv(hook.get("command", ""))
     if len(words) < 2 or os.path.basename(words[0]) != NAME:
         return False
     return words[1] == "hook" or (words[1] in ("context", "status") and "--hook" in words)

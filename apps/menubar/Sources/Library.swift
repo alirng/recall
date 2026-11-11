@@ -545,6 +545,7 @@ final class Facts: ObservableObject {
     @Published var coordNote: Said?
     @Published var confirmRemove = false
     @Published var removeNote: Said?
+    @Published var importNote: Said?
 
     var needsYou: Int { (status?.overlaps.count ?? 0) + (status?.restarts.count ?? 0) }
 

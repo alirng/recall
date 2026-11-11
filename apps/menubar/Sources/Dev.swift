@@ -18,7 +18,7 @@ enum Probe {
     /// Any test flag: the window then stays off screen and the app never comes forward.
     static let background = ["--open", "--open-after", "--measure", "--shot", "--scroll-notes", "--scroll-chat", "--scroll-info",
                              "--switch-test", "--event-storm", "--close-after", "--ui-test", "--panel-open-after", "--panel-close-after",
-                             "--write-shots", "--model-test", "--scene", "--run-fixture", "--fake-update", "--fake-latest", "--fake-updated",
+                             "--write-shots", "--model-test", "--import-test", "--scene", "--run-fixture", "--fake-update", "--fake-latest", "--fake-updated",
                              "--tool-dirs"].contains { CommandLine.arguments.contains($0) }
     /// `--fake-monitor`: the real launch and real windows, but on the display ~/.agents/tools/fake-monitor makes and
     /// with the app never coming forward, so a test can press real buttons without touching the real screen.

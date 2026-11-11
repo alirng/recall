@@ -27,8 +27,9 @@ The writes are few, and each runs recall's own code, the same the command line r
 - **The model:** one of the models that already work on this machine, after a test call. The API never
   takes or returns a key; adding a key or a new provider stays `recall model`.
 - **Storage:** removing the copies recall kept before an upgrade, and nothing else.
+- **Imports:** adding the chats in a claude.ai or ChatGPT account export, the same as `recall import`.
 
-Chats, the chat archive and the schedule are never changed through the API. `/v1/info` lists what a
+Beyond an import adding chats, chats and the chat archive are never changed through the API, and the schedule never is. `/v1/info` lists what a
 server can change under `writes`; a server without it (from before these writes) is read-only, and an app
 should show its controls that way.
 
@@ -90,7 +91,7 @@ in development an app points at the repo copy (`uv run recall api` from a checko
 | `/v1/status` | what `recall status --json` gives: live sessions, overlaps, outlived servers, power, roots (`?since=12h`; kept 15 s, `?fresh=1` skips that and recomputes) |
 | `/v1/stats` | chats and messages by agent, with each agent's latest chat; notes count |
 | `/v1/storage` | every place recall keeps things, inside and outside `~/.agents`: `items` with a plain label, `path`, `bytes`, `kind` and `exists`, plus `totals` by kind. A copy kept before an upgrade also has `version` and `date` where its name gives them. Kinds: `data` (lost if deleted), `rebuildable`, `running`, `settings`, `backup`. Each file is marked on its own, never a whole folder, because `cache/` holds rebuildable files next to mail and edit records that are not. Outside `~/.agents` it lists the installed program, the background job plists, the menu bar app, leftovers of earlier builds, and whether a Keychain item exists (never its contents) |
-| `/v1/runs` | memory runs, newest first, with counts (created, added, refined, confirmed, retired), calls, tokens and cost (`?limit=10`) |
+| `/v1/runs` | memory runs, newest first, with `status` (`running`, `done`, `failed`, or `crashed` for one that stopped without saying so; `error` says why), counts (created, added, refined, confirmed, retired), calls, tokens and cost (`?limit=10`) |
 | `/v1/runs/latest` | the last run with `steps` (its log lines, dated) and `phases` (commit links, read, consolidate, commit notes, each with start, finish and result) |
 | `/v1/config` | model, embeddings, run limits, schedule, power; a key's whereabouts, never the key |
 | `/v1/coordination` | what happens when two chats edit the same file: each situation, its action and default, the presets, and `preset`: the one the rules match now (`null` for custom) |
@@ -115,6 +116,7 @@ in development an app points at the repo copy (`uv run recall api` from a checko
 | `PUT /v1/coordination` | `{"preset"}` or `{"rules": {"situation": "action"}}` | Sets the coordination rules. Agents read them on their next edit. Answers `/v1/coordination` plus `was`, the rules before |
 | `PUT /v1/model` | `{"option", "accept_destination"?}` | Switches the model that writes memories to one of `/v1/models`' options, after one short test call with an invented chat; saves `[model]` only if it answers, otherwise `422 test_failed` with the reason and nothing changes. The same provider keeps its other settings; another provider starts fresh, with a signed-in plan to fall back on when an API key's credits run out. The test call can take a minute on a plan or a local model. Consent: when the model now set is private (nothing leaves this Mac) and the new one is not, the body must carry `"accept_destination"`, the new model's `destination`, exactly as the error below gives it; without it the answer is `409 needs_consent` with `destination` in the `error`, and nothing is sent or changed |
 | `POST /v1/storage/remove` | `{"paths": [...]}` | Deletes copies recall kept before an upgrade, given as `/v1/storage` paths. Every path must be an item tagged `backup` now, inside recall's data folder, or nothing is removed. Answers `removed` and `bytes` |
+| `POST /v1/import` | `{"path"}` (an absolute path to the export's ZIP, folder or `conversations.json`) | Indexes the export, as `recall import` does, and answers `service`, `chats`, `indexed` and `unchanged`. A path that is not an export answers `400 refused`, and nothing is indexed. The export can be large, so allow minutes. |
 
 Every write answers `took`: `write_ms`, and for notes `index_ms`, the search index refresh. A
 notes write sends `changed` with topic `notes` at once; a settings write sends `config`.

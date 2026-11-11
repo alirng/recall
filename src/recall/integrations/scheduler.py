@@ -8,6 +8,7 @@ runs it (power.py). Not systemd's ConditionACPower: a run it skips leaves no rec
 
 import os
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,13 @@ def disable() -> str:
     return "nightly run removed"
 
 
+def scheduled() -> bool:
+    """Whether a nightly run is set up on this machine."""
+    if sys.platform == "darwin":
+        return os.path.exists(PLIST)
+    return sys.platform.startswith("linux") and os.path.exists(os.path.join(SYSTEMD, "recall-dream.timer"))
+
+
 def status() -> str:
     if sys.platform == "darwin":
         if not os.path.exists(PLIST):
@@ -64,6 +72,8 @@ def status() -> str:
         state = "loaded" if loaded.returncode == 0 else "NOT loaded"
         return f"nightly at {at['Hour']:02d}:{at['Minute']:02d} ({state}); log: {LOG}"
     if sys.platform.startswith("linux"):
+        if not os.path.exists(os.path.join(SYSTEMD, "recall-dream.timer")):
+            return "not scheduled"
         return "see `systemctl --user list-timers recall-dream.timer`"
     return "not scheduled"
 
@@ -94,7 +104,8 @@ def _systemd(args: list[str], hour: int, minute: int) -> str:
     os.makedirs(SYSTEMD, exist_ok=True)
     with open(os.path.join(SYSTEMD, "recall-dream.service"), "w") as f:
         f.write(
-            f"[Unit]\nDescription=recall memory run\n\n[Service]\nType=oneshot\nExecStart={' '.join(args)}\nNice=10\n"
+            "[Unit]\nDescription=recall memory run\n\n[Service]\nType=oneshot\n"
+            f"ExecStart={shlex.join(args).replace('%', '%%')}\nNice=10\n"  # systemd reads quotes, and % as a specifier
         )
     with open(os.path.join(SYSTEMD, "recall-dream.timer"), "w") as f:
         f.write(

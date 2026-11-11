@@ -291,7 +291,7 @@ def remember(
         new = True
     if scope == "global":
         note.stated_in = os.path.normpath(os.path.abspath(folder))
-        note.reach = "context" if table else note.reach  # one context only: the nightly judge may widen it
+        note.reach = "context" if table else note.reach  # the context of the folder it ran in, and no wider
     note.updated = day
     sync(note)
     store.write(note)

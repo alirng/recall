@@ -130,6 +130,22 @@ def cmd_show(a) -> None:
         print(f"── {m['seq']} {m['role']} {m['time'] or ''}\n{m['text']}\n")
 
 
+def cmd_wake(a) -> None:
+    from . import wake
+
+    print(f"{a.chat_id}: {wake.run(a.chat_id)}")
+
+
+def cmd_import(a) -> None:
+    from .chats.sources import exports
+
+    try:
+        r = exports.run(a.path)
+    except exports.BadExport as e:
+        sys.exit(str(e))
+    print(f"{r['service']}: {r['chats']} chats in the export, {r['indexed']} indexed, {r['unchanged']} unchanged")
+
+
 def cmd_forget(a) -> None:
     from . import forget
     from .chats import indexer, store
@@ -745,6 +761,7 @@ def cmd_install(a) -> None:
                 lines = agents.uninstall(parts, chosen or found, whole=chosen is None)
                 if chosen is None and set(parts) == set(agents.COMPONENTS):
                     autopilot.forget()
+                    lines += _unschedule()
                 elif chosen:
                     autopilot.forget([r.name for r in chosen])
         except TimeoutError as e:
@@ -756,6 +773,16 @@ def cmd_install(a) -> None:
         print("Autopilot is off.")
     elif a.cmd == "uninstall":
         print(f"recall will not connect {', '.join(r.name for r in chosen)} again (`recall install --root` does).")
+
+
+def _unschedule() -> list[str]:
+    """A whole uninstall also ends the nightly memory run: left on, it would go on sending chats to the model."""
+    from .integrations import scheduler
+
+    if not scheduler.scheduled():
+        return []
+    scheduler.disable()
+    return [f"{'Nightly run':12} removed (`recall schedule enable` brings it back)"]
 
 
 def cmd_autopilot(a) -> None:
@@ -785,6 +812,7 @@ def cmd_doctor(a) -> None:
     from . import autopilot, power
     from .chats import indexer
     from .chats.sources import codex
+    from .memory import runs
 
     rows = autopilot.report()
     if a.json:
@@ -841,7 +869,7 @@ def cmd_doctor(a) -> None:
         print("  `recall install --repoint` points the hooks at this recall; autopilot never moves them")
     for line in autopilot.recent():
         print(f"  {line}")
-    for line in power.summary():
+    for line in [*power.summary(), *runs.health()]:
         print(f"\n{line}")
     if parked := indexer.parked():
         print(
@@ -1128,6 +1156,10 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("chat_id", nargs="?")
     sp.add_argument("--project", help="every chat in this project")
     sp.add_argument("--yes", action="store_true", help="do not ask first")
+    sp = command(
+        "import", cmd_import, "index a claude.ai or ChatGPT account export (its ZIP, folder or conversations.json)"
+    )
+    sp.add_argument("path")
     sp = command("why", cmd_why, "the chats that wrote a file, a line or a commit (git blame, read-only)")
     sp.add_argument("target", nargs="?", help="path, path:line or path:start-end")
     sp.add_argument("--commit", help="a commit sha (or any name git knows) instead of a file")
@@ -1198,6 +1230,8 @@ def _parser() -> argparse.ArgumentParser:
     sp = command("rules", cmd_rules, "what each agent is told about a repo, and closing the gaps")
     sp.add_argument("target", nargs="*", help="a project's name or a folder (default: the current folder)")
     sp.add_argument("--write", action="store_true", help="make the changes shown in the diff")
+    sp = command("wake", cmd_wake, "deliver a waiting message to a chat, waking it if it is idle")
+    sp.add_argument("chat_id")
     sp = command("status", cmd_status, "what your agents are working on now, and files two of them both changed")
     sp.add_argument("--since", default="12h", help="how far back, e.g. 2h, 12h or 1d")
     sp.add_argument("--json", action="store_true")

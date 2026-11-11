@@ -118,10 +118,13 @@ def agents(found=None):
 FAMILIES = (
     "amp",
     "antigravity",
+    "chatgpt",
+    "claudeai",
     "cline",
     "commandcode",
     "continuedev",
     "copilot",
+    "cowork",
     "crush",
     "devin",
     "droid",

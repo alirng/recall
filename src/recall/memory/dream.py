@@ -22,10 +22,11 @@ from dataclasses import dataclass
 
 from .. import config, contexts, paths
 from ..chats import indexer, store
+from ..chats.redact import redact
 from ..llm import Budget, BudgetExceeded, Client, FatalError, LLMError, batching, fallback, from_spec
 from ..llm.batch import Batcher, Call
-from . import consolidate, context, extract, links, reach, routing
-from .notes import NoteStore, today, writing
+from . import consolidate, context, extract, links, reach, routing, runs
+from .notes import NotesBusy, NoteStore, today, turn
 
 MIN_MESSAGES = 2
 READING_SHARE = 0.8  # of a time or dollar budget; the rest is kept for consolidation
@@ -53,95 +54,108 @@ def run(opts: Options, log=print) -> dict:
         con = store.connect()
         ensure_tables(con)
         started = time.time()
-        moved = None
+        run_id = runs.open_run(con, started)
+        log(f"run {run_id} started")  # the log's own mark for this run (api.run_log)
         try:
-            indexer.index(con, max_age=0)
-        except sqlite3.OperationalError:
-            if not (moved := _moved(con)):
-                raise
-        _link_commits(con, log)
-        settings = config.load()["model"]
-        provider = from_spec(opts.model, settings)
-        problem = provider.check()
-        if problem:
-            raise FatalError(problem)
-        spare = fallback(settings)
-        if spare is not None and (spare.check() or spare.label == provider.label):
-            spare = None
-        used = {provider.for_purpose(x) for x in ("extract", "consolidate")}
-        metered = [p for p in used if p.metered]
-        # A call cap guards a plan's rate limits; on an API key the dollar budget is the cap.
-        by_dollar = opts.max_usd is not None and all(p.metered and p.priced for p in used)
-        budget = Budget(None if by_dollar else opts.max_calls, opts.max_usd)
-        client = Client(provider, budget=budget, fallback=spare, log=log)
-        log(
-            f"model: {provider.label}"
-            + (" (private: nothing leaves this machine)" if provider.private else "")
-            + (f" · budget ${opts.max_usd:.2f}" if by_dollar else "")
-            + (f" · after the API credits run out: {spare.label}" if spare and metered else "")
-        )
-        if opts.max_usd is not None and any(not p.priced for p in metered):
-            log("max_usd is not enforced: recall does not know this model's price (set price = [in, out] in [model])")
-        deadline = started + opts.max_minutes * 60 if opts.max_minutes else None
-        reading = started + opts.max_minutes * 60 * READING_SHARE if opts.max_minutes else None
-        batcher = None
-        if opts.batch and batching(settings, provider):
-            batcher = Batcher(client, log, deadline=reading)
-            log("calls go through the batch API at half price; answers can take minutes")
-            batcher.resume()
-        stats = Counter()
-        # Before reading, so a long backlog of chats cannot spend the calls it needs.
-        placed = _place(client, log) if opts.fold and contexts.roots() else 0
-        if opts.read and not moved:
-            if batcher:
-                batcher.deadline = reading
-            if budget.max_usd is not None and opts.fold:  # as with time, keep a share for consolidation
-                budget.max_usd = opts.max_usd * READING_SHARE
-            try:
-                stats.update(_read(con, client, opts.max_chats, reading, log, batcher))
-            except ChatsMoved as e:
-                moved = str(e)
-            budget.max_usd = opts.max_usd
-        if opts.fold and not (moved := moved or _moved(con)):  # routing and said.py read the chat tables
-            if batcher:
-                batcher.deadline = deadline
-            stats.update(_fold(con, client, log, placed, batcher))
-        if moved:
-            log(moved)
-        cost = round(client.usd, 4) if metered and not client.unpriced else None
-        record = dict(stats)
-        if batcher and batcher.batches:
-            record.update(batches=batcher.batches, batched_calls=batcher.requests)
-        if cost is not None:
-            record["cost_usd"] = cost
-            batched = batcher.requests if batcher else 0
-            log(f"cost: ${cost:.4f}" + (f" ({batched} calls batched at half price)" if batched else ""))
-        con.execute(
-            "insert into dream_runs(started, finished, backend, chats, candidates, stats, tokens_in, tokens_out,"
-            " llm_calls, error) values (?,?,?,?,?,?,?,?,?,?)",
-            (
-                started,
-                time.time(),
-                provider.label,
-                stats["chats"],
-                stats["candidates"],
-                json.dumps(record),
-                client.tokens_in,
-                client.tokens_out,
-                client.calls,
-                moved,
-            ),
-        )
-        con.commit()
-        return {
-            **stats,
-            "model calls": client.calls,
-            "tokens in": client.tokens_in,
-            "tokens out": client.tokens_out,
-            **({"cost (USD)": cost} if cost is not None else {}),
-            **({"batches": batcher.batches} if batcher and batcher.batches else {}),
-            "minutes": round((time.time() - started) / 60, 1),
-        }
+            return _run(opts, log, con, run_id, started)
+        except BaseException as e:
+            # A model's or its setup's words, redacted; of anything else only the type, whose text could quote a chat.
+            runs.close_failed(con, run_id, redact(str(e))[:300] if isinstance(e, LLMError) else store.error_name(e))
+            raise
+
+
+def _run(opts: Options, log, con, run_id: int, started: float) -> dict:
+    moved = None
+    try:
+        indexer.index(con, max_age=0)
+    except sqlite3.OperationalError:
+        if not (moved := _moved(con)):
+            raise
+    _link_commits(con, log)
+    settings = config.load()["model"]
+    provider = from_spec(opts.model, settings)
+    problem = provider.check()
+    if problem:
+        raise FatalError(problem)
+    spare = fallback(settings)
+    if spare is not None and (spare.check() or spare.label == provider.label):
+        spare = None
+    used = {provider.for_purpose(x) for x in ("extract", "consolidate")}
+    metered = [p for p in used if p.metered]
+    # A call cap guards a plan's rate limits; on an API key the dollar budget is the cap.
+    by_dollar = opts.max_usd is not None and all(p.metered and p.priced for p in used)
+    budget = Budget(None if by_dollar else opts.max_calls, opts.max_usd)
+    client = Client(provider, budget=budget, fallback=spare, log=log)
+    log(
+        f"model: {provider.label}"
+        + (" (private: nothing leaves this machine)" if provider.private else "")
+        + (f" · budget ${opts.max_usd:.2f}" if by_dollar else "")
+        + (f" · after the API credits run out: {spare.label}" if spare and metered else "")
+    )
+    if opts.max_usd is not None and any(not p.priced for p in metered):
+        log("max_usd is not enforced: recall does not know this model's price (set price = [in, out] in [model])")
+    deadline = started + opts.max_minutes * 60 if opts.max_minutes else None
+    reading = started + opts.max_minutes * 60 * READING_SHARE if opts.max_minutes else None
+    batcher = None
+    if opts.batch and batching(settings, provider):
+        batcher = Batcher(client, log, deadline=reading)
+        log("calls go through the batch API at half price; answers can take minutes")
+        batcher.resume()
+    stats = Counter()
+    busy: list[str] = []  # why the notes could not be finished: another process held them too long
+    # Before reading, so a long backlog of chats cannot spend the calls it needs.
+    placed = _place(client, log) if opts.fold and contexts.roots() else 0
+    if opts.read and not moved:
+        if batcher:
+            batcher.deadline = reading
+        if budget.max_usd is not None and opts.fold:  # as with time, keep a share for consolidation
+            budget.max_usd = opts.max_usd * READING_SHARE
+        try:
+            stats.update(_read(con, client, opts.max_chats, reading, log, batcher))
+        except ChatsMoved as e:
+            moved = str(e)
+        budget.max_usd = opts.max_usd
+    if opts.fold and not (moved := moved or _moved(con)):  # routing and said.py read the chat tables
+        if batcher:
+            batcher.deadline = deadline
+        stats.update(_fold(con, client, log, placed, batcher, deadline, busy))
+    if moved:
+        log(moved)
+    cost = round(client.usd, 4) if metered and not client.unpriced else None
+    record = dict(stats)
+    if batcher and batcher.batches:
+        record.update(batches=batcher.batches, batched_calls=batcher.requests)
+    if cost is not None:
+        record["cost_usd"] = cost
+        batched = batcher.requests if batcher else 0
+        log(f"cost: ${cost:.4f}" + (f" ({batched} calls batched at half price)" if batched else ""))
+    con.execute(
+        "update dream_runs set finished=?, backend=?, chats=?, candidates=?, stats=?, tokens_in=?, tokens_out=?,"
+        " llm_calls=?, error=?, status=? where id=?",
+        (
+            time.time(),
+            provider.label,
+            stats["chats"],
+            stats["candidates"],
+            json.dumps(record),
+            client.tokens_in,
+            client.tokens_out,
+            client.calls,
+            moved or (f"{busy[0]}; the next run finishes the notes" if busy else None),
+            "failed" if busy else "done",
+            run_id,
+        ),
+    )
+    con.commit()
+    return {
+        **stats,
+        "model calls": client.calls,
+        "tokens in": client.tokens_in,
+        "tokens out": client.tokens_out,
+        **({"cost (USD)": cost} if cost is not None else {}),
+        **({"batches": batcher.batches} if batcher and batcher.batches else {}),
+        "minutes": round((time.time() - started) / 60, 1),
+    }
 
 
 def _link_commits(con, log) -> None:
@@ -176,11 +190,7 @@ def _moved(con) -> str | None:
 
 def ensure_tables(con) -> None:
     extract.ensure_tables(con)
-    con.execute(
-        """create table if not exists dream_runs (
-             id integer primary key, started real, finished real, backend text, chats int,
-             candidates int, stats text, tokens_in int, tokens_out int, llm_calls int, error text)"""
-    )
+    runs.ensure_table(con)
 
 
 def pending_chats(con) -> list:
@@ -222,7 +232,7 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
             # Oldest first: chats that arrive before the next run join the last call instead of shifting
             # every call's chats, so answers a left-running batch gave are still the next run's cache hits.
             chats = sorted(chats, key=lambda s: s["updated_at"])
-        messages = "select seq, role, text from messages where session_id=? order by seq"
+        messages = "select seq, role, text, ts from messages where session_id=? order by seq"
         items = [(s, con.execute(messages, (s["id"],)).fetchall()) for s in chats]
     except sqlite3.OperationalError:
         if not (moved := _moved(con)):
@@ -230,6 +240,7 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
         raise ChatsMoved(moved) from None
     if moved := _moved(con):  # rebuilt mid-read: chats whose messages came back empty would be marked skipped
         raise ChatsMoved(moved)
+    said = {s["id"]: m for s, m in items}  # for dating each candidate by the message it came from
     batches, skipped = extract.plan(items, client.provider.profile)
     label = client.provider.for_purpose("extract").label
     for s in skipped:
@@ -242,7 +253,7 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
     reasons = set()  # why calls failed, each said once in the log
 
     def finish(session, candidates, digest_hash, status="done", error=None):
-        extract.store(con, session, status, candidates, digest_hash, label, error)
+        extract.store(con, session, status, candidates, digest_hash, label, error, said.get(session["id"]))
         con.commit()
         stats["chats" if status == "done" else "failed"] += 1
         stats["candidates"] += len(candidates)
@@ -312,63 +323,90 @@ def _read(con, client: Client, max_chats: int | None, deadline: float | None, lo
     return stats
 
 
-def _place(client: Client, log) -> int:
+def _place(client: Client, log, notes_store: NoteStore | None = None, notes: dict | None = None) -> int:
     """Judge where each new working preference applies (reach.py); returns how many."""
-    with writing(timeout=60):
-        notes_store = NoteStore()
-        try:
-            return reach.run(client, notes_store, notes_store.load())
-        except (BudgetExceeded, LLMError) as e:
-            log(f"judging where preferences apply stopped early ({e}); the next run continues")
-            return 0
+    notes_store = notes_store or NoteStore()
+    try:
+        return reach.run(client, notes_store, notes_store.load() if notes is None else notes)
+    except (BudgetExceeded, LLMError, NotesBusy) as e:
+        log(f"judging where preferences apply stopped early ({e}); the next run continues")
+        return 0
 
 
-def _fold(con, client: Client, log, placed: int = 0, batcher=None) -> Counter:
-    with writing(timeout=60):  # a relink in progress finishes first; if one hangs, carry on
-        return _fold_notes(con, client, log, placed, batcher)
+def _fold(
+    con, client: Client, log, placed: int = 0, batcher=None, deadline: float | None = None, busy: list | None = None
+) -> Counter:
+    """`busy` collects why, when another process held the notes so long that this run could not finish them."""
+    busy = [] if busy is None else busy
+    try:
+        return _fold_notes(con, client, log, placed, batcher, deadline, busy)
+    except NotesBusy as e:
+        log(f"notes left for the next run: {e}")
+        busy.append(str(e))
+        return Counter()
 
 
-def _fold_notes(con, client: Client, log, placed: int = 0, batcher=None) -> Counter:
+def _fold_notes(
+    con, client: Client, log, placed: int = 0, batcher=None, deadline: float | None = None, busy: list | None = None
+) -> Counter:
+    """The notes lock is taken only to write (notes.turn): while a model answers, `recall remember`
+    and the app can change notes, and the close below reads them again so that what landed is kept."""
     notes_store = NoteStore()
-    notes = notes_store.load()
-    deleted = notes_store.reconcile(notes)
+    with turn():
+        notes = notes_store.load()
+        deleted = notes_store.reconcile(notes)
     if deleted:
         log(f"{deleted} notes were deleted by hand; they will not be learned again")
     moved = routing.unify_moved(con) + routing.reroute_mentions(con)
     if moved:
         log(f"moved {moved} candidates to the project they are about")
     con.commit()
-    stats = Counter()
+    fold = consolidate.Consolidation(con, notes_store, notes, log)
     try:
         if batcher is not None and client.provider.for_purpose("consolidate").supports_batch:
-            stats = _in_rounds(con, client, batcher, notes_store, notes, log)
+            _in_rounds(fold, batcher, log)
         else:
-            stats = consolidate.run(con, client, notes_store, notes, log=log)
-    except (BudgetExceeded, LLMError) as e:
+            consolidate.drain(fold, client, deadline)
+    except (BudgetExceeded, LLMError, NotesBusy) as e:  # what was applied stands, and the close below is still tried
         log(f"consolidation stopped early ({e}); the next run continues from here")
+        if isinstance(e, NotesBusy) and busy is not None:
+            busy.append(str(e))
+    stats = fold.finish()
     changes = {k: v for k, v in stats.items() if v and k != "batches"}
+    if (
+        contexts.roots() and not busy
+    ):  # what tonight wrote or reworded: before the indexes, so it loads in the right place
+        placed += _place(client, log, notes_store, notes)
     if placed:
         changes["placed"] = placed
-    if refiled := routing.refile(con, notes_store, notes):
-        changes["refiled"] = refiled
-    relinked = links.relink(notes_store, notes)
-    if relinked:
-        changes["relinked"] = relinked
-    summary = ", ".join(f"{v} {k}" for k, v in changes.items())
-    # Always rebuilt: the indexes also follow config.toml ([contexts]), which no note records.
-    notes_store.compile(notes)
-    sha = notes_store.commit(f"dream {today()}: {summary or 'reindexed'}")
-    log(f"memory: {summary or 'no changes'}" + (f" · commit {sha}" if sha else ""))
-    notes_store.reconcile(notes)
+    with turn():
+        notes = notes_store.load()
+        if refiled := routing.refile(con, notes_store, notes):
+            changes["refiled"] = refiled
+        relinked = links.relink(notes_store, notes)
+        if relinked:
+            changes["relinked"] = relinked
+        summary = ", ".join(f"{v} {k}" for k, v in changes.items())
+        # Always rebuilt: the indexes also follow config.toml ([contexts]), which no note records.
+        notes_store.compile(notes)
+        sha = notes_store.commit(f"dream {today()}: {summary or 'reindexed'}")
+        notes_store.reconcile(notes)
+    ending = (
+        f" · commit {sha}"
+        if sha
+        else f" · not committed: {notes_store.commit_failed}"
+        if notes_store.commit_failed
+        else ""
+    )
+    log(f"memory: {summary or 'no changes'}{ending}")
     context.index_notes(con, notes)
     return Counter(changes)
 
 
-def _in_rounds(con, client: Client, batcher: Batcher, notes_store: NoteStore, notes: dict, log) -> Counter:
+def _in_rounds(fold: consolidate.Consolidation, batcher: Batcher, log) -> None:
     """Consolidation in rounds: every scope's next request goes out in one batch, and the answers
     are applied in turn. A scope's requests stay in order; a scope whose request fails stops for
     this run, and the others carry on."""
-    fold = consolidate.Consolidation(con, notes_store, notes, log)
     active, stopped = list(fold.groups), []
     while active:
         requests = [(g, fold.prepare(g)) for g in active]
@@ -385,7 +423,6 @@ def _in_rounds(con, client: Client, batcher: Batcher, notes_store: NoteStore, no
             active.append(g)
     if stopped:  # the other scopes' changes stand, and are committed below
         log(f"consolidation stopped early in {len(stopped)} scope(s) ({stopped[0]}); the next run continues")
-    return fold.finish()
 
 
 @contextmanager

@@ -44,7 +44,9 @@ def run(
         started = time.perf_counter()
         rows = store.search(con, c["query"], c.get("agent"), None, None, limit=K, vector=vector)
         ms = (time.perf_counter() - started) * 1000
-        rank = next((i for i, r in enumerate(rows, 1) if r["chat_id"] in expect), None)
+        # a result that stands for forked copies (copies) also shows each of them
+        shown = [{r["chat_id"], *(x["chat_id"] for x in r.get("copies") or [])} for r in rows]
+        rank = next((i for i, got in enumerate(shown, 1) if got & expect), None)
         row = {
             "status": h.OK,
             "rank": rank,
@@ -61,7 +63,7 @@ def run(
             row.update(evals_profiles.label(con, c["query"], expect, pool))
             row["r@r"] = evals_profiles.recall_at_r([r["chat_id"] for r in rows], expect)
         if len(c["expect"]) >= 2:
-            top = {r["chat_id"] for r in rows[:ALL_AT]}
+            top = set().union(*shown[:ALL_AT])
             row[f"all@{ALL_AT}"] = all(g & top for g in groups)
         results = [
             {

@@ -1036,6 +1036,45 @@ def twin_check(sb: str, ctx: dict) -> list[str]:
     return errs
 
 
+def spaced_act(sb: str, ctx: dict) -> None:
+    """recall under a folder with a space in its name (an older pipx's home on macOS, a home folder named
+    "Jane Doe"): the hook must still run in the agent's shell, a second install adds nothing, and uninstall
+    takes every entry out again, and the nightly job with them."""
+    spaced = os.path.join(sb, "my tools", "bin", "recall")
+    put(spaced, f'#!/bin/sh\nexec "{sys.executable}" -m recall "$@"\n')
+    os.chmod(spaced, 0o755)
+    env, files = {"RECALL_BIN": spaced}, (".codex/hooks.json", ".claude/settings.json")
+    seg(sb, ctx, "install", lambda: run(sb, "install", "--only", "hook", env=env)[1])
+    ctx["first"] = {p: hook_commands(sb, p) for p in files}
+    stop = next(c for ev, c in ctx["first"][".claude/settings.json"] if ev == "Stop")
+    event = json.dumps({"session_id": "s", "cwd": sb, "hook_event_name": "Stop"})
+    ctx["ran"] = subprocess.run(["sh", "-c", stop], input=event, env=sandbox_env(sb), capture_output=True, text=True)
+    seg(sb, ctx, "install again", lambda: run(sb, "install", "--only", "hook", env=env)[1])
+    ctx["second"] = {p: hook_commands(sb, p) for p in files}
+    launchctl = os.path.join(sb, "bin", "launchctl")  # the sandbox's own, so the real nightly job is never touched
+    put(launchctl, "#!/bin/sh\nexit 0\n")
+    os.chmod(launchctl, 0o755)
+    ctx["job"] = run_py(sb, "from recall.integrations import scheduler as s; print(s.enable(3, 30, 120, 80))", env=env)
+    seg(sb, ctx, "uninstall", lambda: run(sb, "uninstall", env=env)[1], judged=False)
+    ctx["left"] = {p: hook_commands(sb, p) for p in files}
+    ctx["scheduled"] = run_py(sb, "from recall.integrations import scheduler as s; print(s.scheduled())").strip()
+
+
+def spaced_check(sb: str, ctx: dict) -> list[str]:
+    errs = []
+    if ctx["ran"].returncode != 0:
+        errs.append(f"the hook does not run from a path with a space: {ctx['ran'].stderr.strip()[:120]}")
+    if ctx["second"] != ctx["first"]:
+        errs.append("a second install changed or repeated the hooks")
+    if left := [c for cs in ctx["left"].values() for _, c in cs if "recall" in c]:
+        errs.append(f"uninstall left recall's hooks behind: {left[:2]}")
+    if ctx["scheduled"] != "False":
+        errs.append(
+            f"uninstall left the nightly run scheduled ({ctx['job'].strip()[:60]}; scheduled: {ctx['scheduled']})"
+        )
+    return errs
+
+
 def repoint_act(sb: str, ctx: dict) -> None:
     """A person's own `recall install` from a second binary says where the hooks run and moves nothing;
     only `--repoint` moves them, in place; autopilot, from either binary, never does."""
@@ -1530,6 +1569,12 @@ SCENARIOS = {
     ),
     "new-hook-kinds": ("a yes covers the hooks it was given for", kinds_build, kinds_act, kinds_check),
     "two-binaries": ("a recall run from a repo leaves another's hooks alone", twin_build, twin_act, twin_check),
+    "spaced-path": (
+        "recall under a path with a space: hooks run, and uninstall removes them",
+        twin_build,
+        spaced_act,
+        spaced_check,
+    ),
     "install-repoint": (
         "`recall install --repoint` moves hooks to this recall; nothing else does",
         twin_build,
@@ -1581,6 +1626,7 @@ OPTIONS = {
     "consent-prompt": {"no_index": True, "no_connected": True},
     "new-hook-kinds": {},
     "two-binaries": {"no_readback": True},
+    "spaced-path": {"no_index": True, "no_connected": True},
     "install-repoint": {"no_readback": True},
     "cursor-approval": {"no_readback": True},
     "mining-gate": {
