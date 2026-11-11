@@ -389,6 +389,7 @@ class NoteStore:
         active = [n for n in notes.values() if n.status == "active"]
         by_project: dict[str, list[Note]] = {}
         prefs = []
+        table = contexts.roots()
         for n in active:
             if n.scope == "project" and n.project:
                 by_project.setdefault(n.project, []).append(n)
@@ -396,7 +397,7 @@ class NoteStore:
                 # A preference tied to a context but only ever seen in one project is that
                 # project's preference, so it is listed there rather than across the context;
                 # one the developer asked to remember globally stays global.
-                seen = contexts.projects_of_chats(n.sources) if n.reach == "context" and not n.stated_in else set()
+                seen = contexts.projects_of_chats(n.sources) if tied_to_context(n, table) and not n.stated_in else set()
                 if len(seen) == 1:
                     by_project.setdefault(seen.pop(), []).append(n)
                 else:
@@ -411,9 +412,9 @@ class NoteStore:
         ]
         prefs.sort(key=lambda n: -n.score(now))
         out = ["# Memory\n", header]
-        for heading, items in _by_context(prefs):
+        for heading, items, keep in _by_context(prefs, table):
             out.append(f"\n## {heading}\n")
-            lines, more = _listed(items, GLOBAL_INDEX_LINES, lambda n: f"global/{n.id}.md")
+            lines, more = _listed(items, GLOBAL_INDEX_LINES, lambda n: f"global/{n.id}.md", keep)
             out += lines or ([] if items else ["- (nothing yet)"])
             if more:
                 out.append(f"- …and {more} more in global/")
@@ -829,40 +830,77 @@ def _link_text(title: str) -> str:
     return re.sub(r"[\[\]|#]", "", title).strip()
 
 
-def _by_context(prefs: list[Note]) -> list[tuple[str, list[Note]]]:
-    """Group working preferences by where they apply. One judged to hold everywhere, or not yet
-    judged (memory/reach.py), loads in every folder, as before contexts; one tied to a context
-    loads only in the contexts its chats ran in; one whose chats ran outside every context's
+def tied_to_context(n: Note, table: dict[str, list[str]]) -> bool:
+    """Is a global preference held to the contexts it was learned in? When it is judged so
+    (memory/reach.py), and, with contexts configured, until it is judged at all: an unjudged note
+    must not reach a context it was never said in. A note with no chat behind it was written by
+    hand, and has nowhere to be held to."""
+    if n.reach == "context":
+        return True
+    return n.reach != "everywhere" and bool(table) and bool(n.sources or n.stated_in)
+
+
+def _by_context(prefs: list[Note], table: dict[str, list[str]]) -> list[tuple[str, list[Note], object]]:
+    """Group working preferences by where they apply, as (heading, notes, which of a note's rules
+    the heading shows; None: all of them). One judged to hold everywhere, or written by hand and
+    not judged yet, loads in every folder, as before contexts. One tied to a context loads only in
+    the contexts its chats ran in, and shows there only the rules said there, since consolidation
+    can fold rules from several contexts into one note. One whose chats ran outside every context's
     folders cannot be placed, so it loads nowhere by itself and stays searchable."""
-    table = contexts.roots()
     if not table:
-        return [("How you work", prefs)]
+        return [("How you work", prefs, None)]
     groups: dict[str, list[Note]] = {"How you work": []}
+    keeps: dict[str, object] = {"How you work": None}
+    said = contexts.chat_contexts([s for n in prefs for s in n.sources], table)
     for n in prefs:
-        if n.reach != "context":
-            headings = ["How you work"]
+        if not tied_to_context(n, table):
+            headings = [("How you work", None)]
         else:
             seen = placed(n, table)
-            headings = [f"How you work: {c}" for c in sorted(seen)] or ["How you work: unplaced"]
-        for heading in headings:
+            headings = [(f"How you work: {c}", c) for c in sorted(seen)] or [("How you work: unplaced", None)]
+        for heading, where in headings:
             groups.setdefault(heading, []).append(n)
-    return list(groups.items())
+            if where:
+                keeps[heading] = _shown_in(where, table, said)
+    return [(heading, items, keeps.get(heading)) for heading, items in groups.items()]
 
 
-def audience(n: Note, table: dict[str, list[str]]) -> str | None:
+def _shown_in(where: str, table: dict[str, list[str]], said: dict[str, str] | None):
+    """Which of a tied note's rules a context shows."""
+    return lambda n, r: _said_in(n, r, where, table, said)
+
+
+def _said_in(n: Note, r: Rule, where: str, table: dict[str, list[str]], said: dict[str, str] | None) -> bool:
+    """Was this rule said in this context? A rule with no chat behind it (written by hand) goes
+    wherever its note goes; one whose chats ran outside every context, or have left the index, goes
+    to none. `said` None: the chat index could not be read, which must not hide every rule."""
+    if said is None:
+        return True
+    seen = {said[s] for s in r.sources if s in said}
+    if r.stated and n.stated_in and (c := contexts.of_folder(n.stated_in, table)):
+        seen.add(c)
+    return where in seen or not (seen or r.sources)
+
+
+def audience(n: Note, table: dict[str, list[str]], said: dict[str, str] | None = None) -> str | None:
     """Who may be handed a global preference mid-session (jit.py), by the rule session start
     applies when it compiles the index (compile and _by_context above). None: everyone, for a
-    preference judged to hold everywhere or not judged yet. Otherwise a JSON list of who:
-    `project:<key>` when its chats ran in a single project (it is that project's preference),
-    else `ctx:<name>` for each context they ran in (placed); empty when they ran outside every one."""
-    if n.scope != "global" or n.reach != "context":
+    preference judged to hold everywhere or written by hand and not judged yet. Otherwise a JSON
+    list of who: `project:<key>` when its chats ran in a single project (it is that project's
+    preference), else `ctx:<name>` for each context it may go to whole, as a hook hands over the
+    note's rules together: those where every rule it would show was said; empty for none."""
+    if n.scope != "global" or not tied_to_context(n, table):
         return None
     seen = set() if n.stated_in else contexts.projects_of_chats(n.sources)
     if len(seen) == 1:
         return json.dumps([f"project:{next(iter(seen))}"])
     if not table:
         return None
-    return json.dumps([f"ctx:{c}" for c in sorted(placed(n, table))])
+    said = contexts.chat_contexts(n.sources, table) if said is None else said
+    shown = pushed(n) or []
+    return json.dumps(
+        [f"ctx:{c}" for c in sorted(placed(n, table)) if all(_said_in(n, r, c, table, said) for r in shown)]
+    )
 
 
 def placed(n: Note, table: dict[str, list[str]]) -> set[str]:
@@ -905,10 +943,16 @@ def _index_line(note: Note, href: str, shown: list[Rule]) -> str:
     return f"- **{clean_title(note.title)}**: {hook} ([note]({href}))"
 
 
-def _listed(items: list[Note], limit: int, href) -> tuple[list[str], int]:
+def _listed(items: list[Note], limit: int, href, keep=None) -> tuple[list[str], int]:
     """Index lines for the first `limit` notes pushed() lets through, and how many of the
-    items are left out of the index, for its "…and N more" line."""
-    lines = [_index_line(n, href(n), shown) for n in items if (shown := pushed(n))][:limit]
+    items are left out of the index, for its "…and N more" line. `keep`: which of a note's
+    rules this index may show (_by_context)."""
+    lines = []
+    for n in items:
+        shown = [r for r in pushed(n) or [] if keep is None or keep(n, r)]
+        if shown:
+            lines.append(_index_line(n, href(n), shown))
+    lines = lines[:limit]
     return lines, len(items) - len(lines)
 
 
