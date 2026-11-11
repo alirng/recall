@@ -148,6 +148,7 @@ recall starts in the background run at low priority.
 | `recall setup [--yes] [--model SPEC] [--embeddings NAME]` | the guided first run; the flags answer its questions up front |
 | `recall model [--show]` | choose, or show, the model that writes memories |
 | `recall search <words>` · `show <id>` · `recent` | chat history |
+| `recall import PATH` | index a claude.ai or ChatGPT account export: the ZIP, its folder or `conversations.json` ([details](agents.md#claudeai-and-chatgpt-chats)) |
 | `recall forget <id> \| --project NAME [--yes]` | remove chats from the index, archive, vectors, exploration reports and the cached answers that quote them; lists the notes that cite them |
 | `recall embed` | embed messages for semantic search (needs `[embeddings]` in config.toml) |
 | `recall dream [--max-minutes N] [--max-calls N] [--max-usd X] [--no-batch] [--on-battery run]` | update memory now; unlike the nightly run, it has no budget unless you give one; on battery, outside a terminal, it waits for power unless told to run |

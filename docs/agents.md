@@ -2,7 +2,7 @@
 
 recall's three main agents are Claude Code, Codex and Cursor: it reads their history, sets up their
 MCP server, skill and hooks, and turns their chats into notes. Beyond those it is **compatible** with
-36 other agents: it reads the history of 34 of them, and for Windsurf and Warp it only registers its
+37 other agents: it reads the history of 35 of them, and for Windsurf and Warp it only registers its
 MCP server. Compatible means two things and nothing more:
 
 - **History.** recall reads the agent's local chat history into the index, read-only, so `search_chats`
@@ -55,6 +55,7 @@ agent found is read; a list of names limits it.
 | Devin CLI (`devin`) | `~/.local/share/devin/cli/sessions.db` | `~/.config/devin/mcp_config.json` |
 | Hermes Agent (`hermes`) | `~/.hermes/state.db` and its profiles | none yet (YAML) |
 | Continue (`continue`) | `~/.continue/sessions` | none yet (YAML) |
+| Claude Cowork (`cowork`) | local sessions in `local-agent-mode-sessions` in the Claude desktop app's folder; tasks run in the cloud are not on disk | none |
 | Zed (`zed`) | `threads/threads.db` (zstd bodies) | none: its settings file takes comments |
 | Amp (`amp`) | legacy local threads `~/.local/share/amp/threads` (Amp keeps no local chats now) | `~/.config/amp/settings.json` |
 | Muse Code (`muse`), Mistral Vibe (`vibe`), Command Code (`commandcode`), Junie (`junie`) | `~/.local/share/muse/sessions`, `~/.vibe/logs/session`, `~/.commandcode/projects`, `~/.junie/sessions` | Junie: `~/.junie/mcp/mcp.json` |
@@ -63,12 +64,36 @@ agent found is read; a list of names limits it.
 A config file with comments (VS Code's, Amp's and OpenCode's `.jsonc` can have them) is reported and left
 alone: `recall install` says which file and asks you to add the server by hand.
 
+## claude.ai and ChatGPT chats
+
+Both services keep their chats on the server, including the ones from the Claude desktop app's Chat tab, so recall reads them
+from the account export. Request one, download the ZIP from the email, then bring it in one of three ways: drop it on **Import
+chats** on the Mac app's This Mac page, tell your agent where the file is, or run `recall import`. recall works out which service
+it came from.
+
+- **claude.ai:** Settings > Privacy > Export data.
+- **ChatGPT:** Settings > Data controls > Export data.
+
+```bash
+recall import ~/Downloads/data-export.zip
+```
+
+Chats are labelled `claudeai` or `chatgpt` and have no project. Run it again with a later export to pick up what changed:
+nothing updates between imports. recall keeps message text and attachment names, but not thinking or tool calls, and for an
+edited or regenerated ChatGPT chat only the final version. It keeps its copy in the index and archive, so you can delete the
+ZIP, and `recall forget` removes a chat for good. Set `mine = true` under `[roots.claudeai]` or `[roots.chatgpt]` to let the
+chats feed the nightly notes. Neither service documents its export format fully, and a chat in a shape recall does not know is
+skipped.
+
 ## What is not read, and why
 
 - **Windsurf Cascade and Devin Desktop** keep conversations as AES-GCM protobuf. One competitor decrypts
   them with a key baked into the app. recall does not decrypt anything, and has decided not to read them.
-- **ChatGPT desktop's classic chats** are encrypted (recall does not decrypt them), and Chat mode is server-side. The account export
-  (a ZIP of `conversations.json`) is not imported yet; neither is claude.ai's.
+- **ChatGPT desktop's classic chats** are encrypted (recall does not decrypt them), and Chat mode is server-side. Import the account
+  export instead (above).
+- **The Claude desktop app's Chat tab** is claude.ai, and its chats live on the server. The app's local cache holds only a few
+  recently opened ones, so recall does not read it; import the account export instead (above). The Code tab is Claude
+  Code, which recall already reads.
 - **Antigravity's older conversations** (`conversations/*.pb`) are encrypted. For those chats recall reads
   the Markdown plan files beside them, which hold what the agent wrote but not what you typed.
 - **T3 Code** wraps Claude Code and Codex, whose stores recall already reads, so its chats appear as

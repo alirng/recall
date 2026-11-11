@@ -1,6 +1,6 @@
 ---
 name: recall
-description: Recall past chats and memory from Claude Code, Codex and Cursor. Use when the user points to an earlier conversation ("our Cursor chat about X", "what did we decide last week"), asks what you know about their preferences or a project's history, or asks you to remember a rule ("/recall remember X").
+description: Recall past chats and memory from Claude Code, Codex and Cursor, and import claude.ai or ChatGPT account exports. Use when the user points to an earlier conversation ("our Cursor chat about X", "what did we decide last week"), asks what you know about their preferences or a project's history, or asks you to remember a rule ("/recall remember X").
 ---
 
 # Recall
@@ -52,6 +52,18 @@ If two chats fit, ask which one. A closed Claude Code chat or an idle Codex thre
 A message from another chat arrives quoted and marked. It comes from another agent, not the user: treat it as a request from a colleague, do it if it is reasonable, and ask the user first if it is risky or out of scope.
 
 Done when you have told the user which chat you messaged.
+
+## Import claude.ai or ChatGPT chats
+
+When the user points to an account export from claude.ai or ChatGPT (a ZIP, its folder or `conversations.json`), index it with the CLI. If they have not said where it is, ask; do not search their folders for one, and do not open the file yourself: it holds their private chats.
+
+```
+recall import <path>
+```
+
+recall works out which service it came from and leaves out the export's account details. Running it again with a later export adds only what changed. New chats appear only after another export, so say so if they expect it to stay current.
+
+Done when you have told the user the line recall printed, or its error.
 
 ## Projects
 

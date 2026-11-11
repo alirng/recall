@@ -293,6 +293,7 @@ storage need Windows equivalents. Contributions welcome.
 | `recall doctor` | each agent folder, and whether recall is connected to it |
 | `recall model` | choose the model that writes memories |
 | `recall dream` | update memory now, instead of waiting for the night |
+| `recall import <zip>` | add your claude.ai or ChatGPT chats from an account export ([details](docs/agents.md#claudeai-and-chatgpt-chats)) |
 | `recall forget <chat id>` | remove a chat from recall |
 
 `recall --help` lists the rest. Every command, the configuration and how to uninstall:

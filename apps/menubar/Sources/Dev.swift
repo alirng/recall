@@ -18,7 +18,7 @@ enum Probe {
     /// Any test flag: the window then stays off screen and the app never comes forward.
     static let background = ["--open", "--open-after", "--measure", "--shot", "--scroll-notes", "--scroll-chat", "--scroll-info",
                              "--switch-test", "--event-storm", "--close-after", "--ui-test", "--panel-open-after", "--panel-close-after",
-                             "--write-shots", "--model-test"].contains { CommandLine.arguments.contains($0) }
+                             "--write-shots", "--model-test", "--import-test"].contains { CommandLine.arguments.contains($0) }
     nonisolated(unsafe) static var opened: Date?
 
     static func start() { if on { opened = Date() } }

@@ -7,6 +7,7 @@
 // This Mac opens the model menu, changes a coordination rule and removes the copies kept before
 // upgrades. It saves a PNG of each state to DIR, logs what recall answered and how long it took, and
 // quits. `--model-test OPTION` picks that model as the menu would and logs the answer.
+// `--import-test PATH` imports that export as the Import chats panel would and saves the panel before and after.
 
 import AppKit
 import SwiftUI
@@ -183,6 +184,38 @@ extension Probe {
             return nil
         }
         return w.window?.contentView.flatMap(find)
+    }
+
+    /// `--import-test PATH`: what dropping that export on the Import chats panel does, logged.
+    static func importTest(_ w: WindowController, _ path: String, to dir: String?) {
+        guard scratch else { log("refusing: the write probes run only against a scratch RECALL_HOME"); NSApp.terminate(nil); return }
+        func shot(_ name: String) { if let dir { capture(w, to: "\(dir)/import-\(name)-\(value("--appearance") ?? "dark").png") } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+            guard let lib = w.library else { return }
+            guard scratchServer(lib) else {
+                log("refusing: recall api serves \(lib.info?.home ?? "?"), not a scratch copy")
+                NSApp.terminate(nil)
+                return
+            }
+            lib.go(.thisMac)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                shot("before")
+                let asked = Date()
+                lib.importExport(path)
+                func watch() {
+                    switch lib.facts.importNote {
+                    case .done(let t)?, .failed(let t)?:
+                        log(String(format: "import: %@ (%.1f s)", t, Date().timeIntervalSince(asked)))
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                            shot("after")
+                            NSApp.terminate(nil)
+                        }
+                    default: DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: watch)
+                    }
+                }
+                watch()
+            }
+        }
     }
 
     /// `--model-test OPTION`: the model menu's pick, logged: the test call's answer and its time.

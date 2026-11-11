@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import __version__, paths
 
 API_VERSION = 1
-WRITES = ["notes", "coordination", "model", "storage"]  # what this server can change; /v1/info says so
+WRITES = ["notes", "coordination", "model", "storage", "imports"]  # what this server can change; /v1/info says so
 DEFAULT_IDLE = 300  # seconds with no request and no open event stream before the server exits
 RUNNING = os.path.join(paths.HOME, "running")  # files that exist only while recall runs
 SOCKET = os.path.join(RUNNING, "api.sock")
@@ -984,6 +984,12 @@ def coordination_set(preset: str | None, rules: dict | None) -> dict:
     return coordination_view() | {"was": was}
 
 
+def import_export(path: str) -> dict:
+    from .chats.sources import exports
+
+    return exports.run(path)
+
+
 def storage_remove(chosen: list) -> dict:
     from . import storage
 
@@ -1368,6 +1374,13 @@ def build_app():
             raise ApiError(400, "bad_parameter", "paths is a list of /v1/storage paths tagged backup")
         return reply(await change(storage_remove, chosen))
 
+    async def h_import(request):
+        path = (await _json(request)).get("path")
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise ApiError(400, "bad_parameter", "path is the absolute path of an export on this Mac")
+        await on_db(_con)  # an index another release built is left to `recall index`
+        return reply(await change(import_export, path, topics=["chats"]))
+
     async def h_events(request):
         q = await HUB.join()
 
@@ -1406,6 +1419,7 @@ def build_app():
         Route("/v1/models", h_models),
         Route("/v1/model", h_model_set, methods=["PUT"]),
         Route("/v1/storage/remove", h_storage_remove, methods=["POST"]),
+        Route("/v1/import", h_import, methods=["POST"]),
         Route("/v1/doctor", h_doctor),
         Route("/v1/projects", h_projects),
         Route("/v1/notes", h_notes),
@@ -1499,6 +1513,7 @@ ENDPOINTS = {
     "/v1/models": "the models that can write memories here now, each with an option id",
     "PUT /v1/model": "switch the model {option} after one test call",
     "POST /v1/storage/remove": "delete copies kept before an upgrade {paths}",
+    "POST /v1/import": "index a claude.ai or ChatGPT account export {path}",
 }
 
 

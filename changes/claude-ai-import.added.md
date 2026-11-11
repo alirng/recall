@@ -1,0 +1,1 @@
+**`recall import` reads a claude.ai account export.** Point it at the ZIP from Settings > Privacy > Export data and your claude.ai chats, including those from the desktop app's Chat tab, become searchable from every agent, labelled `claudeai`. A later export updates what changed, and `recall forget` removes a chat for good.
