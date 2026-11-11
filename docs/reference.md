@@ -181,7 +181,7 @@ Environment: `RECALL_HOME` moves the index, config and logs (default `~/.agents/
 ## Uninstall
 
 ```bash
-recall uninstall && recall schedule disable
+recall uninstall                 # disconnects every agent and removes the nightly run
 uv tool uninstall recall-agents
 rm -rf ~/.agents/recall          # the index, config and logs
 # an API key saved to the keychain stays there, under the service name "recall"
