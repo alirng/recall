@@ -16,11 +16,30 @@ struct AppState: Codable {
     var section: String?
     var pins: [String]?
     var appearance: String?  // "dark" or "light" when set from the palette; the system's otherwise
+    var lastProblem: String?  // the last run problem a notification told about, so each is told once
+    var notifyFailures: Bool?  // tell me when a night's memory run fails; nil until asked
+    var moveDeclined: Bool?  // "Not now" to moving the app into Applications
+    var lastVersion: String?  // the app version that last ran, to say "updated" once after an update
+    var lastPyPICheck: Double?  // when recall's latest version was last asked for (seconds since 1970)
+    var recallLatest: String?  // the latest recall on PyPI at that check
+    var setupLeft: Bool?  // the setup window was closed before it finished: don't open it again by itself
+    var setupDone: Bool?  // setup finished, was skipped or wasn't needed: launch stops asking `recall doctor` whether it is
+    var runWatch: RunSnapshot?  // what the run watch last learned, so a launch can tell without starting recall
+    var recallFile: String?  // the installed recall's path and modified time when its version was last asked
+    var recallVersion: String?  // what it said then
 
     static let url = URL(fileURLWithPath: API.recallHome + "/app.json")
 
     static func load() -> AppState {
         (try? JSONDecoder().decode(AppState.self, from: Data(contentsOf: url))) ?? AppState()
+    }
+
+    /// Reads the file again, changes it and writes it back, so a field one part of the app owns is never
+    /// overwritten by a copy another part read earlier.
+    static func update(_ change: (inout AppState) -> Void) {
+        var s = load()
+        change(&s)
+        s.save()
     }
 
     func save() {
@@ -86,6 +105,8 @@ final class Library: ObservableObject {
     /// The Forget sheet while it's open, and the Undo toast for 10 s after (Writes.swift).
     var forgetting: Forgetting?
     @Published var toast: Toast?
+    /// Just after setup: Memory says "Ready" and that more notes land overnight.
+    @Published var welcome = false
 
     let facts = Facts()
     let notes = NotesModel()
@@ -134,6 +155,34 @@ final class Library: ObservableObject {
         notes.library = self
         chats.library = self
         search.library = self
+    }
+
+    // MARK: While scrolling
+
+    var scrolling: Bool { Scrolling.shared.now }
+    var waiting: [() -> Void] = []
+    var waitingSince: CFTimeInterval = 0
+
+    /// Runs `apply` now, or as soon as the scrolling stops. An answer from recall redraws whatever shows it, and a
+    /// redraw in the middle of a scroll is a dropped frame, while the numbers can wait a moment. Never more than a few
+    /// seconds, however long the scroll.
+    func settled(_ apply: @escaping () -> Void) {
+        guard scrolling else { apply(); return }
+        waiting.append(apply)
+        if waiting.count == 1 {
+            waitingSince = CACurrentMediaTime()
+            settleLater()
+        }
+    }
+
+    func settleLater() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            if self.scrolling, CACurrentMediaTime() - self.waitingSince < 4 { self.settleLater(); return }
+            let apply = self.waiting
+            self.waiting = []
+            apply.forEach { $0() }
+        }
     }
 
     // MARK: Opening and closing
@@ -190,13 +239,21 @@ final class Library: ObservableObject {
         e.start()
     }
 
-    /// The window gained focus: catch up, since edits made by hand to a note aren't streamed.
+    /// The window gained focus: catch up, since edits made by hand to a note aren't streamed. Everything else is, so
+    /// the rest is only asked for again after a good while: stats and status hold the server's database for over a second.
     func focused() {
         guard visible else { return }
         runMoved()  // a write waiting on a memory run tries again: not every lock holder commits
         if link != .ready || events == nil { connect(); return }
-        if Date().timeIntervalSince(lastLoad) > 5 { loadAll() }
+        if Date().timeIntervalSince(lastLoad) > 300 {
+            loadAll()
+        } else if Date().timeIntervalSince(lastCatchUp) > 5 {
+            lastCatchUp = Date()
+            notes.refresh()
+        }
     }
+
+    var lastCatchUp = Date.distantPast
 
     func loadAll() {
         lastLoad = Date()
@@ -204,27 +261,31 @@ final class Library: ObservableObject {
         // database thread, so they're asked for only once the first view's data is in.
         let rest = { [weak self] in
             guard let self else { return }
-            self.loadCounts()
-            self.fetch("/v1/doctor", Doctor.self) { self.facts.doctor = $0 }
-            self.fetch("/v1/runs/latest", Runs.self) { self.facts.runs = $0; self.notes.lastRun = $0.latest?.started }
-            self.fetch("/v1/config", Config.self) { self.facts.config = $0 }
-            self.fetch("/v1/coordination", Coordination.self) { self.facts.coordination = $0 }
-            self.fetch("/v1/projects", Projects.self) { self.facts.projects = $0 }
-            self.fetch("/v1/storage", Storage.self) { self.facts.storage = $0 }
-            if self.canWrite("model") { self.fetch("/v1/models", Models.self) { self.facts.models = $0 } }
-            self.fetch("/v1/stats", Stats.self) { self.facts.stats = $0; self.loadAgentTotals($0) }
-            self.fetch("/v1/status", Status.self) { self.facts.status = $0 }
+            let asks = {
+                self.loadCounts()
+                self.fetch("/v1/doctor", Doctor.self) { self.facts.doctor = $0 }
+                self.fetch("/v1/runs/latest", Runs.self) { self.facts.runs = $0; self.notes.lastRun = $0.latest?.started; self.countNew($0.latest?.started) }
+                self.fetch("/v1/config", Config.self) { self.facts.config = $0 }
+                self.fetch("/v1/coordination", Coordination.self) { self.facts.coordination = $0 }
+                self.fetch("/v1/projects", Projects.self) { self.facts.projects = $0 }
+                self.fetch("/v1/storage", Storage.self) { self.facts.storage = $0 }
+                if self.canWrite("model") { self.fetch("/v1/models", Models.self) { self.facts.models = $0 } }
+                self.fetch("/v1/stats", Stats.self) { self.facts.stats = $0; self.loadAgentTotals($0) }
+                self.fetch("/v1/status", Status.self) { self.facts.status = $0 }
+            }
+            // The first time each number shows as it arrives. After that they change together, in one redraw.
+            if self.facts.stats == nil { asks() } else { self.batched(asks) }
             self.warm()
         }
         shownChats?.reload()
-        notes.reload(then: rest)
+        if notes.rows.isEmpty { notes.reload(then: rest) } else { notes.refresh(then: rest) }
     }
 
     var needsYou: Int { facts.needsYou }
 
     func loadAgentTotals(_ s: Stats) {
         for a in s.agents.keys {
-            fetch("/v1/chats?agent=\(API.q(a))&limit=1", ChatsPage.self) { self.facts.agentTotals[a] = $0.total }
+            fetch("/v1/chats?agent=\(API.q(a))&limit=1", ChatsPage.self) { if self.facts.agentTotals[a] != $0.total { self.facts.agentTotals[a] = $0.total } }
         }
     }
 
@@ -255,12 +316,12 @@ final class Library: ObservableObject {
         switch section {
         case .memory:
             guard k != .open, let id = notes.cursor.step(k == .down, notes.rows.map(\.id)) else { return false }
-            notes.select(id)
+            notes.select(id, soon: true)
             if notes.rows.suffix(10).contains(where: { $0.id == id }) { notes.more() }
             return true
         case .chats, .agent:
             guard k != .open, let m = shownChats, let id = m.cursor.step(k == .down, m.rows.map(\.id)) else { return false }
-            m.select(id)
+            m.select(id, soon: true)
             if m.rows.suffix(10).contains(where: { $0.id == id }) { m.more() }
             return true
         case .projects:
@@ -296,17 +357,41 @@ final class Library: ObservableObject {
     var isAgent: Bool { if case .agent = section { return true } else { return false } }
 
     func loadCounts() {
-        fetch("/v1/notes?limit=1", NotesPage.self) { self.facts.notesCount = $0.total }
-        fetch("/v1/chats?limit=1", ChatsPage.self) { self.facts.chatsCount = $0.total }
+        fetch("/v1/notes?limit=1", NotesPage.self) { if self.facts.notesCount != $0.total { self.facts.notesCount = $0.total } }
+        fetch("/v1/chats?limit=1", ChatsPage.self) { if self.facts.chatsCount != $0.total { self.facts.chatsCount = $0.total } }
     }
 
     func changed(_ topics: Set<String>) {
         if Probe.on { FileHandle.standardError.write(Data("\(Date()) changed \(topics.sorted())\(onScreen ? "" : " (hidden)")\n".utf8)) }
         guard onScreen else { stale.formUnion(topics); return }
+        // Busy agents change the index every few seconds: changes are gathered for a moment and asked for in one go.
+        gathering.formUnion(topics)
+        guard !gatherPending else { return }
+        gatherPending = true
+        gatheringSince = CACurrentMediaTime()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.gather() }
+    }
+
+    var gathering: Set<String> = []
+    var gatherPending = false
+    var gatheringSince: CFTimeInterval = 0
+
+    func gather() {
+        if scrolling, CACurrentMediaTime() - gatheringSince < 4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in self?.gather() }
+            return
+        }
+        gatherPending = false
+        let topics = gathering
+        gathering = []
+        apply(topics)
+    }
+
+    func apply(_ topics: Set<String>) {
         if topics.contains("chats") {
             batched {
                 fetch("/v1/stats", Stats.self) { self.facts.stats = $0 }
-                fetch("/v1/chats?limit=1", ChatsPage.self) { self.facts.chatsCount = $0.total }
+                fetch("/v1/chats?limit=1", ChatsPage.self) { if self.facts.chatsCount != $0.total { self.facts.chatsCount = $0.total } }
                 fetch("/v1/doctor", Doctor.self) { self.facts.doctor = $0 }
                 if let s = facts.stats { loadAgentTotals(s) }
             }
@@ -321,7 +406,10 @@ final class Library: ObservableObject {
             loadCounts()
             fetch("/v1/storage", Storage.self) { self.facts.storage = $0 }
         }
-        if topics.contains("runs") { fetch("/v1/runs/latest", Runs.self) { self.facts.runs = $0; self.notes.lastRun = $0.latest?.started } }
+        if topics.contains("runs") {
+            fetch("/v1/runs/latest", Runs.self) { self.facts.runs = $0; self.notes.lastRun = $0.latest?.started; self.countNew($0.latest?.started); RunNow.shared.progress($0.latest) }
+            RunWatch.shared.changed()
+        }
         if topics.contains("notes") || topics.contains("runs") { runMoved() }
         if topics.contains("config") {
             fetch("/v1/config", Config.self) { self.facts.config = $0 }
@@ -343,8 +431,18 @@ final class Library: ObservableObject {
         asks()
         batch = nil
         group.notify(queue: .main) { [weak self] in
-            let apply = self?.held.removeValue(forKey: ObjectIdentifier(group)) ?? []
-            apply.forEach { $0() }
+            guard let self else { return }
+            let apply = self.held.removeValue(forKey: ObjectIdentifier(group)) ?? []
+            self.settled { apply.forEach { $0() } }
+        }
+    }
+
+    /// The rows' asterisks, counted: notes made on the day of the last run. A note only records its date, so
+    /// two runs in one day count as one.
+    func countNew(_ started: String?) {
+        guard let started else { notes.newCount = nil; return }
+        fetch("/v1/notes?sort=created&limit=500", NotesPage.self) { page in
+            self.notes.newCount = page.notes.filter { day($0.created) == day(started) }.count
         }
     }
 
@@ -357,14 +455,18 @@ final class Library: ObservableObject {
         inflight.insert(path)
         let group = batch
         group?.enter()
+        let known = last[path]
         API.queue.async {
             let r = API.raw(path)
+            // The same answer as last time changes nothing, so it isn't decoded or redrawn. A new one is decoded here,
+            // off the main thread: a page of notes is half a megabyte.
+            var fresh: (data: Data, value: T)?
+            if case .success(let data) = r, data != known, let v = try? JSONDecoder().decode(T.self, from: data) { fresh = (data, v) }
             DispatchQueue.main.async {
                 self.inflight.remove(path)
-                // The same answer as last time changes nothing, so it isn't decoded or redrawn.
-                if case .success(let data) = r, data != self.last[path], let v = try? JSONDecoder().decode(T.self, from: data) {
-                    self.last[path] = data
-                    if let group { self.held[ObjectIdentifier(group), default: []].append { use(v) } } else { use(v) }
+                if let fresh {
+                    self.last[path] = fresh.data
+                    if let group { self.held[ObjectIdentifier(group), default: []].append { use(fresh.value) } } else { self.settled { use(fresh.value) } }
                 }
                 if let next = self.again.removeValue(forKey: path) { next() }
                 always?()
@@ -502,7 +604,8 @@ final class NotesModel: ObservableObject {
     @Published var type: String?
     @Published var project: String?
     @Published var sort = "last_seen"
-    @Published var lastRun: String?  // when last night's run started, to mark the notes it made
+    @Published var lastRun: String?  // when the last run started, to mark the notes it made
+    @Published var newCount: Int?  // how many notes that run made
     let cursor = Cursor()
     @Published var rows: [NoteRow] = []
     @Published var total = 0
@@ -514,6 +617,7 @@ final class NotesModel: ObservableObject {
     @Published var error: String?
     /// The note being edited, if one is (Writes.swift).
     @Published var editor: Editor?
+    @Published var loaded = false  // the first page has come back, so an empty list means no notes
     var loading = false
     var generation = 0
     static let page = 100
@@ -535,13 +639,15 @@ final class NotesModel: ObservableObject {
             self.loading = false
             switch r {
             case .success(let page):
-                self.rows = page.notes
-                self.total = page.total
-                self.error = nil
+                if page.notes != self.rows { self.rows = page.notes }
+                if page.total != self.total { self.total = page.total }
+                if self.error != nil { self.error = nil }
+                if !self.loaded { self.loaded = true }
                 Probe.drawn("notes list")
                 if let f = page.facets {
-                    self.types = f.types ?? [:]
-                    self.projects = (f.projects ?? [:]).sorted { $0.value > $1.value }.map(\.key)
+                    if self.types != f.types ?? [:] { self.types = f.types ?? [:] }
+                    let projects = (f.projects ?? [:]).sorted { $0.value > $1.value }.map(\.key)
+                    if projects != self.projects { self.projects = projects }
                     self.projectFacet = f.projects ?? [:]
                 }
                 if !page.notes.contains(where: { $0.id == self.selected }), let first = page.notes.first {
@@ -553,17 +659,31 @@ final class NotesModel: ObservableObject {
     }
 
     /// recall committed new notes: fetch what's loaded again in one go, so the list keeps its place.
-    func refresh() {
-        generation += 1
+    func refresh(then: (() -> Void)? = nil) {
+        guard !refreshing else { refreshAgain = true; then?(); return }
+        refreshing = true
         let g = generation
         let n = max(Self.page, rows.count)
         API.get("/v1/notes?\(query)&limit=\(n)&offset=0", NotesPage.self) { r in
+            defer { then?() }
+            self.refreshing = false
+            if self.refreshAgain { self.refreshAgain = false; self.refresh() }
             guard g == self.generation, case .success(let page) = r else { return }
-            self.rows = page.notes
-            self.total = page.total
+            let apply = {
+                guard g == self.generation else { return }
+                // A page that arrived while this was out stays.
+                let have = Set(page.notes.map(\.id))
+                let rows = page.notes + self.rows.dropFirst(n).filter { !have.contains($0.id) }
+                if rows != self.rows { self.rows = rows }
+                if page.total != self.total { self.total = page.total }
+            }
+            if let library = self.library { library.settled(apply) } else { apply() }
         }
-        if let selected { select(selected) }
+        if let selected { load(selected) }
     }
+
+    var refreshing = false
+    var refreshAgain = false
 
     /// The next page, asked for as the list nears its end.
     func more() {
@@ -581,12 +701,22 @@ final class NotesModel: ObservableObject {
         }
     }
 
-    func select(_ id: String) {
-        selected = id
-        cursor.id = id
+    /// `soon` is the keyboard: the row marks at once and the note is fetched when the arrows pause, not once per press.
+    func select(_ id: String, soon: Bool = false) {
+        if selected != id { selected = id }
+        if cursor.id != id { cursor.id = id }
+        opening?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.load(id) }
+        opening = work
+        if soon { DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work) } else { work.perform() }
+    }
+
+    var opening: DispatchWorkItem?
+
+    func load(_ id: String) {
         API.get("/v1/notes/\(API.q(id))", Note.self) { r in
             guard self.selected == id else { return }
-            if case .success(let n) = r { self.note = n }
+            if case .success(let n) = r, n != self.note { self.note = n }
         }
     }
 
@@ -694,15 +824,29 @@ final class ChatsModel: ObservableObject {
         }
     }
 
+    /// Chats changed: the first page again. A changed chat moves to the top, so the rows further down are still right,
+    /// and however far you've scrolled it stays one small question.
     func refresh() {
-        generation += 1
+        guard !refreshing else { refreshAgain = true; return }
+        refreshing = true
         let g = generation
-        API.get("/v1/chats?limit=\(max(Self.page, rows.count))&offset=0\(query)", ChatsPage.self) { r in
+        API.get("/v1/chats?limit=\(Self.page)&offset=0\(query)", ChatsPage.self) { r in
+            self.refreshing = false
+            if self.refreshAgain { self.refreshAgain = false; self.refresh() }
             guard g == self.generation, case .success(let page) = r else { return }
-            self.rows = page.chats
-            self.total = page.total
+            let apply = {
+                guard g == self.generation else { return }
+                let top = Set(page.chats.map(\.id))
+                let rows = page.chats + self.rows.filter { !top.contains($0.id) }.prefix(max(0, page.total - page.chats.count))
+                if rows != self.rows { self.rows = rows }
+                if page.total != self.total { self.total = page.total }
+            }
+            if let library = self.library { library.settled(apply) } else { apply() }
         }
     }
+
+    var refreshing = false
+    var refreshAgain = false
 
     func more() {
         guard !loading, rows.count < total else { return }
@@ -719,11 +863,17 @@ final class ChatsModel: ObservableObject {
         }
     }
 
-    func select(_ id: String) {
-        selected = id
-        cursor.id = id
-        reading.open(id)
+    /// `soon` is the keyboard: the row marks at once and the chat opens when the arrows pause.
+    func select(_ id: String, soon: Bool = false) {
+        if selected != id { selected = id }
+        if cursor.id != id { cursor.id = id }
+        opening?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reading.open(id) }
+        opening = work
+        if soon { DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work) } else { work.perform() }
     }
+
+    var opening: DispatchWorkItem?
 }
 
 /// The open chat's messages, apart from the chats list: filtering the list then doesn't redraw
@@ -739,10 +889,10 @@ final class Reading: ObservableObject {
 
     func md(_ m: Transcript.Message, _ p: Palette? = nil) -> MD {
         if let p { palette = p }
-        let key = m.seq * 2 + (palette.light ? 1 : 0)
-        if let md = parsed[key] { return md }
+        let k = key(m.seq, palette)
+        if let md = parsed[k] { return md }
         let md = MD.parse(m.text, palette)
-        parsed[key] = md
+        parsed[k] = md
         return md
     }
 
@@ -763,13 +913,30 @@ final class Reading: ObservableObject {
         let offset = transcript?.next_offset ?? 0
         API.get("/v1/chats/\(API.q(id))/messages?offset=\(offset)&limit=40&max_chars=6000", Transcript.self) { r in
             guard self.id == id else { return }
-            self.loading = false
-            if case .success(let t) = r {
-                self.transcript = t
-                self.messages += t.transcript
+            guard case .success(let t) = r else { self.loading = false; return }
+            // The markdown is read here, off the main thread, so a row costs only its layout when it first shows
+            // and find has every word without stopping the window.
+            let palette = self.palette
+            Self.reader.async {
+                let width = MessageText.lastWidth
+                let read = t.transcript.map { m -> (Int, MD) in
+                    let md = MD.parse(m.text, palette)
+                    if width > 0 { for b in md.blocks { if case .text = b.kind { _ = b.height.at(width, of: b.look) } } }
+                    return (self.key(m.seq, palette), md)
+                }
+                DispatchQueue.main.async {
+                    guard self.id == id else { return }
+                    self.loading = false
+                    for (key, md) in read { self.parsed[key] = md }
+                    self.transcript = t
+                    self.messages += t.transcript
+                }
             }
         }
     }
+
+    static let reader = DispatchQueue(label: "recall.reading", qos: .userInitiated)
+    func key(_ seq: Int, _ p: Palette) -> Int { seq * 2 + (p.light ? 1 : 0) }
 }
 
 // MARK: - Search
@@ -844,10 +1011,60 @@ let isoFraction: ISO8601DateFormatter = {
     return f
 }()
 
-func date(_ s: String?) -> Date? {
-    guard let s else { return nil }
-    return isoParser.date(from: s) ?? isoFraction.date(from: s)
+/// What the date helpers have already worked out. A row asks for its date every time it's built and each parse or
+/// format goes through ICU, which was a tenth of the work of scrolling a long chat. The words are cleared at midnight,
+/// when "today" and sometimes the year change.
+enum Stamps {
+    static let lock = NSRecursiveLock()
+    nonisolated(unsafe) static var dates: [String: Date] = [:]
+    nonisolated(unsafe) static var days: [String: String] = [:]
+    nonisolated(unsafe) static var recent: [String: String] = [:]
+    nonisolated(unsafe) static var until = Date.distantPast
+    static let most = 20_000
+
+    static func date(_ s: String) -> Date? {
+        lock.lock(); defer { lock.unlock() }
+        if let d = dates[s] { return d }
+        guard let d = isoParser.date(from: s) ?? isoFraction.date(from: s) else { return nil }
+        if dates.count >= most { dates.removeAll(keepingCapacity: true) }
+        dates[s] = d
+        return d
+    }
+
+    static func turnOfDay() {
+        let now = Date()
+        guard now >= until else { return }
+        days.removeAll(keepingCapacity: true)
+        recent.removeAll(keepingCapacity: true)
+        let today = Calendar.current.startOfDay(for: now)
+        until = Calendar.current.date(byAdding: .day, value: 1, to: today) ?? now.addingTimeInterval(3600)
+    }
+
+    static func day(_ s: String) -> String {
+        lock.lock(); defer { lock.unlock() }
+        turnOfDay()
+        if let t = days[s] { return t }
+        guard let d = date(s) else { return "" }
+        let thisYear = Calendar.current.isDate(d, equalTo: Date(), toGranularity: .year)
+        let t = (thisYear ? dayFormat : dayYearFormat).string(from: d)
+        if days.count >= most { days.removeAll(keepingCapacity: true) }
+        days[s] = t
+        return t
+    }
+
+    static func dayOrTime(_ s: String) -> String {
+        lock.lock(); defer { lock.unlock() }
+        turnOfDay()
+        if let t = recent[s] { return t }
+        guard let d = date(s) else { return "" }
+        let t = Calendar.current.isDateInToday(d) ? timeFormat.string(from: d) : day(s)
+        if recent.count >= most { recent.removeAll(keepingCapacity: true) }
+        recent[s] = t
+        return t
+    }
 }
+
+func date(_ s: String?) -> Date? { s.flatMap(Stamps.date) }
 
 func formatter(_ pattern: String) -> DateFormatter {
     let f = DateFormatter()
@@ -859,11 +1076,7 @@ func formatter(_ pattern: String) -> DateFormatter {
 let dayFormat = formatter("d MMM"), dayYearFormat = formatter("d MMM yyyy"), longFormat = formatter("EEE d MMM HH:mm"), timeFormat = formatter("HH:mm")
 
 /// "16 Oct", or "16 Oct 2025" outside this year.
-func day(_ s: String?) -> String {
-    guard let d = date(s) else { return "" }
-    let thisYear = Calendar.current.isDate(d, equalTo: Date(), toGranularity: .year)
-    return (thisYear ? dayFormat : dayYearFormat).string(from: d)
-}
+func day(_ s: String?) -> String { s.map(Stamps.day) ?? "" }
 
 /// "4 Nov 10:25"
 func shortStamp(_ s: String?) -> String {
@@ -872,10 +1085,7 @@ func shortStamp(_ s: String?) -> String {
 }
 let stampFormat = formatter("d MMM HH:mm")
 /// "11:58" today, "3 Nov" before.
-func dayOrTime(_ s: String?) -> String {
-    guard let d = date(s) else { return "" }
-    return Calendar.current.isDateInToday(d) ? timeFormat.string(from: d) : day(s)
-}
+func dayOrTime(_ s: String?) -> String { s.map(Stamps.dayOrTime) ?? "" }
 
 func longDay(_ s: String?) -> String { date(s).map { longFormat.string(from: $0) } ?? "" }
 func clock(_ d: Date?) -> String { d.map { timeFormat.string(from: $0) } ?? "" }

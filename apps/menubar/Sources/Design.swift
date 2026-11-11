@@ -15,6 +15,7 @@ extension Palette {
     /// paper. Decisions, the most common, stay grey.
     func kind(_ type: String) -> Color {
         switch type {
+        case "all": return ink  // the filter that shows every kind
         case "fact": return Color(hex: light ? 0x00836C : 0x00C5A9)
         case "lesson": return Color(hex: light ? 0x5F7400 : 0x98B305)
         case "preference": return Color(hex: light ? 0x7750B1 : 0xB688FE)
@@ -32,9 +33,9 @@ struct KindTag: View {
     var body: some View {
         let c = Palette.of(scheme).kind(type)
         Text(type.lowercased())
-            .font(PaperMono.font(10, 500)).tracking(0.6)
+            .font(PaperMono.font(11, 500)).tracking(0.6)
             .foregroundStyle(c)
-            .padding(.horizontal, 5).frame(height: 17)
+            .padding(.horizontal, 4).frame(height: 17)
             .background(on ? c.opacity(0.16) : .clear)
             .overlay(Rectangle().strokeBorder(c, lineWidth: 1))
             .fixedSize()
@@ -47,8 +48,8 @@ struct Kbd: View {
     @Environment(\.colorScheme) var scheme
     var body: some View {
         let p = Palette.of(scheme)
-        Text(text).font(PaperMono.font(10.5)).foregroundStyle(p.muted)
-            .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 17)
+        Text(text).font(PaperMono.font(11)).foregroundStyle(p.muted)
+            .padding(.horizontal, 4).frame(minWidth: 18, minHeight: 17)
             .overlay(Rectangle().strokeBorder(p.grid, lineWidth: 1))
             .fixedSize()
     }
@@ -132,6 +133,29 @@ final class ThinScroller: NSScroller {
     }
 }
 
+extension View {
+    /// A bigger area to click than the drawn control, with the layout unchanged: small marks and labels are hard to hit
+    /// (the reel's "touch target": the tappable area, not just the icon).
+    func hitArea(_ inset: CGFloat = 6) -> some View { padding(inset).contentShape(Rectangle()).padding(-inset) }
+}
+
+/// Whether a list or page is moving, however it's being moved: any clip view's bounds changing in the last moment.
+/// Work that would drop a frame waits until it isn't.
+final class Scrolling {
+    static let shared = Scrolling()
+    private var movedAt: CFTimeInterval = 0
+
+    var now: Bool { CACurrentMediaTime() - movedAt < 0.15 }
+
+    private init() {
+        // No queue: told at once, before the list builds the rows this movement brings in.
+        NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: nil, queue: nil) { [weak self] note in
+            guard note.object is NSClipView else { return }
+            self?.movedAt = CACurrentMediaTime()
+        }
+    }
+}
+
 /// Puts the thin scroller on the scroll views near it each time its view updates: SwiftUI makes a
 /// list's scroll view when the list first fills, and sets its scroller back on some updates.
 struct ScrollerHook: NSViewRepresentable {
@@ -140,10 +164,14 @@ struct ScrollerHook: NSViewRepresentable {
             super.viewDidMoveToWindow()
             schedule()
         }
+        var scheduled = false
         func schedule() {
+            guard !scheduled else { return }
+            scheduled = true
             DispatchQueue.main.async { [weak self] in
-                guard let self, let host = self.enclosingHost else { return }
-                ThinScroller.install(in: host)
+                guard let self else { return }
+                self.scheduled = false
+                if let host = self.enclosingHost { ThinScroller.install(in: host) }
             }
         }
         /// The nearest hosting view up the tree: one section, not the whole window.
@@ -174,6 +202,7 @@ final class Popups {
     var onClose: (() -> Void)?
 
     var isOpen: Bool { panel != nil }
+    var closedAt: CFTimeInterval = 0
 
     /// Shows `view` at `frame` (screen coordinates). `cover` puts it over the whole window instead.
     func show<V: View>(_ view: V, frame: NSRect, keys: @escaping (NSEvent) -> Bool, onClose: (() -> Void)? = nil) {
@@ -208,10 +237,26 @@ final class Popups {
 
     /// Below an anchor (screen rect), `width` wide, as tall as its content up to `maxHeight`.
     func show<V: View>(_ view: V, below anchor: NSRect, width: CGFloat, height: CGFloat? = nil, keys: @escaping (NSEvent) -> Bool, onClose: (() -> Void)? = nil) {
-        let h = height ?? min(480, NSHostingView(rootView: view).fittingSize.height)
-        var x = anchor.minX
-        if let screen = parent?.screen ?? NSScreen.main { x = min(x, screen.visibleFrame.maxX - width - 8) }
-        show(view, frame: NSRect(x: x, y: anchor.minY - 4 - h, width: width, height: h), keys: keys, onClose: onClose)
+        var h = height ?? min(480, NSHostingView(rootView: view).fittingSize.height)
+        var x = anchor.minX, y = anchor.minY - 4 - h
+        // Below the button when it fits on screen, as macOS menus do; above it when it doesn't and there's more room
+        // there, so a control near the bottom of the window doesn't open a menu off the screen.
+        // The screen the button is on. A window drawn off screen (a test run) has none, and its menus stay off screen too.
+        if let screen = NSScreen.screens.first(where: { $0.frame.intersects(anchor) })?.visibleFrame {
+            x = max(screen.minX + 8, min(x, screen.maxX - width - 8))
+            let below = anchor.minY - 4 - (screen.minY + 8)
+            let above = (screen.maxY - 8) - (anchor.maxY + 4)
+            if h <= below {
+                y = anchor.minY - 4 - h
+            } else if h <= above || above > below {
+                h = min(h, above)
+                y = anchor.maxY + 4
+            } else {
+                h = min(h, below)
+                y = anchor.minY - 4 - h
+            }
+        }
+        show(view, frame: NSRect(x: x, y: y, width: width, height: h), keys: keys, onClose: onClose)
     }
 
     func close() {
@@ -222,6 +267,7 @@ final class Popups {
         keys = nil
         p.parent?.removeChildWindow(p)
         p.orderOut(nil)
+        closedAt = CACurrentMediaTime()
         parent?.makeKey()
         let done = onClose
         onClose = nil
@@ -302,10 +348,10 @@ struct MenuView: View {
     var body: some View {
         let p = Palette.of(scheme)
         VStack(alignment: .leading, spacing: 0) {
-            if let t = model.title { Label(text: t).padding(.horizontal, 12).padding(.top, 9).padding(.bottom, 5) }
+            if let t = model.title { Label(text: t).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 4) }
             ForEach(Array(model.rows.enumerated()), id: \.element.id) { i, r in
                 Button { model.pick(i) } label: {
-                    HStack(alignment: r.detail == nil ? .center : .top, spacing: 10) {
+                    HStack(alignment: r.detail == nil ? .center : .top, spacing: 8) {
                         if model.ticks { Text(r.checked ? "✓" : "").foregroundStyle(p.ink).frame(width: 10) }
                         if let m = r.mark { m.padding(.top, r.detail == nil ? 0 : 4) }
                         VStack(alignment: .leading, spacing: 1) {
@@ -315,7 +361,7 @@ struct MenuView: View {
                         Spacer(minLength: 8)
                         if i < 9, r.enabled { Kbd(text: "\(i + 1)") }
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(i == model.at && r.enabled ? p.sel : .clear)
                     .contentShape(Rectangle())
                 }
@@ -325,10 +371,10 @@ struct MenuView: View {
             }
             if let f = model.footer {
                 Text("\(Text(f.0).foregroundColor(p.muted))\(Text(f.1).foregroundColor(p.body))\(Text(f.2).foregroundColor(p.muted))")
-                    .font(PaperMono.font(11.5))
+                    .font(PaperMono.font(11))
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(alignment: .top) { Rectangle().fill(p.grid).frame(height: 1) }
+                    .overlay(alignment: .top) { Rule() }
             }
         }
         .font(PaperMono.font(12.5))
@@ -355,7 +401,7 @@ struct MenuButton<L: View>: View {
             m.close = { popups.close() }
             popups.show(MenuView(model: m, width: width).environment(\.colorScheme, scheme), below: anchor.screenRect, width: width, keys: m.key)
         } label: {
-            label().background(AnchorReader(anchor: anchor)).contentShape(Rectangle())
+            label().background(AnchorReader(anchor: anchor)).hitArea(6)
         }
         .buttonStyle(.plain)
     }

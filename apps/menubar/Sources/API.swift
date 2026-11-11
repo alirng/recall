@@ -16,6 +16,8 @@ enum API {
     }()
     static let socketPath = recallHome + "/running/api.sock"
     static let minimumAPI = 1
+    /// The oldest recall that has `recall api`.
+    static let minimumRecall = "0.6.0"
     static let maxBody = 64 << 20  // the most a single answer may be
     static let maxBlock = 1 << 20  // the most of one server-sent event (or its header) that is held
     static let queue = DispatchQueue(label: "recall.api", qos: .userInitiated, attributes: .concurrent)
@@ -24,6 +26,8 @@ enum API {
         var status = 0
         var code = "unreachable"
         var message: String
+        /// A consent error says where the excerpts would go ("Anthropic, under your Claude plan").
+        var destination: String?
     }
 
     // MARK: Connecting
@@ -100,9 +104,10 @@ enum API {
             if chunks.failed { return .failure(Failure(message: "recall's answer was malformed")) }
         }
         if status >= 400 {
-            struct Wrapped: Decodable { struct E: Decodable { let code: String; let message: String }; let error: E }
+            struct Wrapped: Decodable { struct E: Decodable { let code: String; let message: String; let destination: String? }; let error: E }
             let e = try? JSONDecoder().decode(Wrapped.self, from: Data(body))
-            return .failure(Failure(status: status, code: e?.error.code ?? "http_\(status)", message: e?.error.message ?? "recall answered \(status)"))
+            return .failure(Failure(status: status, code: e?.error.code ?? "http_\(status)", message: e?.error.message ?? "recall answered \(status)",
+                                    destination: e?.error.destination))
         }
         return .success(Data(body))
     }
@@ -145,20 +150,14 @@ enum API {
     static func commands(_ extra: [String] = []) -> [[String]] {
         var out: [[String]] = []
         if let dev = Bundle.main.object(forInfoDictionaryKey: "RecallAPICommand") as? [String], !dev.isEmpty { out.append(dev) }
-        for dir in [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"] {
-            let path = dir + "/recall"
-            if FileManager.default.isExecutableFile(atPath: path) { out.append([path, "api"]) }
-        }
+        if let path = Tool.find("recall") { out.append([path, "api"]) }
         return out.map { $0 + extra }
     }
 
-    static let notInstalled = "recall isn't set up on this Mac. Install it with uv tool install 'recall-agents[embeddings]', then run recall install."
+    static let notInstalled = "recall isn't installed on this Mac. Open Recall's setup, or run uv tool install recall-agents in Terminal."
 
     /// The installed `recall`, found as commands() finds it; nil when there is none.
-    static func installed() -> String? {
-        [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"].map { $0 + "/recall" }
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
+    static func installed() -> String? { Tool.find("recall") }
 
     /// `recall status --json`'s command, or its other subcommands once "status" is cut off: the dev
     /// checkout build.sh wrote into Info.plist (only when RECALL_DEV_PROJECT was set), else the installed one.
@@ -186,6 +185,7 @@ enum API {
             p.executableURL = URL(fileURLWithPath: command[0])
             p.arguments = Array(command.dropFirst())
             p.currentDirectoryURL = URL(fileURLWithPath: home)
+            p.environment = Tool.env
             p.standardInput = FileHandle.nullDevice
             p.standardOutput = FileHandle.nullDevice
             let err = Pipe()
@@ -223,6 +223,7 @@ enum API {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: recall)
         p.arguments = ["--version"]
+        p.environment = Tool.env
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
@@ -369,6 +370,7 @@ struct Info: Decodable {
     /// What this server can change (notes, coordination, model, storage). Absent on a recall api from
     /// before these writes: the window then shows its controls read-only.
     let writes: [String]?
+    let pid: Int?
 }
 
 struct Stats: Decodable {
@@ -405,12 +407,12 @@ struct NotesPage: Decodable {
     let facets: Facets?
 }
 
-struct Note: Decodable {
-    struct Source: Decodable { let chat_id: String; let agent: String?; let title: String?; let date: String?; let messages: Int?; let found: Bool? }
-    struct Rule: Decodable { let id: String; let text: String; let status: String?; let first_seen: String?; let reason: String? }
-    struct Related: Decodable { let note_id: String; let title: String; let type: String?; let reason: String? }
-    struct Change: Decodable { let kind: String; let rule_id: String?; let text: String? }
-    struct Commit: Decodable { let commit: String; let date: String?; let subject: String?; let changes: [Change]? }
+struct Note: Decodable, Equatable {
+    struct Source: Decodable, Equatable { let chat_id: String; let agent: String?; let title: String?; let date: String?; let messages: Int?; let found: Bool? }
+    struct Rule: Decodable, Equatable { let id: String; let text: String; let status: String?; let first_seen: String?; let reason: String? }
+    struct Related: Decodable, Equatable { let note_id: String; let title: String; let type: String?; let reason: String? }
+    struct Change: Decodable, Equatable { let kind: String; let rule_id: String?; let text: String? }
+    struct Commit: Decodable, Equatable { let commit: String; let date: String?; let subject: String?; let changes: [Change]? }
     let note_id: String
     let type: String
     let scope: String?
@@ -494,7 +496,9 @@ struct Runs: Decodable {
         let counts: [String: Int]?
         let error: String?
         let phases: [Phase]?
+        let steps: [Step]?
     }
+    struct Step: Decodable { let kind: String; let text: String; let time: String? }
     let latest: Run?
 }
 
@@ -557,11 +561,16 @@ struct Models: Decodable {
     let fallback: String?
 }
 
-struct ModelSaved: Decodable { let label: String; let `private`: Bool?; let fallback: String? }
+struct ModelSaved: Decodable { let label: String; let `private`: Bool?; let fallback: String?; let destination: String? }
 struct Removed: Decodable { struct Item: Decodable { let path: String; let bytes: Int }; let removed: [Item]; let bytes: Int }
 
 struct Doctor: Decodable {
-    struct Root: Decodable { let root: String?; let agent: String; let state: String?; let connected: Bool?; let indexed_at: Double? }
+    /// One agent folder, as `recall doctor --json` gives it (an array of these) and /v1/doctor wraps it. `chats` is
+    /// missing until recall has indexed the folder.
+    struct Root: Decodable {
+        let root: String?; let agent: String; let state: String?; let connected: Bool?; let indexed_at: Double?
+        let exists: Bool?; let chats: Int?; let path: String?
+    }
     struct Autopilot: Decodable { let on: Bool? }
     let roots: [Root]?
     let autopilot: Autopilot?
