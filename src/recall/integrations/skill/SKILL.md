@@ -1,6 +1,6 @@
 ---
 name: recall
-description: Recall past chats and memory from Claude Code, Codex and Cursor. Use when the user points to an earlier conversation ("our Cursor chat about X", "what did we decide last week"), asks what you know about their preferences or a project's history, or asks you to remember a rule ("/recall remember X").
+description: Recall past chats and memory from Claude Code, Codex and Cursor, and import claude.ai or ChatGPT account exports. Use when the user points to an earlier conversation ("our Cursor chat about X", "what did we decide last week"), asks what you know about their preferences or a project's history, or asks you to remember a rule ("/recall remember X").
 ---
 
 # Recall
@@ -40,6 +40,18 @@ recall remember "<rule>" --quote "<the user's words, verbatim>" --chat "${CLAUDE
 - **recall decides who said it.** It looks for `--quote` in the user's latest messages in this chat. Anything it cannot find there is saved as your candidate, which no session is shown until the nightly run finds the user typed it. A rule with a command, a URL or a destructive step is refused when you run it: ask the user to type `recall remember` in their own terminal.
 
 Done when you have told the user what recall printed: the note id, its scope and `said_by`.
+
+## Import claude.ai or ChatGPT chats
+
+When the user points to an account export from claude.ai or ChatGPT (a ZIP, its folder or `conversations.json`), index it with the CLI. If they have not said where it is, ask; do not search their folders for one, and do not open the file yourself: it holds their private chats.
+
+```
+recall import <path>
+```
+
+recall works out which service it came from and leaves out the export's account details. Running it again with a later export adds only what changed. New chats appear only after another export, so say so if they expect it to stay current.
+
+Done when you have told the user the line recall printed, or its error.
 
 ## Projects
 

@@ -132,6 +132,20 @@ def _index(con, only, force, max_age, log) -> dict:
     return result
 
 
+def take(con, items) -> dict:
+    """Index these items now, outside any source's scan: for chats that arrive by `recall import`."""
+    seen = dict(con.execute("select key, fingerprint from seen"))
+    keep, now = _keeper(con), time.time()
+    done = skipped = 0
+    for item in items:
+        if _unchanged(seen.get(item.key), item.fingerprint, now):
+            skipped += 1
+            continue
+        done += _read(con, item, keep)
+        con.commit()
+    return {"indexed": done, "unchanged": skipped}
+
+
 def _keeper(con):
     """Whether a parsed chat may be indexed: not forgotten, nor a subagent of a forgotten chat, and
     not older than a retention period an organisation sets for its agent."""

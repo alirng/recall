@@ -83,7 +83,7 @@ struct Overlap: Decodable {
     var id: String { key ?? repo + "/" + file }
 }
 
-let agentNames = ["claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"]
+let agentNames = ["claude": "Claude Code", "codex": "Codex", "cursor": "Cursor", "chatgpt": "ChatGPT", "claudeai": "claude.ai", "cowork": "Claude Cowork"]
 
 func ago(_ s: Int) -> String {
     s < 60 ? "just now" : s < 3600 ? "\(s / 60)m ago" : s < 86400 ? "\(s / 3600)h ago" : "\(s / 86400)d ago"
@@ -247,6 +247,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let dir = Probe.value("--shot") { openWindow(); Probe.shots(windows, to: dir) }
         if let dir = Probe.value("--write-shots") { openWindow(); Probe.writeShots(windows, to: dir) }
         if let option = Probe.value("--model-test") { openWindow(); Probe.modelTest(windows, option, to: Probe.value("--shots-to")) }
+        if let path = Probe.value("--import-test") { openWindow(); Probe.importTest(windows, path, to: Probe.value("--shots-to")) }
         if CommandLine.arguments.contains("--scroll-notes") { openWindow(); Probe.scrollNotes(windows) }
         if CommandLine.arguments.contains("--scroll-chat") { openWindow(); Probe.scrollChat(windows) }
         if let s = Probe.value("--open-after").flatMap(Double.init) {

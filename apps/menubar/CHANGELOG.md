@@ -9,6 +9,8 @@ Powered by recall 0.6.0.
 
 ### Added
 
+- **Import chats.** A panel on This Mac takes a claude.ai or ChatGPT account export, dropped on it or chosen from a file
+  panel, and shows how many chats each service has and the newest one, so you can see when an export is getting old.
 - **The recall window.** Open recall (⌘O) in the menu bar app opens one window with two views.
   Memory has the notes list with category tags, filters, a project picker with pins and sort, and a
   reader with each note's rules, the chats it was learned from, related notes and its history. This

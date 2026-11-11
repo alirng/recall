@@ -130,6 +130,16 @@ def cmd_show(a) -> None:
         print(f"── {m['seq']} {m['role']} {m['time'] or ''}\n{m['text']}\n")
 
 
+def cmd_import(a) -> None:
+    from .chats.sources import exports
+
+    try:
+        r = exports.run(a.path)
+    except exports.BadExport as e:
+        sys.exit(str(e))
+    print(f"{r['service']}: {r['chats']} chats in the export, {r['indexed']} indexed, {r['unchanged']} unchanged")
+
+
 def cmd_forget(a) -> None:
     from . import forget
     from .chats import indexer, store
@@ -1128,6 +1138,10 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("chat_id", nargs="?")
     sp.add_argument("--project", help="every chat in this project")
     sp.add_argument("--yes", action="store_true", help="do not ask first")
+    sp = command(
+        "import", cmd_import, "index a claude.ai or ChatGPT account export (its ZIP, folder or conversations.json)"
+    )
+    sp.add_argument("path")
     sp = command("why", cmd_why, "the chats that wrote a file, a line or a commit (git blame, read-only)")
     sp.add_argument("target", nargs="?", help="path, path:line or path:start-end")
     sp.add_argument("--commit", help="a commit sha (or any name git knows) instead of a file")
