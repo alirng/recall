@@ -237,11 +237,13 @@ personal = ["~/Projects/Personal"]
 
 A preference that holds everywhere (communication style, commit policy) then loads in every
 folder; one tied to a context loads only in the folders of the contexts it was learned in, and
-one only ever seen in one project is listed with that project. A preference tied to a context
+one only ever seen in one project is listed with that project. When one note holds rules said in
+different contexts, each context shows only the rules said there. A preference tied to a context
 but learned only in chats outside every context's folders loads nowhere until you place it. The
-nightly run makes that judgement once per note, only while `[contexts]` is set, and keeps it as
+nightly run makes that judgement per note, only while `[contexts]` is set, and keeps it as
 `reach:` in the note's frontmatter, so you can correct it by hand. Until a note is judged it
-loads everywhere, as it did before contexts.
+stays in the contexts it was learned in. A note judged to hold everywhere, by the model or by
+hand, is judged again when the nightly run gives it new words.
 
 ## What recall is used for
 

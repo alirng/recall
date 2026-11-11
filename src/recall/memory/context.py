@@ -15,7 +15,7 @@ from .notes import SECTIONS, Note, NoteStore, audience, pushed, read_note_file, 
 # What the notes tables hold, for index_notes: change it when their columns or what goes into them
 # change, so that the next refresh rebuilds them. The meta row NOTES_BUILT records it with a digest
 # of the note files the tables were built from and recall.db's schema version once they were built.
-NOTES_SCHEMA = "2026-10-16 refresh_notes, brief"
+NOTES_SCHEMA = "2026-11-08 audience holds unjudged notes, and goes where every rule was said"
 NOTES_BUILT = "notes_built"
 # The tables' columns. index_notes compares them with what recall.db holds before it refills the
 # tables in place, so a column added here rebuilds them even if NOTES_SCHEMA was not changed.
@@ -221,6 +221,7 @@ def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
         )
         con.execute("delete from notes")
         con.execute("delete from notes_fts")
+        said = contexts.chat_contexts([s for n in notes.values() if n.scope == "global" for s in n.sources], table)
         for n in notes.values():
             if n.status != "active":
                 continue
@@ -239,7 +240,7 @@ def index_notes(con, notes: dict[str, Note], built: str | None = None) -> bool:
                     n.confidence,
                     n.last_seen,
                     len(n.sources),
-                    audience(n, table),
+                    audience(n, table, said),
                     render(shown) if shown else "",
                 ),
             )

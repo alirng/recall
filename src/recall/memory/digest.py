@@ -37,10 +37,11 @@ def _assistant(text: str) -> str:
 
 
 def build(session, messages) -> Digest | None:
-    """session: a sessions row; messages: (seq, role, text) rows in order."""
+    """session: a sessions row; messages: (seq, role, text, ...) rows in order."""
     turns = []
     n_user = 0
-    for _seq, role, text in messages:
+    for row in messages:
+        role, text = row[1], row[2]
         if not text.strip():
             continue
         if role == "user":

@@ -1,7 +1,9 @@
 """Reach: whether a working preference holds wherever the developer works, or only in the
 context it was learned in (see contexts.py). Where a note was seen tells which context; only
-what it says tells whether it travels, so the model judges each global note once and the
-answer is kept in the note's frontmatter, where it can be corrected by hand."""
+what it says tells whether it travels, so the model judges each global note and the answer is
+kept in the note's frontmatter, where it can be corrected by hand. A verdict of "everywhere" is
+about the words it was given: when consolidation gives such a note new words, it is judged again
+(consolidate.py). Until a note is judged it stays in the contexts it was learned in (notes.py)."""
 
 from ..llm import Client
 from . import prompts

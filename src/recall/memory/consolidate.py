@@ -165,6 +165,8 @@ class Group:
     start: int = 0  # the first candidate of the current batch
     prompt: str | None = None  # the current batch's prompt, once prepared
     retry: bool = False  # the answer waved the batch away: ask once more
+    deleted_titles: frozenset = frozenset()  # notes the developer deleted in this scope, however many
+    removed_rules: frozenset = frozenset()  # rules the developer removed by hand in this scope
 
 
 class Consolidation:
@@ -216,7 +218,8 @@ class Consolidation:
                     if note.status != "active":
                         del notes[note.id]
         # What the developer deleted: whole notes (the ledger) and single rules removed from a note.
-        # Each kind has its own cap, so a long run of rule edits cannot push a deleted note out.
+        # Each kind has its own cap in the prompt, so a long run of rule edits cannot push a deleted
+        # note out; the check in _apply takes all of them.
         everything = store.load(include_archived=True)
         removed = sorted(
             (
@@ -244,7 +247,15 @@ class Consolidation:
             ).fetchall()
             here = [r for r in deleted if r.get("scope") == scope.kind and r.get("project") == scope.key]
             here_rules = [r for _, r in removed if r.get("scope") == scope.kind and r.get("project") == scope.key]
-            self.groups.append(Group(scope, candidates, here[-REJECTED_SHOWN:] + here_rules[-REJECTED_SHOWN:]))
+            self.groups.append(
+                Group(
+                    scope,
+                    candidates,
+                    here[-REJECTED_SHOWN:] + here_rules[-REJECTED_SHOWN:],
+                    deleted_titles=frozenset(_key(r.get("title") or "") for r in here) - {""},
+                    removed_rules=frozenset(_key(r["body"]) for r in here_rules),
+                )
+            )
 
     def prepare(self, group: Group) -> Request | None:
         if group.start >= len(group.candidates):
@@ -266,7 +277,7 @@ class Consolidation:
             group.retry = True  # the next prepare() asks again
             return
         with turn():
-            _apply(self.con, self.store, self.notes, group.scope, batch, ops, self.stats, self.log, self.taken)
+            _apply(self.con, self.store, self.notes, group.scope, batch, ops, self.stats, self.log, group, self.taken)
             self.con.commit()
         self.stats["batches"] += 1
         group.start, group.prompt, group.retry = group.start + BATCH, None, False
@@ -383,6 +394,7 @@ def _apply(
     ops,
     stats: Counter,
     log,
+    group: Group | None = None,
     taken: frozenset = frozenset(),
 ) -> None:
     by_number = dict(enumerate(batch, 1))
@@ -401,7 +413,22 @@ def _apply(
             for c in candidates:
                 b.discarded.setdefault(c["id"], redact(op["reason"])[:300] or "discarded")
             continue
-        when = _date(max(c["chat_ts"] or 0 for c in candidates))
+        if group and kind != "confirm":  # a confirm brings no words of its own
+            removed = group.removed_rules
+            proposed = texts or (fallback if kind in ("add", "create") else [])
+            title = clean_title(op["title"]) or clean_title(candidates[0]["title"])
+            makes_note = kind == "create" or (kind == "add" and not b.note(op["note_id"]))
+            if (proposed and all(_key(t) in removed for t in proposed)) or (
+                makes_note and _key(title) in group.deleted_titles
+            ):
+                stats["refused, deleted by the developer"] += 1
+                log(f"  refused {kind}: the developer deleted this")
+                for c in candidates:
+                    b.discarded.setdefault(c["id"], "the developer deleted this")
+                continue
+            texts = [t for t in texts if _key(t) not in removed]
+            fallback = [t for t in fallback if _key(t) not in removed]
+        when = _date(max(_said(c) for c in candidates))
         found = b.rule(op["note_id"], op["rule_id"]) if kind in ("confirm", "refine", "retire") else None
         if kind in ("confirm", "refine", "retire") and not found:
             if kind == "refine" and texts and b.note(op["note_id"]):
@@ -592,6 +619,9 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
             stats["deferred, note changed on disk"] += 1
             log(f"  not written: {note.title!r} {why}; its candidates stay for the next run")
             continue
+        if note.id in b.work and note.reach == "everywhere" and _new_words(b.notes[note.id], note):
+            note.reach = None  # the verdict was on other words: judged again, and held to its contexts until then
+            stats["reach reopened"] += 1
         note.updated = today()
         store.write(note)  # also renders the body, and archives a note with no rule left
         if note.status == "active":
@@ -612,6 +642,12 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
         "update candidates set status='discarded', reason='never assigned' where status='new' and attempts>=?",
         (MAX_ATTEMPTS,),
     )
+
+
+def _new_words(before: Note, after: Note) -> bool:
+    """Does the note now state something it did not: a new rule, or one reworded?"""
+    had = {_key(r.text) for r in before.active_rules}
+    return any(_key(r.text) not in had for r in after.active_rules)
 
 
 def _state(note: Note) -> tuple:
@@ -698,8 +734,17 @@ def _texts(values: list[str]) -> list[str]:
     return [t for t in (said.clean_rule(" ".join(v.split())) for v in values) if t]
 
 
+def _said(c) -> float:
+    """The latest a candidate can have been said (extract.store); a row from before said_at has only chat_ts."""
+    return c["said_at"] if c["said_at"] is not None else c["chat_ts"] or 0
+
+
+def _key(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
 def _same(a: str, b: str) -> bool:
-    return " ".join(a.split()).lower() == " ".join(b.split()).lower()
+    return _key(a) == _key(b)
 
 
 # --- the prompt ---------------------------------------------------------------------------
