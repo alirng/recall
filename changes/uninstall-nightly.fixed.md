@@ -1,0 +1,1 @@
+**`recall uninstall` also removes the nightly memory run.** It used to leave the job scheduled, so chats kept going to the model every night until `recall schedule disable`. `--only` and `--root` still leave it alone, and `recall schedule enable` brings it back.
