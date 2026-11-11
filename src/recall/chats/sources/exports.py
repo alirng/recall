@@ -15,9 +15,9 @@ from collections.abc import Iterator
 from . import Item, chatgpt, claudeai
 
 _FILE = re.compile(r"conversations(-\d+)?\.json")
-# Far beyond a real account's export (big ones run to hundreds of MB), and short of what json.load
-# can hold in memory in the CLI or the long-lived `recall api`.
-MAX_BYTES = 2_000_000_000
+# Above a real account's export (big ones run to hundreds of MB). json.load takes four to five times a
+# file's size in memory, so this keeps one import, in the CLI or the long-lived `recall api`, to a few GB.
+MAX_BYTES = 1_000_000_000
 
 
 class BadExport(ValueError):
