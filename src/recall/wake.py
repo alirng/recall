@@ -8,9 +8,10 @@ unless the person turns this on. An open session is listed in ~/.claude/sessions
 of its message socket, and a line posted there starts a turn in an idle session, or is read between tool calls in a busy
 one. Only the .json files are read: the .key files beside them hold auth keys, which macOS and Linux do not
 ask for. The line's shape is not in the docs: it is the one Claude Code's own debug log prints. A closed
-session is resumed with `claude --resume <id> -p` in manual permission mode, so anything needing approval is
-refused even when the person's own default bypasses permissions: nobody is watching, and the text came from an
-agent. `[messaging] inherit_permissions = true` lets it keep the person's own settings.
+session is resumed with `claude --resume <id> -p` in manual permission mode, even when the person's own default
+bypasses permissions: nobody is watching, and the text came from an agent. Tools the person has already allowed
+in Claude Code's settings still run; anything else needing approval is refused. `[messaging]
+inherit_permissions = true` lets it keep the person's own mode.
 
 Codex. `codex exec resume`, read-only unless inherit_permissions is on. A thread active in the last
 QUIET_SECONDS is left alone, because it may be open in the app.
@@ -18,12 +19,17 @@ QUIET_SECONDS is left alone, because it may be open in the app.
 Cursor. Nothing can resume a chat from the editor, so the message waits for its next edit or turn end.
 
 Either way the message arrives as mail.render writes it, quoted and marked as from another agent, and
-take(waking=True) limits how often one chat can wake another. A message that could not be delivered goes
-back in the mailbox, and an open session only counts as reached once the message is in its transcript.
+take(waking=True) limits how often one chat can wake another. Three more limits keep wakes from running away:
+a woken chat's own messages wake nobody (WOKEN_ENV, set for the agent and so for its recall server), at most
+WAKES_PER_HOUR wakes run an hour in all, and one chat is woken by one process at a time (a lock in running/).
+A message that could not be delivered goes back in the mailbox, and an open session only counts as reached
+once the message is in its transcript.
 """
 
 import contextlib
+import fcntl
 import glob
+import hashlib
 import json
 import os
 import shutil
@@ -38,6 +44,9 @@ from . import config, mail, paths
 QUIET_SECONDS = 120
 RUN_SECONDS = 900  # a resumed chat's turn
 CONFIRM_SECONDS = 30  # for a message posted to an open session to appear in its transcript
+WAKES_PER_HOUR = 20  # in all, so a chain of chats waking each other stops
+WOKEN_ENV = "RECALL_WOKEN"  # set in a woken agent's environment: its messages wait instead of waking
+WAKES = os.path.join(paths.HOME, "cache", "wakes.json")
 
 
 def enabled() -> bool:
@@ -56,7 +65,7 @@ def _inherit() -> bool:
 
 def later(chat_id: str) -> None:
     """Start `recall wake` and return: the agent that sent the message is not kept waiting."""
-    if not enabled():
+    if not enabled() or os.environ.get(WOKEN_ENV):
         return
     with contextlib.suppress(OSError):
         subprocess.Popen(
@@ -71,7 +80,10 @@ def later(chat_id: str) -> None:
 def _env() -> dict:
     """The environment for a resumed agent: not the sender's session, and the signed-in plan, as agent_cli."""
     drop = ("CLAUDECODE", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_THREAD_ID")
-    return {k: v for k, v in os.environ.items() if k not in drop and not k.startswith("CLAUDE_CODE_")}
+    env = {
+        k: v for k, v in os.environ.items() if k not in drop and not k.startswith(("CLAUDE_CODE_", "CLAUDE_AGENT_SDK_"))
+    }
+    return {**env, WOKEN_ENV: "1"}
 
 
 def _resume(command: list[str], folder: str) -> bool:
@@ -170,11 +182,41 @@ def _target(chat_id: str) -> tuple | None:
         return None
 
 
+def _spent() -> bool:
+    """Whether WAKES_PER_HOUR wakes have run in the last hour; if not, count this one."""
+    now = time.time()
+    with mail._locked():
+        try:
+            with open(WAKES) as f:
+                times = [w for w in json.load(f) if isinstance(w, (int, float)) and now - w < 3600]
+        except (OSError, ValueError, TypeError):
+            times = []
+        if len(times) >= WAKES_PER_HOUR:
+            return True
+        mail._write_json(WAKES, [*times, now])
+    return False
+
+
 def run(chat_id: str) -> str:
     """Deliver what is waiting for this chat, waking it if the agent allows. Says what happened."""
     agent, _, native = chat_id.partition(":")
     if agent not in ("claude", "codex"):
         return "it stays in the mailbox until the chat's next edit or turn end"
+    if native.startswith("agent-"):
+        return "a subagent's chat is not woken"
+    os.makedirs(os.path.join(paths.HOME, "running"), exist_ok=True)
+    name = hashlib.sha1(chat_id.encode()).hexdigest()[:16]
+    with open(os.path.join(paths.HOME, "running", f"wake-{name}.lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:  # already being woken: its hooks hand this message over at the end of that turn
+            return "it is being woken already; the message waits for that turn's end"
+        if _spent():
+            return f"{WAKES_PER_HOUR} wakes ran in the last hour; the message waits for the chat's next turn"
+        return _deliver(chat_id, agent, native)
+
+
+def _deliver(chat_id: str, agent: str, native: str) -> str:
     target = _target(chat_id)
     if not target:
         return "no such chat in the index"

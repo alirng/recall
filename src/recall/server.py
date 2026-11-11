@@ -522,6 +522,8 @@ def _hand_off(to: str, text: str, who: str, granted: dict, ctx: Context | None) 
         target = con.execute("select source, title from sessions where id = ?", (to,)).fetchone()
         if not target:
             return f"No chat {to!r}. Find its chat_id with search_chats or recent_chats."
+        if to.startswith("claude:agent-"):
+            return "That is a subagent's chat. Message the chat that started it."
         session = _session(ctx)
         agent = _client(ctx) or "agent"
         sender = granted.get("holder") or (

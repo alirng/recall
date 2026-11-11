@@ -68,16 +68,24 @@ They do touch recall's own files: the index catches up with new chats (and with 
 when `recent_chats` is asked about a file or commit), and each call is added to `usage.jsonl`.
 
 The ninth, `message_chat`, writes. It adds a message to recall's mailbox
-(`cache/mail.jsonl`) for another chat. That chat's hooks hand the message to its agent on its
-next edit, when its turn ends, or when you next write to it, and at the end of a turn it can
-keep a finished agent going to answer. The message arrives quoted and marked as not from you.
-An agent can only message chats recall introduced it to in the last day, using the token in
-recall's note, at most ten messages an hour of 600 characters each. A finishing agent is kept
-going at most three times an hour per sender. The token sits in the chat's transcript, so this
-stops a misled agent, not one set on reading files. `recall install` sets Codex to ask you
-before it runs `message_chat`. An entry from an earlier release gets that when you run
-`recall install` again, and `recall doctor` says when one lacks it. recall does not pre-approve
-the tool in Claude Code or Cursor, so their own approval settings decide there.
+(`cache/mail.jsonl`) for any other chat on this Mac, in any project. The message arrives quoted and
+marked as from another agent, with the sender's own description of itself inside the quote; recall
+names the sending chat where its agent reports one, and cannot confirm it otherwise. An agent can
+send at most ten messages an hour, of up to 4,000 characters each.
+
+`message_chat` can also start an agent turn. If the receiving chat is idle, `recall wake` resumes a
+closed Claude Code chat with `--permission-mode manual` (tools you already allowed in Claude Code's
+settings still run, anything else needing approval is refused) or an idle Codex thread with a
+read-only sandbox, on your plan. An open Claude Code chat is woken only with
+`[messaging] wake_open_sessions = true`, and its turn then runs with that chat's own permissions.
+One sender wakes one chat at most three times an hour, at most 20 wakes run an hour in all, a woken
+chat's own messages don't wake anyone, and `[messaging] wake = false` turns waking off. A message
+written to mislead can still reach any chat; the receiving agent decides whether to act.
+
+`recall install` sets Codex to ask you before it runs `message_chat`. An entry from an earlier
+release gets that when you run `recall install` again, and `recall doctor` says when one lacks it.
+recall does not pre-approve the tool in Claude Code or Cursor, so their own approval settings
+decide there.
 
 ## What the hooks can do
 

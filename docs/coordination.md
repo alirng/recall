@@ -87,7 +87,7 @@ If the chat is idle, recall wakes it. There is no daemon: `message_chat` starts 
 | Codex | resumed headlessly and read-only, unless it was active in the last two minutes | resumed headlessly and read-only |
 | Cursor | waits for its next edit or turn end | waits until it is next used |
 
-A woken chat runs on your plan. A resumed chat is restricted even if your own default bypasses permissions, because nobody is watching and the request came from an agent: it can read and answer, and anything needing approval is refused. It can tell the sender what it would need. In your config.toml:
+A woken chat runs on your plan. A resumed chat is restricted even if your own default bypasses permissions, because nobody is watching and the request came from an agent: it can read and answer, tools you have already allowed in Claude Code's settings still run, and anything else needing approval is refused. It can tell the sender what it would need. A woken chat's own messages wait for their target's next turn rather than waking it, at most 20 wakes run an hour in all, and a chat already being woken isn't woken twice. In your config.toml:
 
 ```toml
 [messaging]
