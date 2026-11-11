@@ -221,7 +221,7 @@ stay invisible to the other chats until recall reads their history; an agent can
   and why.
 - **On demand:** eight read-only MCP tools (`search_chats`, `read_chat`, `recent_chats`,
   `memory_search`, `read_note`, `project_memory`, `list_projects`, `open_elsewhere`) and
-  `message_chat`, which leaves a message for another chat in recall's own mailbox.
+  `message_chat`, which leaves a message for any other chat in recall's own mailbox and can wake it.
 - **Explicit:** type `/recall what did we decide about auth` in any agent with skills.
 
 Agents treat notes and transcripts as background, not instructions: the current request and

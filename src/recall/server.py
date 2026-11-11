@@ -1,7 +1,7 @@
 """The MCP server every agent connects to. No tool changes the person's history, notes or any
 repo. The only writes are recall's own index catching up (new chats, and commit links when
 recent_chats is asked about a file or commit) and message_chat, which only adds a message to
-recall's own mailbox for another chat.
+recall's own mailbox for another chat, and may wake that chat (wake.py).
 
 Each call is noted in recall's usage log (usage.py) with the agent that made it, so recall
 can tell which of its tools agents actually use.
@@ -493,24 +493,52 @@ def open_elsewhere(path: str, ctx: Context = None) -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
-def message_chat(to: str, text: str, token: str, ctx: Context = None) -> str:
-    """Send a short message to another coding-agent chat (Claude Code, Codex, Cursor, …) that
-    recall told you about, to agree who changes a shared file first or that you are working on
-    different parts. `to` is that chat's id and `token` the token from recall's note; you can
-    only message chats recall introduced you to. The other chat reads it on its next edit, at
-    the end of its turn, or when its user next writes. Under 600 characters."""
-    from . import mail, status
+def message_chat(to: str, text: str, who: str = "", token: str = "", ctx: Context = None) -> str:
+    """Send a message to any other coding-agent chat on this machine, in any project: to hand off
+    work, ask for something, or agree who changes a shared file first. `to` is its chat_id (from
+    search_chats, recent_chats or a note from recall). `who` says who you are and what you are
+    working on. Pass `token` if recall's note gave you one. It arrives quoted and marked as from
+    another agent, and that chat decides what to do. Under 4000 characters."""
+    from . import mail, status, wake
     from .chats.store import parse_since
 
     def run():
-        granted = mail.lookup(token) or {}
-        title = granted.get("title")
-        if granted and not title:  # a chat recall only ever wrote to, not about
-            me = status.chat(granted["holder"], parse_since("12h"))
-            title = me.title if me else None
-        return mail.send(token, to, text, title)[1]
+        granted = (mail.lookup(token) or {}) if token else {}
+        if to in granted.get("peers", {}):
+            title = granted.get("title")
+            if not title:  # a chat recall only ever wrote to, not about
+                me = status.chat(granted["holder"], parse_since("12h"))
+                title = me.title if me else None
+            ok, said = mail.send(token, to, text, title)
+            if ok and not granted["peers"][to].get("file"):  # an answer to a handoff, not a note about a file
+                wake.later(to)
+            return said
+        return _hand_off(to, text, who, granted, ctx)
 
     return _logged(ctx, "message_chat", {"to": to}, run)
+
+
+def _hand_off(to: str, text: str, who: str, granted: dict, ctx: Context | None) -> str:
+    from . import mail, wake
+
+    with _db() as con:
+        target = con.execute("select source, title from sessions where id = ?", (to,)).fetchone()
+        if not target:
+            return f"No chat {to!r}. Find its chat_id with search_chats or recent_chats."
+        if to.startswith("claude:agent-"):
+            return "That is a subagent's chat. Message the chat that started it."
+        session = _session(ctx)
+        agent = _client(ctx) or "agent"
+        sender = granted.get("holder") or (
+            f"{agent}:{session}" if not session.startswith("pid:") else f"{agent}:unknown"
+        )
+        mine = con.execute("select source, title from sessions where id = ?", (sender,)).fetchone()
+    source = granted.get("holder_source") or (mine[0] if mine else None)
+    title = granted.get("title") or (mine[1] if mine else None)
+    ok, said = mail.hand_off(sender, source, title, who, to, target[0], text)
+    if ok:
+        wake.later(to)
+    return said
 
 
 @mcp.tool(annotations=READ_ONLY)

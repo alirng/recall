@@ -106,7 +106,7 @@ session that answers the question in its top five 98.7% of the time (470 questio
   prompt closely matches an earlier chat, or when the agent reads a file that scoped rules,
   notes or an earlier chat cover. It stays quiet unless it is sure.
 - **On demand**, MCP tools let the agent search and read past chats, and look up notes and
-  projects. Eight only read; the ninth, `message_chat`, leaves a message for another chat.
+  projects. Eight only read; the ninth, `message_chat`, hands work to any other chat, waking it if it is idle.
   [What the tools and hooks can do](SECURITY.md#what-the-mcp-tools-can-do).
 - **When you ask**, `/recall what did we decide about auth` works in any agent with skills.
 

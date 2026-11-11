@@ -72,3 +72,30 @@ not part of the package. In it, **Resolve** on a shared file sends every chat in
 asking it to agree with the others who goes first. Each chat reads it at the next of those
 moments, so nothing is interrupted; the row shows when it was sent and clears once the overlap
 does.
+
+## Handing off to another chat
+
+An agent can message any chat on this Mac, in any project, not only one it shares a file with. Ask it in your own words ("tell the Codex chat on the billing migration to rerun the tests"). It finds the chat with `search_chats` or `recent_chats` and calls `message_chat` with the chat's id, up to 4,000 characters, and a `who` line saying who it is.
+
+The message arrives quoted and marked as from another agent. recall names the sending chat where it can tell which one it is, and says when it can't. The receiving agent treats it as a request from a colleague: it uses its judgement, and asks you first if the request is risky or out of scope. An agent can send ten messages an hour, a chat can be woken by one sender three times an hour, and a message waits up to a week.
+
+If the chat is idle, recall wakes it. There is no daemon: `message_chat` starts one short `recall wake`.
+
+| | Chat open and idle | Chat closed |
+| --- | --- | --- |
+| Claude Code | waits for its next turn; with `wake_open_sessions`, a new turn starts at once through its message socket | resumed headlessly and restricted |
+| Codex | resumed headlessly and read-only, unless it was active in the last two minutes | resumed headlessly and read-only |
+| Cursor | waits for its next edit or turn end | waits until it is next used |
+
+A woken chat runs on your plan. A resumed chat is restricted even if your own default bypasses permissions, because nobody is watching and the request came from an agent: it can read and answer, tools you have already allowed in Claude Code's settings still run, and anything else needing approval is refused. It can tell the sender what it would need. A woken chat's own messages wait for their target's next turn rather than waking it, at most 20 wakes run an hour in all, and a chat already being woken isn't woken twice. In your config.toml:
+
+```toml
+[messaging]
+wake = false                # leave messages for the chat's next turn
+wake_open_sessions = true   # also wake open Claude Code chats, with their own permissions
+inherit_permissions = true  # let resumed chats keep your own permission settings
+```
+
+Waking an open Claude Code chat is off by default. The turn runs with that chat's own permissions, so if it bypasses them, another agent's text would run unchecked while nobody watches. Even with `wake_open_sessions` on, Claude Code holds a message for a session that bypasses permissions when the sender doesn't, unless its `crossSessionInbound` setting is `accept`. recall counts a message as delivered only once it is in the chat's transcript; otherwise it waits for the chat's next turn.
+
+A closed Claude Code chat resumed this way does not refresh a window already showing it. Reopen it to see the turn.
