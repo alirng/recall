@@ -156,7 +156,7 @@ struct EditView: View {
     var body: some View {
         let p = Palette.of(scheme)
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 Label(text: "Rules · one per line, as in the note's file")
                 TextEditor(text: $editor.text)
                     .font(PaperMono.font(14, 390, prose: true))
@@ -165,7 +165,7 @@ struct EditView: View {
                     .scrollContentBackground(.hidden)
                     .focused($focused)
                     .background(PlainText())
-                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
                     .frame(height: 206)
                     .background(p.card)
                     .overlay(Rectangle().strokeBorder(p.ink, lineWidth: 1))
@@ -179,7 +179,7 @@ struct EditView: View {
                 WindowButton(title: "Cancel", keys: "esc") { library.notes.cancelEdit() }
                 Spacer(minLength: 12)
                 Text(editor.empty ? "An empty note has no rules left. To drop the whole note, use Forget." : "Saved to the note's file and its history. Agents see it from their next session.")
-                    .font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineSpacing(3)
+                    .font(PaperMono.font(11)).foregroundStyle(p.muted).lineSpacing(3)
                     .frame(maxWidth: 300, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -192,7 +192,7 @@ struct EditView: View {
         let rows = editor.reading?.changes ?? []
         if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                Label(text: "On save, recall records").padding(.bottom, 2)
+                Label(text: "On save, recall records").padding(.bottom, 4)
                 ForEach(rows) { c in
                     VStack(spacing: 0) {
                         Rule()
@@ -200,7 +200,7 @@ struct EditView: View {
                             RecordTag(kind: c.kind).frame(width: 92, alignment: .leading)
                             line(c, p).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(.vertical, 7)
+                        .padding(.vertical, 8)
                     }
                 }
                 Rule()
@@ -234,7 +234,7 @@ struct EditView: View {
             let since = facts.runs?.latest.flatMap { $0.finished == nil ? date($0.started) : nil }
             Strip(color: p.accentText, text: "A memory run is writing notes." + (since.map { " It started \(clock($0))." } ?? "") + " Your edit stays here, and Save works when the run ends.")
         case .conflict:
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 Strip(color: p.kind("open"), text: "This note's file changed since you opened it, from another editor or a memory run.")
                 HStack(spacing: 8) {
                     WindowButton(title: "Reload note") { library.notes.reloadEditor(editor) }
@@ -296,9 +296,9 @@ struct RecordTag: View {
         let ink = ["reworded", "new", "restored"].contains(kind)
         let dashed = ["removed", "merged"].contains(kind)
         Text((kind == "restored" ? "back" : kind).uppercased())
-            .font(PaperMono.font(10, 500)).tracking(0.6)
+            .font(PaperMono.font(11, 500)).tracking(0.6)
             .foregroundStyle(ink ? p.ink : p.muted)
-            .padding(.horizontal, 5).frame(height: 17)
+            .padding(.horizontal, 4).frame(height: 17)
             .overlay(Rectangle().strokeBorder(ink ? p.ink : p.line, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2] : [])))
             .fixedSize()
     }
@@ -311,12 +311,12 @@ struct Strip: View {
     @Environment(\.colorScheme) var scheme
     var body: some View {
         let p = Palette.of(scheme)
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Rectangle().strokeBorder(color, lineWidth: 1).frame(width: 8, height: 8)
             Text(text).foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true)
         }
-        .font(PaperMono.font(12)).lineSpacing(3)
-        .padding(.horizontal, 10).padding(.vertical, 9)
+        .font(PaperMono.font(12.5)).lineSpacing(3)
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(Dotted(color: p.line, dash: [3, 3]))
     }
@@ -379,7 +379,7 @@ struct ForgetSheet: View {
         ZStack(alignment: .top) {
             p.scrim.contentShape(Rectangle()).onTapGesture { model.library?.popups.close() }
             VStack(alignment: .leading, spacing: 12) {
-                Text("Forget “\(model.note.title)”?").font(PaperMono.font(16, 520)).foregroundStyle(p.ink).lineSpacing(4)
+                Text("Forget “\(model.note.title)”?").font(PaperMono.font(14, 520)).foregroundStyle(p.ink).lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 0) {
                     fact("The note's file is deleted, and agents stop seeing it from their next session.", p)
@@ -390,20 +390,20 @@ struct ForgetSheet: View {
                     Rule()
                 }
                 if let e = model.error {
-                    Text(e).font(PaperMono.font(12)).foregroundStyle(p.kind("open")).fixedSize(horizontal: false, vertical: true)
+                    Text(e).font(PaperMono.font(12.5)).foregroundStyle(p.kind("open")).fixedSize(horizontal: false, vertical: true)
                 } else if model.waiting {
-                    Text("A memory run is writing notes. Forget waits for it, then goes ahead.").font(PaperMono.font(12)).foregroundStyle(p.ink)
+                    Text("A memory run is writing notes. Forget waits for it, then goes ahead.").font(PaperMono.font(12.5)).foregroundStyle(p.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 8) {
-                    Text("Undo for 10 seconds after.").font(PaperMono.font(11.5)).foregroundStyle(p.muted)
+                    Text("Undo for 10 seconds after.").font(PaperMono.font(11)).foregroundStyle(p.muted)
                     Spacer(minLength: 8)
                     WindowButton(title: "Cancel", keys: "esc") { model.library?.popups.close() }
                     WindowButton(title: model.waiting ? "waiting…" : model.sending ? "Forgetting…" : "Forget note", soon: model.error != nil,
                                  style: .risk, why: "Close this and look at the note again") { model.go() }
                 }
             }
-            .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 18)
+            .padding(.horizontal, 24).padding(.top, 24).padding(.bottom, 16)
             .frame(width: 470, alignment: .leading)
             .background(p.pop)
             .overlay(Rectangle().strokeBorder(p.line, lineWidth: 1))
@@ -420,7 +420,7 @@ struct ForgetSheet: View {
                 Text(text).foregroundStyle(p.body).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
         }
     }
 }
@@ -524,7 +524,7 @@ struct ToastView: View {
             }
         }
         .font(PaperMono.font(12.5))
-        .padding(.horizontal, 12).padding(.vertical, 9)
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: 520)
         .background(p.pop)
         .overlay(Rectangle().strokeBorder(p.line, lineWidth: 1))

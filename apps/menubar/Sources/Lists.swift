@@ -7,7 +7,6 @@ import SwiftUI
 
 struct ChatsView: View {
     let library: Library
-    @EnvironmentObject var facts: Facts
     @ObservedObject var chats: ChatsModel
     @Environment(\.colorScheme) var scheme
 
@@ -15,49 +14,65 @@ struct ChatsView: View {
         let p = Palette.of(scheme)
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 10) {
-                    ProjectButton(library: library, entries: { (facts.projects?.projects ?? []).map { ($0.name, $0.chats) } },
-                                  total: chats.agent.map { facts.agentTotals[$0] } ?? facts.chatsCount, current: chats.project,
-                                  pick: { chats.set(project: $0) }) {
-                        Label(text: (chats.agent.map(agentName) ?? "Chats") + " · " + (chats.project ?? "all projects") + " ▾")
-                    }
-                    .fixedSize()
-                    Spacer()
-                    Text(count(chats.total)).font(PaperMono.font(11.5)).foregroundStyle(p.muted)
-                }
-                .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
+                ChatsHeader(library: library, chats: chats)
                 Rule()
                 if let e = chats.error { Text(e).foregroundStyle(p.muted).padding(16) }
                 Rows(chats.rows, cursor: chats.cursor, more: chats.more) { c in
-                    ChatItem(chat: c, on: chats.selected == c.id).onTapGesture { chats.select(c.id) }
+                    ChatItem(chat: c, on: chats.selected == c.id).equatable().onTapGesture { chats.select(c.id) }
                 }
             }
             .frame(minWidth: 300, idealWidth: 380, maxWidth: 440)
-            Rectangle().fill(p.grid).frame(width: 1)
+            VRule()
             ChatReader(reading: chats.reading, find: library.find).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(p.paper)
     }
 }
 
-struct ChatItem: View {
+/// The list's heading, on its own: the counts here change with every chat, and the rows below shouldn't redraw for them.
+struct ChatsHeader: View {
+    let library: Library
+    @EnvironmentObject var facts: Facts
+    @ObservedObject var chats: ChatsModel
+    @Environment(\.colorScheme) var scheme
+
+    var body: some View {
+        let p = Palette.of(scheme)
+        HStack(spacing: 8) {
+            ProjectButton(library: library, entries: { (facts.projects?.projects ?? []).map { ($0.name, $0.chats) } },
+                          total: chats.agent.map { facts.agentTotals[$0] } ?? facts.chatsCount, current: chats.project,
+                          pick: { chats.set(project: $0) }) {
+                Label(text: (chats.agent.map(agentName) ?? "Chats") + " · " + (chats.project ?? "all projects") + " ▾")
+            }
+            .fixedSize()
+            Spacer()
+            Text(count(chats.total)).font(PaperMono.font(11)).foregroundStyle(p.muted)
+        }
+        .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
+    }
+}
+
+/// Equatable so a change of selection redraws the two rows it touches, not every row on screen.
+struct ChatItem: View, Equatable {
+    static func == (a: ChatItem, b: ChatItem) -> Bool { a.chat == b.chat && a.on == b.on }
+
     let chat: ChatRow
     let on: Bool
     @Environment(\.colorScheme) var scheme
     var body: some View {
         let p = Palette.of(scheme)
-        VStack(alignment: .leading, spacing: 5) {
-            Text(chat.title ?? "Untitled chat").font(PaperMono.font(13, 500)).foregroundStyle(p.ink).lineLimit(2)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(chat.title ?? "Untitled chat").font(PaperMono.font(12.5, 500)).foregroundStyle(p.ink).lineLimit(2)
             HStack(spacing: 8) {
                 DiamondMark(color: p.agent(chat.agent))
-                Text([chat.project ?? "", chat.messages.map { "\($0) messages" } ?? "", dayOrTime(chat.updated)].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineLimit(1)
+                Text([chat.project ?? "", chat.messages.map { "\($0) message\($0 == 1 ? "" : "s")" } ?? "", dayOrTime(chat.updated)].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(PaperMono.font(11)).foregroundStyle(p.muted).lineLimit(1)
             }
         }
-        .padding(.horizontal, 16).padding(.top, 11).padding(.bottom, 12)
+        .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(on ? p.sel : .clear)
-        .overlay(alignment: .bottom) { Rectangle().fill(p.grid).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rule() }
         .contentShape(Rectangle())
     }
 }
@@ -69,20 +84,21 @@ struct ChatReader: View {
 
     var body: some View {
         let p = Palette.of(scheme)
+        let _ = reading.palette = p  // the theme markdown is read in, off the main thread
         ZStack(alignment: .topTrailing) {
             if let t = reading.transcript {
                 VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Label(text: [agentName(t.agent), t.project ?? "", t.branch ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                            .padding(.trailing, find.shown ? 300 : 0)  // the find box sits beside this line only
                         Text(t.title ?? "Untitled chat").font(PaperMono.font(20, 520)).foregroundStyle(p.ink).textSelection(.enabled)
-                        Text("\(count(t.messages)) messages" + (t.folder.map { " · " + $0.replacingOccurrences(of: API.home, with: "~") } ?? ""))
-                            .font(PaperMono.font(12)).foregroundStyle(p.muted).lineLimit(1).truncationMode(.middle)
+                        Text("\(count(t.messages)) message\(t.messages == 1 ? "" : "s")" + (t.folder.map { " · " + $0.replacingOccurrences(of: API.home, with: "~") } ?? ""))
+                            .font(PaperMono.font(12.5)).foregroundStyle(p.muted).lineLimit(1).truncationMode(.middle)
                     }
-                    .padding(.horizontal, 32).padding(.top, 24).padding(.bottom, 14)
-                    .padding(.trailing, find.shown ? 300 : 0)
+                    .padding(.horizontal, 32).padding(.top, 24).padding(.bottom, 16)
                     Rule()
                     Rows(reading.messages, jump: find.scroll, more: reading.more) { m in
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 8) {
                                 if m.role == "user" {
                                     Rectangle().fill(p.ink).frame(width: 6, height: 6)
@@ -99,7 +115,7 @@ struct ChatReader: View {
                         .padding(.horizontal, 32).padding(.vertical, 12)
                         .frame(maxWidth: 820, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .overlay(alignment: .bottom) { Rectangle().fill(p.grid).frame(height: 1) }
+                        .overlay(alignment: .bottom) { Rule() }
                     }
                 }
             } else if reading.id != nil {
@@ -107,7 +123,7 @@ struct ChatReader: View {
             } else {
                 Message(title: "Pick a chat", text: "Its messages show here.")
             }
-            FindBox(find: find).padding(.top, 18).padding(.trailing, 20)
+            FindBox(find: find).padding(.top, 16).padding(.trailing, 24)
         }
         // A chat's matches: counted as its pages load (all of them while a query is set), and the
         // first one shown when it opens.
@@ -119,9 +135,9 @@ struct ChatReader: View {
         .onChange(of: find.query) { _, _ in
             find.recount(reading)
             if !find.query.isEmpty { reading.more() }
-            find.jump()
+            find.jumpSoon()
         }
-        .onChange(of: find.hits.count) { old, new in if old == 0, new > 0 { find.jump() } }
+        .onChange(of: find.hits.count) { old, new in if old == 0, new > 0 { find.jumpSoon() } }
     }
 }
 
@@ -139,7 +155,7 @@ struct SearchView: View {
         } else if let r = search.result {
             ScrollViewReader { proxy in ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Label(text: "Notes · \(r.notes?.count ?? 0)").padding(.bottom, 6)
+                    Label(text: "Notes · \(r.notes?.count ?? 0)").padding(.bottom, 8)
                     ForEach(r.notes ?? []) { n in
                         Button { library.openNote(n.note_id) } label: {
                             Marked(cursor: library.searchCursor, id: "note:" + n.note_id) {
@@ -150,7 +166,7 @@ struct SearchView: View {
                         .buttonStyle(.plain)
                         .id("note:" + n.note_id)
                     }
-                    Label(text: "Chats · \(r.chats?.count ?? 0)").padding(.top, 24).padding(.bottom, 6)
+                    Label(text: "Chats · \(r.chats?.count ?? 0)").padding(.top, 24).padding(.bottom, 8)
                     ForEach(r.chats ?? []) { c in
                         Button { library.openChat(c.chat_id) } label: {
                             Marked(cursor: library.searchCursor, id: "chat:" + c.chat_id) {
@@ -162,7 +178,7 @@ struct SearchView: View {
                         .id("chat:" + c.chat_id)
                     }
                 }
-                .padding(.horizontal, 24).padding(.vertical, 22)
+                .padding(.horizontal, 24).padding(.vertical, 24)
                 .frame(maxWidth: 900, alignment: .leading)
                 .background(CursorScroll(cursor: library.searchCursor, proxy: proxy))
             } }
@@ -191,16 +207,16 @@ struct SearchView: View {
     func hit(mark: AnyView, title: String, meta: String, text: String?, _ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Rule()
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 mark
-                Text(title).font(PaperMono.font(13, 500)).foregroundStyle(p.ink).lineLimit(1)
+                Text(title).font(PaperMono.font(12.5, 500)).foregroundStyle(p.ink).lineLimit(1)
                 Spacer(minLength: 8)
-                Text(meta).font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineLimit(1).fixedSize()
+                Text(meta).font(PaperMono.font(11)).foregroundStyle(p.muted).lineLimit(1).fixedSize()
             }
             .padding(.top, 8)
             if let text, !text.isEmpty {
-                Text(marked(text.replacingOccurrences(of: "\n", with: " "), p)).font(PaperMono.font(12, 390, prose: true)).foregroundStyle(p.muted)
-                    .lineLimit(2).padding(.leading, 18).padding(.bottom, 8)
+                Text(marked(text.replacingOccurrences(of: "\n", with: " "), p)).font(PaperMono.font(12.5, 390, prose: true)).foregroundStyle(p.muted)
+                    .lineLimit(2).padding(.leading, 16).padding(.bottom, 8)
             }
         }
         .contentShape(Rectangle())
@@ -219,7 +235,7 @@ struct ProjectsView: View {
         let w: [CGFloat] = [2, 0.7, 0.7, 1, 1.1]
         VStack(alignment: .leading, spacing: 0) {
             Cols(cells: ["Project", "Chats", "Notes", "Agents", "Latest"].map { AnyView(Label(text: $0)) }, weights: w, top: false)
-                .padding(.horizontal, 24).padding(.top, 14)
+                .padding(.horizontal, 24).padding(.top, 16)
             Rule()
             Rows(facts.projects?.projects ?? [], cursor: library.projectsCursor) { pr in
                 Marked(cursor: library.projectsCursor, id: pr.name) { Cols(cells: [
@@ -228,11 +244,11 @@ struct ProjectsView: View {
                     AnyView(Button { library.showProject(pr.name, notesFirst: true) } label: {
                         Text(pr.notes > 0 ? count(pr.notes) : "–").underline(pr.notes > 0, color: p.faint)
                     }.buttonStyle(.plain).disabled(pr.notes == 0)),
-                    AnyView(HStack(spacing: 5) { ForEach(pr.agents ?? [], id: \.self) { DiamondMark(color: p.agent($0)) } }),
+                    AnyView(HStack(spacing: 4) { ForEach(pr.agents ?? [], id: \.self) { DiamondMark(color: p.agent($0)) } }),
                     AnyView(Text(day(pr.latest)).foregroundStyle(p.muted)),
                 ], weights: w, top: false)
                 .padding(.horizontal, 24) }
-                .overlay(alignment: .bottom) { Rectangle().fill(p.grid).frame(height: 1) }
+                .overlay(alignment: .bottom) { Rule() }
                 .contentShape(Rectangle())
                 .onTapGesture { library.showProject(pr.name, notesFirst: pr.notes > 0) }
             }
@@ -255,13 +271,13 @@ struct NowView: View {
             VStack(alignment: .leading, spacing: 0) {
                 if let s = facts.status {
                     let byId = Dictionary(s.sessions.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-                    Label(text: "Needs you · \(facts.needsYou)").padding(.bottom, 6)
+                    Label(text: "Needs you · \(facts.needsYou)").padding(.bottom, 8)
                     if facts.needsYou == 0 {
                         Text("Nothing needs you. No two chats are at the same file right now.").foregroundStyle(p.muted).padding(.vertical, 8)
                     }
                     ForEach(s.overlaps, id: \.id) { o in
                         RowLine {
-                            HStack(spacing: 10) {
+                            HStack(spacing: 8) {
                                 if o.level == "act" { Rectangle().fill(p.accent).frame(width: 8, height: 8) } else { DiamondMark(color: p.lane) }
                                 Text((o.file as NSString).lastPathComponent).foregroundStyle(p.ink)
                                 Text(o.verdict).foregroundStyle(o.level == "act" ? p.accentText : p.muted)
@@ -275,12 +291,12 @@ struct NowView: View {
                     }
                     Rule()
                     let live = s.sessions.filter(\.live)
-                    Label(text: "Working now · \(live.count) live").padding(.top, 24).padding(.bottom, 6)
+                    Label(text: "Working now · \(live.count) live").padding(.top, 24).padding(.bottom, 8)
                     if live.isEmpty { Text("No agent is working right now.").foregroundStyle(p.muted).padding(.vertical, 8) }
                     ForEach(live, id: \.id) { c in
                         Button { library.openChat(c.id) } label: {
                             Marked(cursor: library.nowCursor, id: c.id) { RowLine {
-                                HStack(spacing: 10) {
+                                HStack(spacing: 8) {
                                     ChatMark(agent: c.agent, live: true)
                                     Text(c.title).foregroundStyle(p.ink).lineLimit(1)
                                 }
@@ -297,7 +313,7 @@ struct NowView: View {
                 }
             }
             .font(PaperMono.font(12.5))
-            .padding(.horizontal, 24).padding(.vertical, 22)
+            .padding(.horizontal, 24).padding(.vertical, 24)
             .frame(maxWidth: 1000, alignment: .leading)
         }
         .background(p.paper)

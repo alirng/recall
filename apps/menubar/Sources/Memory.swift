@@ -11,20 +11,44 @@ struct MemoryView: View {
 
     var body: some View {
         let p = Palette.of(scheme)
-        HStack(spacing: 0) {
-            NotesList(library: library, notes: notes)
-                .frame(minWidth: 300, idealWidth: 360, maxWidth: 420)
-            Rectangle().fill(p.grid).frame(width: 1)
-            Group {
-                if let n = notes.note {
-                    Reader(library: library, notes: notes, note: n)
-                } else if let e = notes.error {
-                    Message(title: "Couldn't load notes", text: e)
-                } else {
-                    Color.clear
+        VStack(spacing: 0) {
+            WelcomeStrip(library: library)
+            HStack(spacing: 0) {
+                NotesList(library: library, notes: notes)
+                    .frame(minWidth: 300, idealWidth: 360, maxWidth: 420)
+                VRule()
+                Group {
+                    if let n = notes.note {
+                        Reader(library: library, notes: notes, note: n)
+                    } else if let e = notes.error {
+                        Message(title: "Couldn't load notes", text: e)
+                    } else {
+                        Color.clear
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+/// Board J1, frame 4: right after setup, Memory says it is ready and that the first run's notes are coming.
+struct WelcomeStrip: View {
+    @ObservedObject var library: Library
+    @Environment(\.colorScheme) var scheme
+    var body: some View {
+        let p = Palette.of(scheme)
+        if library.welcome {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    CheckLine(text: "Ready")
+                    Spacer()
+                    Text("More notes land overnight.").foregroundStyle(p.muted)
+                }
+                .font(PaperMono.font(12.5))
+                .padding(.horizontal, 16).frame(height: 36)
+                Rule()
+            }
         }
     }
 }
@@ -33,45 +57,87 @@ struct NotesList: View {
     let library: Library
     @ObservedObject var notes: NotesModel
     @Environment(\.colorScheme) var scheme
+    @StateObject var width = Held<CGFloat>(420)
+    /// Only on the whole list: the count is the run's, not the filter's.
+    var newCount: Int? { notes.project == nil && notes.type == nil ? notes.newCount.flatMap { $0 > 0 ? $0 : nil } : nil }
     static let types = [("decision", "Decisions"), ("fact", "Facts"), ("lesson", "Lessons"), ("preference", "Preferences"), ("open", "Open")]
     static let sorts = [("last_seen", "Last seen"), ("updated", "Updated"), ("created", "Created"), ("title", "Title")]
+
+    func head(new: Int?, _ p: Palette) -> some View {
+        HStack(spacing: 8) {
+            ProjectButton(library: library, entries: { notes.projectCounts }, total: notes.allTotal, current: notes.project,
+                          pick: { notes.set(project: $0) }) {
+                Label(text: "Notes · " + (notes.project ?? "all projects") + " ▾")
+            }
+            .fixedSize()
+            Spacer()
+            HStack(spacing: 4) {
+                Text(count(notes.total)).foregroundStyle(p.muted)
+                if let new {
+                    Text("·").foregroundStyle(p.muted)
+                    Text("\(new) new").foregroundStyle(p.accentText)
+                }
+            }
+            .font(PaperMono.font(11))
+            MenuButton(popups: library.popups, width: 200, menu: {
+                MenuModel(title: "Sort notes", rows: Self.sorts.map { s in
+                    MenuRow(title: s.1, checked: notes.sort == s.0, action: { notes.set(sort: s.0) })
+                })
+            }) {
+                Text((Self.sorts.first { $0.0 == notes.sort }?.1 ?? "Sort") + " ▾").font(PaperMono.font(11)).foregroundStyle(p.muted)
+            }
+            .fixedSize()
+        }
+    }
+
+    /// No notes: why, and when the first come (board 3.4, frame 1).
+    func empty(_ p: Palette) -> some View {
+        let filtered = notes.type != nil || notes.project != nil
+        let when = library.facts.nextRun.map { "The first come from tonight\u{2019}s memory run, at \($0)." }
+            ?? "The first come from a memory run. Start one from This Mac."
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(filtered ? "No notes match" : "No notes yet").foregroundStyle(p.ink)
+            Text(filtered ? "Nothing here for this filter." : when).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+        }
+        .font(PaperMono.font(12.5))
+        .padding(.horizontal, 16).padding(.top, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    func filter(_ type: String, on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { KindTag(type: type, on: on).hitArea(4) }.buttonStyle(.plain)
+    }
 
     var body: some View {
         let p = Palette.of(scheme)
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                ProjectButton(library: library, entries: { notes.projectCounts }, total: notes.allTotal, current: notes.project,
-                              pick: { notes.set(project: $0) }) {
-                    Label(text: "Notes · " + (notes.project ?? "all projects") + " ▾")
-                }
-                .fixedSize()
-                Spacer()
-                Text(count(notes.total)).font(PaperMono.font(11.5)).foregroundStyle(p.muted)
-                MenuButton(popups: library.popups, width: 200, menu: {
-                    MenuModel(title: "Sort notes", rows: Self.sorts.map { s in
-                        MenuRow(title: s.1, checked: notes.sort == s.0, action: { notes.set(sort: s.0) })
-                    })
-                }) {
-                    Text((Self.sorts.first { $0.0 == notes.sort }?.1 ?? "Sort") + " ▾").font(PaperMono.font(11.5)).foregroundStyle(p.muted)
-                }
-                .fixedSize()
-            }
-            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
-            FlowTags(spacing: 6) {
-                TagButton(text: "all", on: notes.type == nil) { notes.set(type: nil) }
-                ForEach(Self.types.filter { notes.types[$0.0] != nil }, id: \.0) { t in
-                    Button { notes.set(type: notes.type == t.0 ? nil : t.0) } label: { KindTag(type: t.0, on: notes.type == t.0) }
-                        .buttonStyle(.plain)
+            // The new count is the first thing to go when the column is narrow.
+            head(new: width.value >= 400 ? newCount : nil, p)
+            .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
+            // The icon sits outside the flow so a wrapped line starts under "all", not under it.
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "line.3.horizontal.decrease").font(.system(size: 11)).foregroundStyle(p.muted).frame(height: 17)
+                FlowTags(spacing: 8) {
+                    filter("all", on: notes.type == nil) { notes.set(type: nil) }
+                    ForEach(Self.types.filter { notes.types[$0.0] != nil }, id: \.0) { t in
+                        filter(t.0, on: notes.type == t.0) { notes.set(type: notes.type == t.0 ? nil : t.0) }
+                    }
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
             Rule()
+            if notes.loaded, notes.rows.isEmpty, notes.error == nil {
+                empty(p)
+            } else {
             Rows(notes.rows, cursor: notes.cursor, more: notes.more) { n in
                 NoteItem(note: n, on: notes.selected == n.id, lastRun: notes.lastRun, showProject: notes.project == nil, editing: notes.editor?.noteId == n.id)
+                    .equatable()
                     .onTapGesture { notes.select(n.id) }
+            }
             }
         }
         .background(p.paper)
+        .background(GeometryReader { g in Color.clear.onChange(of: g.size.width, initial: true) { _, w in width.value = w } })
     }
 }
 
@@ -118,7 +184,12 @@ struct Flow: Layout {
     }
 }
 
-struct NoteItem: View {
+/// Equatable so a change of selection redraws the two rows it touches, not every row on screen.
+struct NoteItem: View, Equatable {
+    static func == (a: NoteItem, b: NoteItem) -> Bool {
+        a.note == b.note && a.on == b.on && a.lastRun == b.lastRun && a.showProject == b.showProject && a.editing == b.editing
+    }
+
     let note: NoteRow
     let on: Bool
     let lastRun: String?
@@ -129,29 +200,39 @@ struct NoteItem: View {
     var body: some View {
         let p = Palette.of(scheme)
         let fresh = lastRun.map { run in day(note.created) == day(run) } ?? false
-        VStack(alignment: .leading, spacing: 5) {
-            Text(note.title).font(PaperMono.font(13, 500)).foregroundStyle(p.ink).lineLimit(2)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(note.title).font(PaperMono.font(12.5, 500)).foregroundStyle(p.ink).lineLimit(2)
             HStack(spacing: 8) {
                 KindTag(type: note.type)
-                Text(meta).lineLimit(1)
+                // When space runs out the project gives way first; the date and "new" always show.
+                HStack(spacing: 0) {
+                    if !project.isEmpty { Text(project).lineLimit(1).truncationMode(.tail) }
+                    Text(meta).lineLimit(1).fixedSize()
+                }
                 if editing { Text("· editing").foregroundStyle(p.ink).lineLimit(1) }
-                if fresh { Text("· new last night").foregroundStyle(p.accentText).lineLimit(1) }
+                if fresh {
+                    Spacer(minLength: 0)
+                    Label(text: "new", color: p.accentText).fixedSize().help("New on \(day(note.created))")
+                }
             }
-            .font(PaperMono.font(11.5)).foregroundStyle(p.muted)
+            .font(PaperMono.font(11)).foregroundStyle(p.muted)
         }
-        .padding(.horizontal, 16).padding(.top, 11).padding(.bottom, 12)
+        .padding(.horizontal, 16).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(on ? p.sel : .clear)
-        .overlay(alignment: .bottom) { Rectangle().fill(p.grid).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rule() }
         .contentShape(Rectangle())
     }
 
+    var project: String { showProject ? (note.project ?? "") : "" }
+
+    /// Everything after the project: "· 1 chat · 10 Nov".
     var meta: String {
         var parts: [String] = []
-        if showProject, let project = note.project { parts.append(project) }
         if let n = note.sources, n > 0 { parts.append(n == 1 ? "1 chat" : "\(n) chats") }
         parts.append(day(note.last_seen ?? note.updated))
-        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+        let tail = parts.filter { !$0.isEmpty }.joined(separator: " · ")
+        return project.isEmpty ? tail : " · " + tail
     }
 }
 
@@ -166,21 +247,19 @@ struct Reader: View {
     var body: some View {
         let p = Palette.of(scheme)
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 24) {
                 header(p)
                 if let e = editing {
                     EditView(editor: e, library: library)
                 } else {
                     rules(p)
-                    HStack(alignment: .top, spacing: 28) {
-                        learnedFrom(p).frame(maxWidth: .infinity, alignment: .leading)
-                        related(p).frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    learnedFrom(p)
+                    related(p)
                     history(p)
                     actions(p)
                 }
             }
-            .padding(.horizontal, 32).padding(.top, 26).padding(.bottom, 28)
+            .padding(.horizontal, 32).padding(.top, 24).padding(.bottom, 32)
             .frame(maxWidth: 860, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -198,19 +277,19 @@ struct Reader: View {
                     KindTag(type: note.type)
                     Label(text: [note.project, note.status].compactMap { $0 }.joined(separator: " · "))
                 }
-                Text(note.title).font(PaperMono.font(24, 520)).foregroundStyle(p.ink)
-                    .padding(.top, 8).padding(.bottom, 6).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                Text(meta).font(PaperMono.font(12)).foregroundStyle(p.muted)
+                Text(note.title).font(PaperMono.font(20, 520)).foregroundStyle(p.ink)
+                    .padding(.top, 8).padding(.bottom, 8).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                Text(meta).font(PaperMono.font(12.5)).foregroundStyle(p.muted)
             }
             Spacer(minLength: 8)
             if editing != nil {
                 Label(text: "Editing", color: p.ink)
             } else if let c = confirmed {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Text("✓").foregroundStyle(p.accentText)
                     Text(day(c.date)).foregroundStyle(p.ink)
                 }
-                .font(PaperMono.font(12))
+                .font(PaperMono.font(12.5))
                 .help(confirmedTip(c))
             }
         }
@@ -224,7 +303,7 @@ struct Reader: View {
     func confirmedTip(_ c: Note.Commit) -> String {
         let when = date(c.date).map { stampFormat.string(from: $0) } ?? day(c.date)
         let lastNight = library.facts.runs?.latest.map { day($0.started) == day(c.date) } ?? false
-        return lastNight ? "Confirmed by last night's memory run, \(when)" : "Confirmed by the memory run on \(when)"
+        return lastNight ? "Confirmed by the last memory run, \(when)" : "Confirmed by the memory run on \(when)"
     }
 
     var meta: String {
@@ -242,7 +321,7 @@ struct Reader: View {
         let all = note.rules_all ?? []
         let active = all.filter { ($0.status ?? "active") == "active" }
         let gone = all.filter { ($0.status ?? "active") != "active" }
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 8) {
             if all.isEmpty {
                 ForEach(Array(bullets(note.body ?? "").enumerated()), id: \.offset) { _, line in bullet(line, p, p.body) }
             }
@@ -261,7 +340,7 @@ struct Reader: View {
     }
 
     func bullet(_ text: String, _ p: Palette, _ color: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("•").foregroundStyle(p.faint)
             Text(inline(text)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
         }
@@ -269,8 +348,15 @@ struct Reader: View {
         .lineSpacing(5)
     }
 
+    /// Parsed once: the reader redraws with every change to the notes.
+    nonisolated(unsafe) static var parsed: [String: AttributedString] = [:]
+
     func inline(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        if let a = Self.parsed[s] { return a }
+        let a = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        if Self.parsed.count >= 2000 { Self.parsed.removeAll(keepingCapacity: true) }
+        Self.parsed[s] = a
+        return a
     }
 
     func learnedFrom(_ p: Palette) -> some View {
@@ -280,7 +366,7 @@ struct Reader: View {
                 let found = s.found ?? true
                 Button { if found { library.openChat(s.chat_id) } } label: {
                     RowLine {
-                        HStack(spacing: 10) {
+                        HStack(spacing: 8) {
                             DiamondMark(color: found ? p.agent(s.agent ?? "") : p.faint, dashed: !found)
                             Text(found ? (s.title ?? s.chat_id) : "A chat that's gone").foregroundStyle(found ? p.ink : p.faint).lineLimit(1)
                         }
@@ -304,12 +390,12 @@ struct Reader: View {
             }
             ForEach((note.related ?? []).prefix(5), id: \.note_id) { r in
                 Button { library.openNote(r.note_id) } label: {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Rule()
                         Text(r.title).foregroundStyle(p.ink).lineLimit(2).padding(.top, 4)
                         HStack(spacing: 8) {
                             if let t = r.type { KindTag(type: t) }
-                            Text(r.reason ?? "").font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineLimit(1)
+                            Text(r.reason ?? "").font(PaperMono.font(11)).foregroundStyle(p.muted).lineLimit(1)
                         }
                         .padding(.bottom, 8)
                     }
@@ -330,7 +416,7 @@ struct Reader: View {
                 ForEach(Array(lines(c).enumerated()), id: \.offset) { _, line in
                     VStack(spacing: 0) {
                         Rule()
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(day(c.date)).foregroundStyle(p.muted).frame(width: 60, alignment: .leading)
                             Text(line.0).foregroundStyle(p.ink).fixedSize()
                             Text(line.1).foregroundStyle(p.muted).lineLimit(1)
@@ -390,9 +476,9 @@ struct Reader: View {
                 WindowButton(title: "Forget…", soon: !can, why: why) { library.askForget() }
             }
             if library.info != nil, !writes {
-                Text(updateToWrite).font(PaperMono.font(11.5)).foregroundStyle(p.muted)
+                Text(updateToWrite).font(PaperMono.font(11)).foregroundStyle(p.muted)
             }
         }
-        .padding(.top, 6)
+        .padding(.top, 8)
     }
 }

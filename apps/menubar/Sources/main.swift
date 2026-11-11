@@ -178,21 +178,30 @@ func drawMark(fill: NSColor, leaves: NSColor? = nil, line: CGFloat = 1.5) {
     ctx.compositingOperation = .sourceOver
 }
 
-func markImage(size: CGFloat, level: Level = .none) -> NSImage {
+/// `badge` adds the small square at the top right that says something waits: an update, or a failed night's run.
+/// It is cut out of the mark first, so it reads on any bar; a marked icon is drawn in colour, not as a template.
+func markImage(size: CGFloat, level: Level = .none, badge: Bool = false) -> NSImage {
     let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
         let t = NSAffineTransform()
         t.scale(by: size / 32)
         t.concat()
         // Drawn when shown, so labelColor and amber resolve against the menu bar's own appearance.
         switch level {
-        case .none: drawMark(fill: .black)
+        case .none: drawMark(fill: badge ? .labelColor : .black)
         case .watch: drawMark(fill: .labelColor, leaves: amber)
         case .act: drawMark(fill: amber)
+        }
+        if badge, let ctx = NSGraphicsContext.current {
+            ctx.compositingOperation = .destinationOut
+            NSRect(x: 21, y: 21, width: 11, height: 11).fill()
+            ctx.compositingOperation = .sourceOver
+            (level == .act ? NSColor.labelColor : amber).setFill()
+            NSRect(x: 23, y: 23, width: 9, height: 9).fill()
         }
         return true
     }
     // At rest it is a template, so macOS tints it like every other menu bar icon.
-    img.isTemplate = level == .none
+    img.isTemplate = level == .none && !badge
     return img
 }
 
@@ -203,6 +212,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let menu = NSMenu()
     let store = Store()
     let windows = WindowController()
+    let setup = SetupController()
+    let mover = MoveController()
     lazy var panel = PanelController(store: store, actions: Actions(
         refresh: { [weak self] in self?.refresh() },
         open: { [weak self] in self?.openWindow() },
@@ -243,7 +254,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let timer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in self?.tick() }
         timer.tolerance = 120
         Probe.appearance()
+        wire()
         if CommandLine.arguments.contains("--open") { openWindow() }
+        if let scene = Probe.value("--scene") { Probe.scenes(self, scene) }
         if let dir = Probe.value("--shot") { openWindow(); Probe.shots(windows, to: dir) }
         if let dir = Probe.value("--write-shots") { openWindow(); Probe.writeShots(windows, to: dir) }
         if let option = Probe.value("--model-test") { openWindow(); Probe.modelTest(windows, option, to: Probe.value("--shots-to")) }
@@ -267,7 +280,89 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Setup, updates and the run watch: what they do when they have something to say.
+    func wire() {
+        Notifier.shared.setUp()
+        Notifier.shared.onClick = { [weak self] in self?.openRunPanel() }
+        Updates.shared.onChange = { [weak self] in self?.rebuild() }
+        Updates.shared.onRecallUpgraded = { [weak self] in
+            self?.windows.library?.connect()
+            self?.refresh()
+        }
+        RunWatch.shared.onChange = { [weak self] in self?.rebuild() }
+        SetupHook.again = { [weak self] in self?.setup.show(force: true) }
+        setup.skip = { [weak self] in self?.openWindow() }
+        setup.done = { [weak self] in
+            self?.openWindow()
+            self?.windows.library?.welcome = true
+            self?.windows.library?.go(.memory)
+        }
+        setup.left = { AppState.update { $0.setupLeft = true } }
+        Updates.shared.start()
+        if !Probe.background || Probe.fixture != nil { RunWatch.shared.start() }
+        if !Probe.background { launchChecks() }
+    }
+
+    /// At launch: the move question first (updates need the app in Applications), then setup if this Mac needs it.
+    /// Opened by hand with neither to ask, the window comes up. Started at login, the app stays in the menu bar.
+    func launchChecks() {
+        if Placement.needsMove, AppState.load().moveDeclined != true { mover.show(); return }
+        // The launch's Apple event can only be read during applicationDidFinishLaunching.
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let atLogin = event?.eventID == kAEOpenApplication
+            && event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        let open = { [weak self] in if !atLogin { self?.openWindow() } }
+        let state = AppState.load()
+        // Once setup has finished, been skipped or turned out not to be needed, `recall doctor` is never asked again here.
+        guard state.setupLeft != true, state.setupDone != true else { open(); return }
+        DispatchQueue.global(qos: .utility).async {
+            let need = Self.needsSetup()
+            DispatchQueue.main.async {
+                switch need {
+                case .yes: self.setup.show()
+                case .no:
+                    AppState.update { $0.setupDone = true }
+                    open()
+                case .unknown: open()
+                }
+            }
+        }
+    }
+
+    /// Opened again while it's running (Finder, Spotlight, the Dock): whichever window is waiting, else the main one.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if setup.isOpen {
+            setup.show()
+        } else if mover.mini.isOpen {
+            mover.show()
+        } else {
+            openWindow()
+        }
+        return false
+    }
+
+    enum Need { case yes, no, unknown }
+
+    /// recall isn't installed, or none of the agents on this Mac is connected to it. When recall can't be asked,
+    /// the answer is unknown: a hiccup neither puts a setup window in front of someone whose Mac is set up nor
+    /// counts as setup done.
+    static func needsSetup() -> Need {
+        guard let recall = Tool.find("recall") else { return .yes }
+        let r = Shell.run([recall, "doctor", "--json"], timeout: 60)
+        guard r.ok, let rows = try? JSONDecoder().decode([Doctor.Root].self, from: Data(r.out.utf8)) else { return .unknown }
+        return rows.contains { $0.connected == true } ? .no : .yes
+    }
+
+    /// A notification was clicked: the run panel on This Mac, with the fix.
+    func openRunPanel() {
+        openWindow()
+        windows.library?.go(.thisMac)
+        windows.library?.thisMacFocus.id = "Last memory run"
+        windows.library?.thisMacFocus.tick += 1
+    }
+
     @objc func openWindow() {
+        if Tool.find("recall") == nil, API.commands().isEmpty, !Probe.background { setup.show(); return }
         Probe.start()
         panel.close()
         windows.show()
@@ -294,9 +389,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return i
         }
         add("recall", [
-            item("Open recall", #selector(openWindow), "o", target: self),
+            item("Open Recall", #selector(openWindow), "o", target: self),
             .separator(),
-            item("Quit recall", #selector(NSApplication.terminate(_:)), "q"),
+            item("Quit Recall", #selector(NSApplication.terminate(_:)), "q"),
         ])
         add("Edit", [
             item("Undo", Selector(("undo:")), "z"),
@@ -439,6 +534,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.executableURL = URL(fileURLWithPath: command[0])
         p.arguments = Array(command.dropFirst())
         p.currentDirectoryURL = URL(fileURLWithPath: folder ?? FileManager.default.homeDirectoryForCurrentUser.path)
+        p.environment = Tool.env
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -466,8 +562,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func rebuild() {
         let overlaps = status?.overlaps ?? []
-        item.button?.image = markImage(size: 18, level: Level(rawValue: status?.level ?? "") ?? .none)
-        item.button?.toolTip = overlaps.isEmpty ? "recall" : "recall: \(overlaps.count) files open in more than one chat"
+        let problem = RunWatch.shared.problem
+        item.button?.image = markImage(size: 18, level: Level(rawValue: status?.level ?? "") ?? .none, badge: problem != nil || Updates.shared.anyUpdate)
+        item.button?.toolTip = problem.map { "Recall: \($0.title)" }
+            ?? (Updates.shared.desktopLatest.map { "Recall \($0) is ready. Open This Mac to update." }
+                ?? (Updates.shared.recallBehind ? "recall-agents \(Updates.shared.recallLatest ?? "") is ready. Open This Mac to update." : nil))
+            ?? (overlaps.isEmpty ? "Recall" : "Recall: \(overlaps.count) files open in more than one chat")
         store.status = status
         store.error = error
         store.updated = updated
@@ -775,6 +875,61 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-icon"
     exit(0)
 }
 
+// `Recall --render-dmg out.png SCALE` draws the window the .dmg opens to (640 by 400 points, origin top left below),
+// for release.sh. The icons themselves are Finder's, placed by dmg-settings.py at (170, 190) and (470, 190).
+if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--render-dmg", let scale = Int(CommandLine.arguments[3]) {
+    PaperMono.register()
+    let (w, h): (CGFloat, CGFloat) = (640, 400)
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w) * scale, pixelsHigh: Int(h) * scale, bitsPerSample: 8, samplesPerPixel: 4,
+                               hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    let zoom = NSAffineTransform()
+    zoom.scale(by: CGFloat(scale))
+    zoom.concat()
+    func rgb(_ hex: Int, _ a: CGFloat = 1) -> NSColor {
+        NSColor(srgbRed: CGFloat(hex >> 16 & 255) / 255, green: CGFloat(hex >> 8 & 255) / 255, blue: CGFloat(hex & 255) / 255, alpha: a)
+    }
+    func mono(_ size: CGFloat, _ weight: CGFloat) -> NSFont {
+        NSFont(descriptor: NSFontDescriptor(fontAttributes: [.family: "Paper Mono", .variation: [NSNumber(value: 0x7767_6874): weight]]), size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+    func line(_ a: NSPoint, _ b: NSPoint, _ color: NSColor) {
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: a.x, y: h - a.y))
+        path.line(to: NSPoint(x: b.x, y: h - b.y))
+        path.lineWidth = 1
+        color.setStroke()
+        path.stroke()
+    }
+    let ink = 0xE8E6DF, amber = 0xF2C14E
+    rgb(0x101012).setFill()
+    NSRect(x: 0, y: 0, width: w, height: h).fill()
+    let box: CGFloat = 20
+    NSImage(size: NSSize(width: box, height: box), flipped: false) { _ in
+        let t = NSAffineTransform()
+        t.scale(by: box / 32)
+        t.concat()
+        drawMark(fill: rgb(amber), line: 1.2)
+        return true
+    }.draw(in: NSRect(x: 28, y: h - 22 - box, width: box, height: box))
+    NSAttributedString(string: "Recall", attributes: [.font: mono(14, 600), .foregroundColor: rgb(ink)]).draw(at: NSPoint(x: 56, y: h - 41))
+    line(NSPoint(x: 28, y: 58.5), NSPoint(x: 612, y: 58.5), rgb(ink, 0.16))
+    // The arrow: a small amber square, a 1 px line, and a head at 45 degrees.
+    rgb(amber).setFill()
+    NSRect(x: 252, y: h - 193.5, width: 7, height: 7).fill()
+    let arrow = rgb(ink, 0.55)
+    line(NSPoint(x: 259, y: 190), NSPoint(x: 381, y: 190), arrow)
+    line(NSPoint(x: 381, y: 190), NSPoint(x: 373, y: 182), arrow)
+    line(NSPoint(x: 381, y: 190), NSPoint(x: 373, y: 198), arrow)
+    let caption = NSAttributedString(string: "Drag to Applications", attributes: [.font: mono(13, 450), .foregroundColor: rgb(ink, 0.76)])
+    caption.draw(at: NSPoint(x: (w - caption.size().width) / 2, y: h - 330))
+    NSGraphicsContext.restoreGraphicsState()
+    rep.size = NSSize(width: w, height: h)
+    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
+    exit(0)
+}
+
 // `Recall --render-panel out.png [demo | status.json]` draws the panel in dark and light, with
 // live data, the demo or a saved `recall status --json`, to judge it without opening the menu bar.
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--render-panel" {
@@ -804,6 +959,19 @@ if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--dump-menu" {
         }
     }
     dump(a.menu, 0)
+    exit(0)
+}
+
+// `Recall --print-home` says where the app thinks home is, before anything else runs, to check that a
+// sandboxed test run writes nowhere but its own folder.
+if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--print-home" {
+    print("NSHomeDirectory:", NSHomeDirectory())
+    print("homeDirectoryForCurrentUser:", FileManager.default.homeDirectoryForCurrentUser.path)
+    print("API.home:", API.home)
+    print("API.recallHome:", API.recallHome)
+    print("HOME:", ProcessInfo.processInfo.environment["HOME"] ?? "(unset)")
+    print("CFFIXED_USER_HOME:", ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? "(unset)")
+    print("Tool.path:", Tool.path)
     exit(0)
 }
 

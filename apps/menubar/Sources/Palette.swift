@@ -172,7 +172,7 @@ struct PaletteView: View {
         ZStack(alignment: .top) {
             p.scrim.contentShape(Rectangle()).onTapGesture { model.close() }
             VStack(spacing: 0) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Text("⌕").foregroundStyle(p.muted)
                     TextField("", text: $model.query, prompt: Text("Search, or go anywhere").foregroundColor(p.faint))
                         .textFieldStyle(.plain).font(PaperMono.font(14)).foregroundStyle(p.ink).focused($focused)
@@ -188,7 +188,7 @@ struct PaletteView: View {
                             ForEach(PaletteItem.Group.allCases, id: \.self) { g in
                                 let rows = items.enumerated().filter { $0.element.group == g }
                                 if !rows.isEmpty {
-                                    Label(text: g.title).padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 6)
+                                    Label(text: g.title).padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 8)
                                     ForEach(rows, id: \.element.id) { i, item in
                                         row(item, on: i == model.at, p).id(i)
                                             .onTapGesture { model.run(item, keep: false) }
@@ -204,7 +204,7 @@ struct PaletteView: View {
                     }
                     .onChange(of: model.at) { _, at in proxy.scrollTo(at) }
                 }
-                .frame(maxHeight: 520)
+                .frame(maxHeight: 536)
                 Rule()
                 HStack(spacing: 8) {
                     Kbd(text: "↑↓"); Text("move")
@@ -239,7 +239,7 @@ struct PaletteView: View {
             .frame(width: 12)
             Text(item.title).foregroundStyle(p.ink).lineLimit(1)
             if let k = item.kind { KindTag(type: k) }
-            if let d = item.detail { Text(d).font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineLimit(1) }
+            if let d = item.detail { Text(d).font(PaperMono.font(11)).foregroundStyle(p.muted).lineLimit(1) }
             Spacer(minLength: 8)
             // One trailing column: a row's cap, or ↵ on the highlighted row that has none.
             let n = item.number.flatMap { $0 <= 9 && model.query.isEmpty ? $0 : nil }
@@ -267,7 +267,9 @@ struct PaletteView: View {
 /// stays when you switch chats, and the next chat opens on its first match.
 final class FindModel: ObservableObject {
     weak var library: Library?
-    @Published var query = "" { didSet { if query != oldValue { current = 0; jump() } } }
+    let field = FindField()
+    init() { field.find = self }
+    @Published var query = "" { didSet { if query != oldValue { current = 0; jumpSoon() } } }
     @Published var shown = true
     @Published var current = 0
     @Published var hits: [(seq: Int, nth: Int)] = []
@@ -284,19 +286,37 @@ final class FindModel: ObservableObject {
     /// Finds every match in the rendered words of the messages loaded so far.
     func recount(_ reading: Reading) {
         let q = query
-        guard !q.isEmpty else { if !hits.isEmpty { hits = [] }; return }
-        var out: [(seq: Int, nth: Int)] = []
-        for m in reading.messages {
+        guard !q.isEmpty else {
+            if !hits.isEmpty { hits = [] }
+            counted = (nil, "", 0)
+            return
+        }
+        // Pages arrive one after another while a query is set: only the new messages are searched.
+        var out = hits
+        if counted.chat != reading.id || counted.query != q || counted.messages > reading.messages.count {
+            out = []
+            counted = (reading.id, q, 0)
+        }
+        for m in reading.messages[counted.messages...] {
             let n = reading.md(m).plain.reduce(0) { $0 + FindModel.count(q, in: $1) }
             for i in 0..<n { out.append((m.seq, i)) }
         }
+        counted.messages = reading.messages.count
         hits = out
         if current >= hits.count { current = 0 }
     }
 
+    var counted: (chat: String?, query: String, messages: Int) = (nil, "", 0)
+
     static func count(_ q: String, in s: String) -> Int {
-        var from = s.startIndex, n = 0
-        while let r = s.range(of: q, options: .caseInsensitive, range: from..<s.endIndex) { n += 1; from = r.upperBound }
+        let text = s as NSString
+        var from = 0, n = 0
+        while from < text.length {
+            let r = text.range(of: q, options: .caseInsensitive, range: NSRange(location: from, length: text.length - from))
+            if r.location == NSNotFound { break }
+            n += 1
+            from = r.upperBound
+        }
         return n
     }
 
@@ -312,29 +332,65 @@ final class FindModel: ObservableObject {
         scroll.tick += 1
     }
 
+    /// Going to a match far down has the list measure every row before it, so while the query is still changing it
+    /// waits for a pause, and goes once.
+    func jumpSoon() {
+        jumping?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.jump() }
+        jumping = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    var jumping: DispatchWorkItem?
+
     /// A rendered block with matches underlined and the current one inverted. `before` is how
     /// many matches the message's earlier blocks hold.
-    func marked(_ text: AttributedString, plain: String, seq: Int, before: Int, _ p: Palette) -> AttributedString {
-        guard !query.isEmpty, plain.range(of: query, options: .caseInsensitive) != nil else { return text }
-        var out = text
+    func marked(_ text: NSAttributedString, seq: Int, before: Int, _ p: Palette) -> NSAttributedString {
+        guard !query.isEmpty else { return text }
+        let plain = text.string as NSString
+        var r = plain.range(of: query, options: .caseInsensitive)
+        guard r.location != NSNotFound else { return text }
+        let out = NSMutableAttributedString(attributedString: text)
         let cur = hits.indices.contains(current) ? hits[current] : nil
-        let chars = out.characters
-        var from = plain.startIndex, n = before
-        while let r = plain.range(of: query, options: .caseInsensitive, range: from..<plain.endIndex) {
-            let lo = chars.index(chars.startIndex, offsetBy: plain.distance(from: plain.startIndex, to: r.lowerBound))
-            let hi = chars.index(lo, offsetBy: plain.distance(from: r.lowerBound, to: r.upperBound))
+        var n = before
+        while r.location != NSNotFound {
             if let cur, cur.seq == seq, cur.nth == n {
-                out[lo..<hi].backgroundColor = p.ink
-                out[lo..<hi].foregroundColor = p.paper
+                out.addAttributes([.backgroundColor: NSColor(p.ink), .foregroundColor: NSColor(p.paper)], range: r)
             } else {
-                out[lo..<hi].underlineStyle = .single
-                out[lo..<hi].foregroundColor = p.ink
+                out.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: NSColor(p.ink)], range: r)
             }
             n += 1
-            from = r.upperBound
+            let from = r.upperBound
+            guard from < plain.length else { break }
+            r = plain.range(of: query, options: .caseInsensitive, range: NSRange(location: from, length: plain.length - from))
         }
         return out
     }
+}
+
+/// What's typed in the find box. Its own object, so a keystroke redraws the box: the messages redraw once the typing
+/// pauses and there's a query to mark.
+final class FindField: ObservableObject {
+    weak var find: FindModel?
+    var applying: DispatchWorkItem?
+    @Published var text = "" { didSet { if text != oldValue { typed() } } }
+
+    func typed() {
+        applying?.cancel()
+        guard !text.isEmpty else { find?.query = ""; return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.find?.query = self.text
+        }
+        applying = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+}
+
+struct FindText: View {
+    @ObservedObject var field: FindField
+    let prompt: Text
+    var body: some View { TextField("", text: $field.text, prompt: prompt) }
 }
 
 /// A row to scroll to, of any id type, and a tick that asks for it.
@@ -378,15 +434,15 @@ struct FindBox: View {
             if find.shown {
                 HStack(spacing: 8) {
                     Text("⌕").foregroundStyle(p.muted)
-                    TextField("", text: $find.query, prompt: Text("Find in chat").foregroundColor(p.faint))
+                    FindText(field: find.field, prompt: Text("Find in chat").foregroundColor(p.faint))
                         .textFieldStyle(.plain).foregroundStyle(p.ink).focused($focused).frame(width: 140)
                     Text(find.query.isEmpty ? "" : find.hits.isEmpty ? "none" : "\(find.current + 1) of \(find.hits.count)")
-                        .font(PaperMono.font(11.5)).foregroundStyle(p.muted).monospacedDigit().fixedSize()
+                        .font(PaperMono.font(11)).foregroundStyle(p.muted).monospacedDigit().fixedSize()
                     box("↑") { find.step(-1) }
                     box("↓") { find.step(1) }
                     box("–") { find.shown = false }.help("Tuck away (⌘F brings it back)")
                 }
-                .padding(.leading, 10).padding(.trailing, 6).frame(height: 30)
+                .padding(.leading, 12).padding(.trailing, 8).frame(height: 30)
                 .background(p.pop)
                 .overlay(Rectangle().strokeBorder(p.line, lineWidth: 1))
             } else {
@@ -404,7 +460,7 @@ struct FindBox: View {
             Text(s).foregroundStyle(p.ink).frame(width: 20, height: 20)
                 .overlay(Rectangle().strokeBorder(p.grid, lineWidth: 1))
                 .background(p.pop)
-                .contentShape(Rectangle())
+                .hitArea(4)
         }
         .buttonStyle(.plain)
     }

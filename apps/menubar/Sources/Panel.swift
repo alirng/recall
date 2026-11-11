@@ -8,29 +8,32 @@ import SwiftUI
 // MARK: - Look
 
 struct Palette {
-    let paper, card, ink, body, muted, faint, ghost, line, grid, lane, accent, accentText, claude, codex: Color
+    let paper, card, ink, body, muted, faint, ghost, line, grid, hair, lane, accent, accentText, claude, codex: Color
     var light = false
     var sel: Color { ink.opacity(light ? 0.08 : 0.11) }  // the selected row: fill only (4 Nov, board F)
     var accentSoft: Color { accent.opacity(light ? 0.14 : 0.16) }
 
-    static func of(_ scheme: ColorScheme) -> Palette {
-        if scheme == .light {
-            let ink = Color(hex: 0x141416)
-            return Palette(
-                paper: Color(hex: 0xFAFAFA), card: .white, ink: ink, body: ink.opacity(0.78), muted: ink.opacity(0.62),
-                faint: ink.opacity(0.32), ghost: ink.opacity(0.14), line: ink.opacity(0.3), grid: ink.opacity(0.12),
-                lane: ink.opacity(0.5), accent: Color(hex: 0xF2C14E), accentText: Color(hex: 0xA8780A),
-                claude: Color(hex: 0xD26A3C), codex: Color(hex: 0x2F6FB3), light: true
-            )
-        }
+    static func of(_ scheme: ColorScheme) -> Palette { scheme == .light ? lightColors : darkColors }
+
+    // Every view body asks for its palette, each row's included, so each theme is built once.
+    static let lightColors: Palette = {
+        let ink = Color(hex: 0x141416)
+        return Palette(
+            paper: Color(hex: 0xFAFAFA), card: .white, ink: ink, body: ink.opacity(0.78), muted: ink.opacity(0.62),
+            faint: ink.opacity(0.32), ghost: ink.opacity(0.14), line: ink.opacity(0.3), grid: ink.opacity(0.12), hair: ink.opacity(0.22),
+            lane: ink.opacity(0.5), accent: Color(hex: 0xF2C14E), accentText: Color(hex: 0xA8780A),
+            claude: Color(hex: 0xD26A3C), codex: Color(hex: 0x2F6FB3), light: true
+        )
+    }()
+    static let darkColors: Palette = {
         let ink = Color(hex: 0xE8E6DF)
         return Palette(
             paper: Color(hex: 0x101012), card: Color(hex: 0x151518), ink: ink, body: ink.opacity(0.76), muted: ink.opacity(0.56),
-            faint: ink.opacity(0.3), ghost: ink.opacity(0.16), line: ink.opacity(0.28), grid: ink.opacity(0.12),
+            faint: ink.opacity(0.3), ghost: ink.opacity(0.16), line: ink.opacity(0.28), grid: ink.opacity(0.12), hair: ink.opacity(0.2),
             lane: ink.opacity(0.5), accent: Color(hex: 0xF2C14E), accentText: Color(hex: 0xF2C14E),
             claude: Color(hex: 0xE07A4C), codex: Color(hex: 0x6FAEE6)
         )
-    }
+    }()
 
     func agent(_ name: String) -> Color {
         switch name {
@@ -57,17 +60,37 @@ enum PaperMono {
     }
 
     // Long lists ask for the same few fonts on every row, so each is built once.
-    nonisolated(unsafe) static var cache: [String: Font] = [:]
+    struct Key: Hashable { let size: CGFloat, weight: CGFloat, prose: Bool }
+    nonisolated(unsafe) static var cache: [Key: Font] = [:]
+    nonisolated(unsafe) static var appKit: [Key: NSFont] = [:]
+    nonisolated(unsafe) static var appKitFor: [Font: NSFont] = [:]
+    static let cacheLock = NSLock()  // markdown is read off the main thread
 
     static func font(_ size: CGFloat, _ weight: CGFloat = 390, prose: Bool = false) -> Font {
-        let key = "\(size)/\(weight)/\(prose)"
+        let key = Key(size: size, weight: weight, prose: prose)
+        cacheLock.lock(); defer { cacheLock.unlock() }
         if let f = cache[key] { return f }
-        let f = make(size, weight, prose: prose)
+        let ns = make(size, weight, prose: prose)
+        let f = Font(ns)
         cache[key] = f
+        appKit[key] = ns
+        appKitFor[f] = ns
         return f
     }
 
-    static func make(_ size: CGFloat, _ weight: CGFloat, prose: Bool) -> Font {
+    /// The same face for text drawn by AppKit.
+    static func nsFont(_ size: CGFloat, _ weight: CGFloat = 390, prose: Bool = false) -> NSFont {
+        _ = font(size, weight, prose: prose)
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        return appKit[Key(size: size, weight: weight, prose: prose)]!
+    }
+
+    static func nsFont(for f: Font) -> NSFont? {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        return appKitFor[f]
+    }
+
+    static func make(_ size: CGFloat, _ weight: CGFloat, prose: Bool) -> NSFont {
         var attrs: [NSFontDescriptor.AttributeName: Any] = [
             .family: "Paper Mono",
             .variation: [NSNumber(value: 0x7767_6874): weight],  // 'wght'
@@ -77,8 +100,7 @@ enum PaperMono {
                 [NSFontDescriptor.FeatureKey.typeIdentifier: 35, NSFontDescriptor.FeatureKey.selectorIdentifier: $0]
             }
         }
-        let font = NSFont(descriptor: NSFontDescriptor(fontAttributes: attrs), size: size)
-        return Font(font ?? .monospacedSystemFont(ofSize: size, weight: .regular))
+        return NSFont(descriptor: NSFontDescriptor(fontAttributes: attrs), size: size) ?? .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 }
 
@@ -106,7 +128,7 @@ struct Label: View {
     var color: Color? = nil
     @Environment(\.colorScheme) var scheme
     var body: some View {
-        Text(text.uppercased()).font(PaperMono.font(10.5, 500)).tracking(0.84)
+        Text(text.uppercased()).font(PaperMono.font(11, 500)).tracking(0.84)
             .foregroundStyle(color ?? Palette.of(scheme).muted)
     }
 }
@@ -150,9 +172,9 @@ struct BoxButton: View {
     var body: some View {
         let p = Palette.of(scheme)
         Button(action: action) {
-            Text(title.uppercased()).font(PaperMono.font(10.5, 500)).tracking(0.6)
+            Text(title.uppercased()).font(PaperMono.font(11, 500)).tracking(0.6)
                 .foregroundStyle(hover.on ? p.ink : p.muted)
-                .padding(.horizontal, 8).padding(.vertical, 5)
+                .padding(.horizontal, 8).padding(.vertical, 4)
                 .overlay(Rectangle().stroke(hover.on ? p.line : p.faint, lineWidth: 1))
                 .contentShape(Rectangle())
         }
@@ -174,35 +196,35 @@ struct PanelView: View {
             header(p)
             rule(p)
             if let error = store.error {
-                Text(error).font(PaperMono.font(12)).foregroundStyle(p.muted).padding(16)
+                Text(error).font(PaperMono.font(12.5)).foregroundStyle(p.muted).padding(16)
                 rule(p)
             }
             if let status = store.status {
                 needsYou(status, p)
                 rule(p)
                 WorkingNow(sessions: status.sessions.filter(\.live))
-                    .padding(.horizontal, 16).padding(.vertical, 14)
+                    .padding(.horizontal, 16).padding(.vertical, 16)
             } else if store.error == nil {
-                Text("Reading your agents…").font(PaperMono.font(12)).foregroundStyle(p.muted).padding(16)
+                Text("Reading your agents…").font(PaperMono.font(12.5)).foregroundStyle(p.muted).padding(16)
             }
             rule(p)
             HStack {
                 BoxButton(title: "Open recall ⌘O", action: actions.open)
                 Spacer()
                 BoxButton(title: "Quit", action: actions.quit)
-            }.padding(.horizontal, 16).padding(.vertical, 10)
+            }.padding(.horizontal, 16).padding(.vertical, 12)
         }
         .frame(width: 360)
         .background(p.paper)
         .overlay(Rectangle().stroke(p.line, lineWidth: 1))
     }
 
-    func rule(_ p: Palette) -> some View { Rectangle().fill(p.grid).frame(height: 1) }
+    func rule(_ p: Palette) -> some View { Rule() }
 
     func header(_ p: Palette) -> some View {
         HStack(spacing: 8) {
             Image(nsImage: markImage(size: 15)).renderingMode(.template).foregroundStyle(p.ink)
-            Text("recall").font(PaperMono.font(15, 600)).foregroundStyle(p.ink)
+            Text("recall").font(PaperMono.font(14, 600)).foregroundStyle(p.ink)
             Spacer()
             if let updated = store.updated {
                 Label(text: updated.formatted(date: .omitted, time: .shortened))
@@ -215,7 +237,7 @@ struct PanelView: View {
     @ViewBuilder
     func needsYou(_ status: Status, _ p: Palette) -> some View {
         let byId = Dictionary(uniqueKeysWithValues: status.sessions.map { ($0.id, $0) })
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             let count = status.overlaps.count + status.restarts.count
             HStack {
                 Label(text: "Needs you")
@@ -228,19 +250,19 @@ struct PanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(status.restarts, id: \.agent) { r in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Restart \(r.agent)").font(PaperMono.font(12.5, 500)).foregroundStyle(p.ink)
-                    Text(r.detail).font(PaperMono.font(11.5)).foregroundStyle(p.muted)
+                    Text(r.detail).font(PaperMono.font(11)).foregroundStyle(p.muted)
                 }
             }
             ForEach(status.overlaps.prefix(4), id: \.id) { o in
                 OverlapCard(overlap: o, byId: byId, actions: actions, sending: store.sending.contains(o.id))
             }
             if status.overlaps.count > 4 {
-                Text("and \(status.overlaps.count - 4) more").font(PaperMono.font(11.5)).foregroundStyle(p.muted)
+                Text("and \(status.overlaps.count - 4) more").font(PaperMono.font(11)).foregroundStyle(p.muted)
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 14)
+        .padding(.horizontal, 16).padding(.vertical, 16)
     }
 }
 
@@ -266,21 +288,21 @@ struct OverlapCard: View {
         let p = Palette.of(scheme), act = overlap.level == "act"
         let name = (overlap.file as NSString).lastPathComponent
         let where_ = overlap.same_checkout ? "same working copy" : overlap.branches.map { short($0, 14) }.joined(separator: " ↔ ")
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 if act {
                     Rectangle().fill(p.accent).frame(width: 7, height: 7)
                 } else {
                     Diamond().stroke(p.lane, lineWidth: 1).frame(width: 8, height: 8)
                 }
-                Text(name).font(PaperMono.font(13, 520)).foregroundStyle(p.ink).lineLimit(1)
+                Text(name).font(PaperMono.font(12.5, 520)).foregroundStyle(p.ink).lineLimit(1)
                 Spacer(minLength: 8)
                 Label(text: overlap.verdict, color: act ? p.accentText : p.muted)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
                     .overlay(Rectangle().stroke(act ? p.accent.opacity(0.7) : p.faint, lineWidth: 1))
             }
-            Text("\(overlap.repo) · \(where_)").font(PaperMono.font(11.5)).foregroundStyle(p.muted).lineLimit(1)
-            VStack(alignment: .leading, spacing: 6) {
+            Text("\(overlap.repo) · \(where_)").font(PaperMono.font(11)).foregroundStyle(p.muted).lineLimit(1)
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(overlap.sessions, id: \.self) { id in
                     if let s = byId[id] {
                         HStack(spacing: 8) {
@@ -295,14 +317,14 @@ struct OverlapCard: View {
             if let letters = overlap.messages, !letters.isEmpty {
                 Conversation(letters: Array(letters.suffix(3)), byId: byId)
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if let at = overlap.sent_at {
                     Label(text: "Sent · " + ago(Int(Date().timeIntervalSince1970 - at)), color: p.ink)
-                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
                         .overlay(Rectangle().strokeBorder(p.faint, style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
                         .help("recall messaged every chat here; it clears when the overlap does")
                 } else if sending {
-                    Label(text: "Sending…").padding(.horizontal, 8).padding(.vertical, 5)
+                    Label(text: "Sending…").padding(.horizontal, 8).padding(.vertical, 4)
                 } else {
                     BoxButton(title: "Resolve") { actions.resolve(overlap) }
                         .help("Message every chat here to agree who goes first, at their next turn")
@@ -326,22 +348,22 @@ struct Conversation: View {
 
     var body: some View {
         let p = Palette.of(scheme), now = Date().timeIntervalSince1970
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             Rectangle().fill(.clear).frame(width: 1)
                 .overlay(Path { $0.move(to: .zero); $0.addLine(to: CGPoint(x: 0, y: 2000)) }
                     .stroke(p.faint, style: StrokeStyle(lineWidth: 1, dash: [1, 2.5])))
                 .clipped()
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(letters, id: \.at) { m in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 4) {
                             Text(m.from == "recall" ? "recall" : agentNames[byId[m.from]?.agent ?? ""] ?? "chat")
                                 .foregroundStyle(m.from == "recall" ? p.accentText : p.agent(byId[m.from]?.agent ?? ""))
                             Text("→").foregroundStyle(p.faint)
                             Text(agentNames[byId[m.to]?.agent ?? ""] ?? "chat").foregroundStyle(p.agent(byId[m.to]?.agent ?? ""))
                             Text("· " + ago(Int(now - m.at))).foregroundStyle(p.muted)
-                        }.font(PaperMono.font(10.5, 500))
-                        Text(m.text).font(PaperMono.font(12, 390, prose: true)).foregroundStyle(p.body)
+                        }.font(PaperMono.font(11, 500))
+                        Text(m.text).font(PaperMono.font(12.5, 390, prose: true)).foregroundStyle(p.body)
                             .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -395,7 +417,7 @@ struct RepoGraph: View {
                     .frame(width: width, height: WorkingNow.row * CGFloat(rows.count) + Self.tail)
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(rows, id: \.id) { s in
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(s.title).font(PaperMono.font(12.5, 390, prose: true)).foregroundStyle(p.body).lineLimit(1)
                             Text([agentNames[s.agent] ?? s.agent, short(s.branch, 22), ago(s.age_seconds)].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .font(PaperMono.font(11)).foregroundStyle(p.muted).lineLimit(1)

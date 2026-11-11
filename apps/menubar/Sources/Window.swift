@@ -19,7 +19,7 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     func show() {
         if let window {
-            if Probe.background { window.orderBack(nil); return }
+            if Probe.background || Probe.onFakeMonitor { window.orderBack(nil); return }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return
@@ -39,7 +39,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         let w = RecallWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
-        w.title = "recall"
+        w.title = "Recall"
         w.minSize = NSSize(width: 900, height: 560)
         // Nothing of the window goes to ~/Library: no frame autosave, no state restoration.
         w.isRestorable = false
@@ -53,16 +53,16 @@ final class WindowController: NSObject, NSWindowDelegate {
             w.appearance = NSAppearance(named: dark ? .aqua : .darkAqua)
             self.state.appearance = dark ? "light" : "dark"
         }
-        w.contentView = NSHostingView(rootView: RootView(library: library, notes: library.notes, chrome: chrome, onSidebar: { [weak self] width in
+        w.contentView = NSHostingView(rootView: RootView(library: library, chrome: chrome, onSidebar: { [weak self] width in
             self?.state.sidebar = Double(width)
         }))
         w.setFrame(frame, display: false)
         window = w
-        if Probe.background {
+        if Probe.background, !Probe.onFakeMonitor {
             // A test run: drawn off screen and never brought forward, so it doesn't take your screen.
             w.setFrameOrigin(NSPoint(x: -20000, y: -20000))
             w.orderBack(nil)
-        } else {
+        } else if !Probe.showOnFakeMonitor(w) {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             w.makeKeyAndOrderFront(nil)
@@ -104,7 +104,8 @@ final class WindowController: NSObject, NSWindowDelegate {
             return true
         }
         let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
-        if window?.firstResponder is NSText { return false }
+        // Typing in a field keeps its keys; a message's text, selected to copy, doesn't.
+        if let t = window?.firstResponder as? NSText, t.isEditable { return false }
         // ⌘Z while "Forgot …" shows puts the note back, and only on the Memory section.
         if mods == .command, e.charactersIgnoringModifiers == "z", library.section == .memory, library.toast != nil {
             library.undoForget()
@@ -126,11 +127,15 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     func wheelStep(_ e: NSEvent) {
         guard e.window === window, let root = window?.contentView else { return }
+        // A trackpad sends an event a frame, and finding the view under the pointer costs a millisecond or more
+        // on a page of live views. The scroller only needs putting on once, as the gesture starts.
+        if e.hasPreciseScrollingDeltas, e.phase != .began, e.phase != .mayBegin { return }
         // The thin scroller goes on whatever is about to scroll, mouse wheel or trackpad.
         var v = root.hitTest(root.convert(e.locationInWindow, from: nil))
         while let view = v, !(view is NSScrollView) { v = view.superview }
-        if let s = v as? NSScrollView { ThinScroller.install(on: s) }
-        if !e.hasPreciseScrollingDeltas { wheelStep(at: e.locationInWindow) }
+        guard let s = v as? NSScrollView else { return }
+        ThinScroller.install(on: s)
+        if !e.hasPreciseScrollingDeltas, s.verticalLineScroll < 10 { s.verticalLineScroll = 24 }
     }
 
     func wheelStep(at point: NSPoint) {
@@ -142,7 +147,8 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     func windowDidBecomeKey(_ note: Notification) {
         placeTrafficLights()
-        library?.focused()
+        // A popup handing the keyboard back isn't the window coming forward: nothing outside has changed.
+        if let library, CACurrentMediaTime() - library.popups.closedAt > 0.3 { library.focused() }
     }
     func windowDidResize(_ note: Notification) { placeTrafficLights() }
     func windowDidChangeOcclusionState(_ note: Notification) {
@@ -188,7 +194,10 @@ final class WindowController: NSObject, NSWindowDelegate {
         if let s = library?.section { state.section = s.key }
         if let l = library { state.pins = l.pins }
         state.sidebar = Double(chrome.sidebar)
-        state.save()
+        let mine = state
+        AppState.update { s in
+            s.window = mine.window; s.section = mine.section; s.pins = mine.pins; s.sidebar = mine.sidebar; s.appearance = mine.appearance
+        }
     }
 
     // Menu actions
@@ -224,7 +233,6 @@ final class Chrome: ObservableObject {
 
 struct RootView: View {
     @ObservedObject var library: Library
-    @ObservedObject var notes: NotesModel
     @ObservedObject var chrome: Chrome
     var onSidebar: (CGFloat) -> Void
     @Environment(\.colorScheme) var scheme
@@ -234,7 +242,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             TitleBar(library: library, search: library.search)
             HStack(spacing: 0) {
-                Sidebar(library: library, notes: notes)
+                Sidebar(library: library)
                     .frame(width: chrome.sidebar)
                     .overlay(alignment: .trailing) { resizer(p) }
                 content(p)
@@ -242,7 +250,7 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let t = library.toast { ToastView(toast: t, library: library).padding(.bottom, 22) }
+            if let t = library.toast { ToastView(toast: t, library: library).padding(.bottom, 24) }
         }
         .background(p.paper)
         .ignoresSafeArea()
@@ -252,7 +260,7 @@ struct RootView: View {
     }
 
     func resizer(_ p: Palette) -> some View {
-        Rectangle().fill(p.grid).frame(width: 1)
+        VRule()
             .overlay(Color.clear.frame(width: 7).contentShape(Rectangle())
                 .onHover { $0 ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
                 .gesture(DragGesture(minimumDistance: 1)
@@ -273,7 +281,13 @@ struct RootView: View {
         case .connecting where library.info == nil:
             Message(title: "Connecting to recall…", text: "Starting recall api if it isn't running.")
         case .failed(let why):
-            Message(title: "Can't reach recall", text: why, action: ("Try again", { library.connect() }))
+            if why.contains("too old") {
+                // Older than the app needs: ask first, then update with the tool that installed it.
+                Message(title: "recall is older than the app needs", text: why + (Updates.shared.installer == .other ? "" : " Update it now?"),
+                        action: Updates.shared.installer == .other ? nil : ("Update recall", { Updates.shared.upgradeRecall() }))
+            } else {
+                Message(title: "Can't reach recall", text: why, action: ("Try again", { library.connect() }))
+            }
         default:
             Sections(library: library, shown: library.section.host)
         }
@@ -303,14 +317,21 @@ struct Sections: NSViewRepresentable {
             if let v = views[key] { return v }
             let v = NSHostingView(rootView: SectionRoot(library: library, key: key).environmentObject(library.facts))
             v.frame = bounds
-            v.autoresizingMask = [.width, .height]
             views[key] = v
             return v
         }
 
+        /// Only the section showing follows the window: a hidden one takes the size when it next shows.
+        override func resizeSubviews(withOldSize oldSize: NSSize) { views[current]?.frame = bounds }
+
         func show(_ key: String) {
+            // The root redrawing with the same section showing: nothing to do.
+            if key == current, let v = views[key], v.superview === self, !v.isHidden { return }
             current = key
-            if let v = make(key), v.superview !== self { addSubview(v) }
+            if let v = make(key) {
+                if v.superview !== self { addSubview(v) }
+                if v.frame != bounds { v.frame = bounds }
+            }
             for (k, v) in views where v.isHidden != (k != key) { v.isHidden = k != key }
             if let v = views[key] { DispatchQueue.main.async { ThinScroller.install(in: v) } }
         }
@@ -326,7 +347,11 @@ struct Sections: NSViewRepresentable {
                 ThinScroller.install(in: v)
                 v.isHidden = true
             }
-            DispatchQueue.main.async { [weak self] in self?.prewarm(Array(keys.dropFirst())) }
+            // A beat between each, and none in the middle of a scroll: each one holds the main thread for a tenth of a second or more.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self else { return }
+                if self.library?.scrolling == true { self.prewarm(keys) } else { self.prewarm(Array(keys.dropFirst())) }
+            }
         }
     }
 
@@ -338,6 +363,12 @@ struct Sections: NSViewRepresentable {
     }
 
     func updateNSView(_ s: Stack, context: Context) { s.show(shown) }
+
+    /// The stack fills whatever it's given. Without this SwiftUI asks for its fitting size on every layout, and
+    /// AppKit answers by walking the views of every section, hidden ones included, on every frame of a scroll.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: Stack, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
 }
 
 struct SectionRoot: View {
@@ -373,9 +404,9 @@ struct Message: View {
     @Environment(\.colorScheme) var scheme
     var body: some View {
         let p = Palette.of(scheme)
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(PaperMono.font(16, 520)).foregroundStyle(p.ink)
-            Text(text).font(PaperMono.font(13, 390, prose: true)).foregroundStyle(p.muted)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(PaperMono.font(14, 520)).foregroundStyle(p.ink)
+            Text(text).font(PaperMono.font(12.5, 390, prose: true)).foregroundStyle(p.muted)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             if let action { BoxButton(title: action.0, action: action.1).padding(.top, 4) }
         }
@@ -395,15 +426,26 @@ struct TitleBar: View {
 
     var body: some View {
         let p = Palette.of(scheme)
-        HStack(spacing: 16) {
-            Color.clear.frame(width: 56, height: 1)  // the traffic lights
-            HStack(spacing: 8) {
-                Image(nsImage: markImage(size: 14, level: .act))
-                Text("recall").font(PaperMono.font(13, 640)).foregroundStyle(p.ink)
-                Text("/ " + library.section.title).font(PaperMono.font(13)).foregroundStyle(p.muted)
+        ZStack {
+            HStack(spacing: 16) {
+                Color.clear.frame(width: 56, height: 1)  // the traffic lights
+                HStack(spacing: 8) {
+                    Image(nsImage: markImage(size: 14, level: .act))
+                    Text("recall").font(PaperMono.font(12.5, 640)).foregroundStyle(p.ink)
+                    Text("/ " + library.section.title).font(PaperMono.font(12.5)).foregroundStyle(p.muted).lineLimit(1).truncationMode(.tail)
+                }
+                .frame(maxWidth: 224, alignment: .leading)
+                Spacer(minLength: 12)
+                MenuButton(popups: library.popups, width: 288, menu: { switcher(p) }) {
+                    HStack(spacing: 8) {
+                        Text(library.info?.instance?.name ?? "This Mac").font(PaperMono.font(12.5, 500)).foregroundStyle(p.ink)
+                        Text("▾").font(PaperMono.font(12.5)).foregroundStyle(p.muted)
+                    }
+                    .padding(.horizontal, 12).frame(height: 28)
+                    .overlay(Rectangle().strokeBorder(p.line, lineWidth: 1))
+                }
             }
-            .fixedSize()
-            Spacer(minLength: 12)
+            // Centred on the window, so it stays put as the page name changes.
             // Not a text field: it opens the palette, as ⌘K does.
             Button { library.palette.open() } label: {
                 HStack(spacing: 8) {
@@ -413,27 +455,19 @@ struct TitleBar: View {
                     Kbd(text: "⌘K")
                 }
                 .font(PaperMono.font(12.5))
-                .padding(.leading, 10).padding(.trailing, 6).frame(height: 28)
+                .padding(.leading, 12).padding(.trailing, 8).frame(height: 28)
                 .background(p.paper)
                 .overlay(Rectangle().strokeBorder(p.line, lineWidth: 1))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .frame(maxWidth: 620)
-            Spacer(minLength: 12)
-            MenuButton(popups: library.popups, width: 288, menu: { switcher(p) }) {
-                HStack(spacing: 8) {
-                    Text(library.info?.instance?.name ?? "This Mac").font(PaperMono.font(12, 500)).foregroundStyle(p.ink)
-                    Text("▾").font(PaperMono.font(12)).foregroundStyle(p.muted)
-                }
-                .padding(.horizontal, 10).frame(height: 28)
-                .overlay(Rectangle().strokeBorder(p.line, lineWidth: 1))
-            }
+            .padding(.horizontal, 300)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .frame(height: WindowController.titlebar)
         .background(p.card)
-        .overlay(alignment: .bottom) { Rectangle().fill(p.grid).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rule() }
     }
 
     /// The This Mac switcher: this Mac, and a server that comes later (a plain dotted square).
@@ -454,12 +488,11 @@ struct TitleBar: View {
 struct Sidebar: View {
     @ObservedObject var library: Library
     @EnvironmentObject var facts: Facts
-    @ObservedObject var notes: NotesModel
     @Environment(\.colorScheme) var scheme
 
     var body: some View {
         let p = Palette.of(scheme)
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 32) {
             group("Library") {
                 item(.memory, "Memory", count(facts.notesCount))
                 item(.chats, "Chats", count(facts.chatsCount))
@@ -475,23 +508,23 @@ struct Sidebar: View {
                 item(.thisMac, library.info?.instance?.name ?? "This Mac", size(facts.storage?.total_bytes))
             }
             Spacer(minLength: 0)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 if let at = facts.indexedAt { Text("Indexed \(clock(at))") }
                 if let next = facts.nextRun { Text("Next memory run \(next)") }
             }
-            .font(PaperMono.font(11.5)).foregroundStyle(p.muted)
-            .padding(10)
+            .font(PaperMono.font(11)).foregroundStyle(p.muted)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .top) { Rectangle().fill(p.grid).frame(height: 1) }
+            .overlay(alignment: .top) { Rule() }
         }
-        .padding(.horizontal, 8).padding(.top, 14)
+        .padding(.horizontal, 8).padding(.top, 16)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(p.paper)
     }
 
     func group<C: View>(_ title: String, @ViewBuilder _ c: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Label(text: title).padding(.horizontal, 10).padding(.bottom, 6)
+            Label(text: title).padding(.horizontal, 12).padding(.bottom, 8)
             c()
         }
     }
@@ -500,14 +533,14 @@ struct Sidebar: View {
     func item(_ s: Place, _ title: String, _ n: String?, mark: AnyView? = nil, strong: Bool = false) -> some View {
         let p = Palette.of(scheme), on = library.section == s
         return Button { library.go(s) } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if let mark { mark }
                 Text(title).foregroundStyle(on ? p.ink : p.muted).fontWeight(on ? .medium : .regular).lineLimit(1)
                 Spacer(minLength: 4)
                 if let n, !n.isEmpty { Text(n).foregroundStyle(strong || on ? p.ink : p.muted).monospacedDigit() }
             }
             .font(PaperMono.font(12.5))
-            .padding(.horizontal, 10).frame(height: 30)
+            .padding(.horizontal, 12).frame(height: 30)
             .background(on ? p.sel : .clear)
             .contentShape(Rectangle())
         }
@@ -533,26 +566,15 @@ struct Tag: View {
     @Environment(\.colorScheme) var scheme
     var body: some View {
         let p = Palette.of(scheme)
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             if let agent { DiamondMark(color: p.agent(agent)).frame(width: 8, height: 8) }
             Text(text).lineLimit(1)
         }
         .font(PaperMono.font(11, 500)).tracking(0.4)
         .foregroundStyle(on || agent != nil ? p.ink : p.muted)
-        .padding(.horizontal, 6).padding(.vertical, 3)
+        .padding(.horizontal, 8).padding(.vertical, 4)
         .overlay(Rectangle().strokeBorder(on ? p.ink : p.faint, lineWidth: 1))
         .fixedSize()
-    }
-}
-
-/// A filter tag you can press.
-struct TagButton: View {
-    let text: String
-    let on: Bool
-    var agent: String? = nil
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) { Tag(text: text, agent: agent, on: on).contentShape(Rectangle()) }.buttonStyle(.plain)
     }
 }
 
@@ -579,12 +601,12 @@ struct WindowButton: View {
             HStack(spacing: 8) {
                 Text(title).font(PaperMono.font(small ? 11.5 : 12, 500)).foregroundStyle(text)
                 if let keys, !soon {
-                    Text(keys).font(PaperMono.font(10.5)).foregroundStyle(text.opacity(style == .primary ? 0.7 : 1))
-                        .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 17)
+                    Text(keys).font(PaperMono.font(11)).foregroundStyle(text.opacity(style == .primary ? 0.7 : 1))
+                        .padding(.horizontal, 4).frame(minWidth: 18, minHeight: 17)
                         .overlay(Rectangle().strokeBorder(style == .primary ? p.paper.opacity(0.7) : p.grid, lineWidth: 1))
                 }
             }
-            .padding(.horizontal, small ? 9 : 12).frame(minHeight: small ? 26 : 30)
+            .padding(.horizontal, small ? 8 : 12).frame(minHeight: 28)
             .background(style == .primary && !soon ? (hover.on ? p.ink.opacity(0.88) : p.ink) : Color.clear)
             .overlay(Rectangle().strokeBorder(edge, style: StrokeStyle(lineWidth: 1, dash: soon ? [3, 3] : [])))
             .contentShape(Rectangle())
@@ -596,9 +618,17 @@ struct WindowButton: View {
     }
 }
 
+/// A divider: one device pixel, so 0.5 pt on a Retina screen. Buttons and dropdowns keep their 1 pt outlines.
 struct Rule: View {
     @Environment(\.colorScheme) var scheme
-    var body: some View { Rectangle().fill(Palette.of(scheme).grid).frame(height: 1) }
+    @Environment(\.displayScale) var scale
+    var body: some View { Rectangle().fill(Palette.of(scheme).hair).frame(height: 1 / max(1, scale)) }
+}
+
+struct VRule: View {
+    @Environment(\.colorScheme) var scheme
+    @Environment(\.displayScale) var scale
+    var body: some View { Rectangle().fill(Palette.of(scheme).hair).frame(width: 1 / max(1, scale)) }
 }
 
 /// A board's row: label left, value right, a grid line above.
@@ -612,7 +642,7 @@ struct RowLine<L: View, R: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             Rule()
-            HStack(spacing: 10) { left; Spacer(minLength: 8); right }.padding(.vertical, 8)
+            HStack(spacing: 8) { left; Spacer(minLength: 8); right }.padding(.vertical, 8)
         }
     }
 }

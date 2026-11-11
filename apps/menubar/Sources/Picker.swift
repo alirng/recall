@@ -60,6 +60,7 @@ struct PickerView: View {
         let p = Palette.of(scheme)
         let r = model.rows(library.pins)
         let flat = model.flat(library.pins)
+        let places = Dictionary(flat.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { a, _ in a })
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text("⌕").foregroundStyle(p.muted)
@@ -79,12 +80,12 @@ struct PickerView: View {
                             row(nil, "All projects", model.total, p, index: 0)
                         }
                         if !r.pinned.isEmpty {
-                            Label(text: "Pinned").padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 4)
-                            ForEach(r.pinned, id: \.name) { e in row(e.name, e.name, e.count, p, index: flat.firstIndex(of: e.name) ?? 0) }
+                            Label(text: "Pinned").padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+                            ForEach(r.pinned, id: \.name) { e in row(e.name, e.name, e.count, p, index: places[e.name] ?? 0) }
                         }
                         if !r.rest.isEmpty {
-                            Label(text: "Projects").padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 4)
-                            ForEach(r.rest, id: \.name) { e in row(e.name, e.name, e.count, p, index: flat.firstIndex(of: e.name) ?? 0) }
+                            Label(text: "Projects").padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+                            ForEach(r.rest, id: \.name) { e in row(e.name, e.name, e.count, p, index: places[e.name] ?? 0) }
                         }
                         if flat.isEmpty {
                             Text("No project matches").foregroundStyle(p.muted).padding(12)
@@ -94,7 +95,7 @@ struct PickerView: View {
                 .onChange(of: model.at) { _, at in proxy.scrollTo(at) }
             }
             Rule()
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 DiamondMark(color: p.muted).frame(width: 7, height: 7)
                 Text("pins a project to the top").foregroundStyle(p.muted)
                 Spacer()
@@ -191,7 +192,7 @@ struct ProjectButton<L: View>: View {
             popups.show(PickerView(model: m, library: library).environment(\.colorScheme, scheme), below: anchor.screenRect, width: 300, height: 340,
                         keys: { e in m.key(e, pins: library.pins) })
         } label: {
-            label().background(AnchorReader(anchor: anchor)).contentShape(Rectangle())
+            label().background(AnchorReader(anchor: anchor)).hitArea(6)
         }
         .buttonStyle(.plain)
     }

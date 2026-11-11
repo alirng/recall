@@ -18,7 +18,38 @@ enum Probe {
     /// Any test flag: the window then stays off screen and the app never comes forward.
     static let background = ["--open", "--open-after", "--measure", "--shot", "--scroll-notes", "--scroll-chat", "--scroll-info",
                              "--switch-test", "--event-storm", "--close-after", "--ui-test", "--panel-open-after", "--panel-close-after",
-                             "--write-shots", "--model-test"].contains { CommandLine.arguments.contains($0) }
+                             "--write-shots", "--model-test", "--scene", "--run-fixture", "--fake-update", "--fake-latest", "--fake-updated",
+                             "--tool-dirs"].contains { CommandLine.arguments.contains($0) }
+    /// `--fake-monitor`: the real launch and real windows, but on the display ~/.agents/tools/fake-monitor makes and
+    /// with the app never coming forward, so a test can press real buttons without touching the real screen.
+    static let onFakeMonitor = CommandLine.arguments.contains("--fake-monitor")
+
+    /// Shows a new window on the fake monitor; false without the flag. With the flag and no such display it exits
+    /// rather than fall back to the real screen.
+    static func showOnFakeMonitor(_ w: NSWindow) -> Bool {
+        guard onFakeMonitor else { return false }
+        guard let f = NSScreen.screens.first(where: { $0.localizedName == "Fake Monitor" })?.visibleFrame else {
+            FileHandle.standardError.write(Data("--fake-monitor: no display called Fake Monitor is up\n".utf8))
+            exit(1)
+        }
+        NSApp.setActivationPolicy(.regular)
+        // Invisible until it's really on the fake monitor: a window that lands on the real screen is never seen, and
+        // the run stops there.
+        w.alphaValue = 0
+        w.setFrameOrigin(NSPoint(x: f.minX + 20, y: f.maxY - w.frame.height - 20))
+        w.orderFront(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if w.screen?.localizedName == "Fake Monitor" {
+                w.alphaValue = 1
+            } else {
+                w.orderOut(nil)
+                FileHandle.standardError.write(Data("--fake-monitor: the window went to \(w.screen?.localizedName ?? "no screen") at \(w.frame), not \(f); stopping\n".utf8))
+                exit(2)
+            }
+        }
+        return true
+    }
+
     nonisolated(unsafe) static var opened: Date?
 
     static func start() { if on { opened = Date() } }
@@ -317,7 +348,9 @@ enum Probe {
 
     /// Scrolls the notes list a screen at a time until every page is loaded and the end shows.
     static func scrollNotes(_ w: WindowController) {
+        // The notes list, not the first table in the window: the other sections are kept, hidden, with lists of their own.
         func table(_ v: NSView) -> NSScrollView? {
+            if v.isHidden { return nil }
             if let s = v as? NSScrollView, s.documentView is NSTableView { return s }
             for sub in v.subviews { if let s = table(sub) { return s } }
             return nil
