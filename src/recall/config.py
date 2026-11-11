@@ -34,6 +34,10 @@ DEFAULTS = {
     # Grok Bot's chat cache (chats/sources/grokbot.py): read only when enabled = true (`recall setup` asks);
     # skip = ["bot name or id", ...] are bots never read.
     "grokbot": {"enabled": False, "skip": []},
+    # wake = false: a message to an idle chat waits for its next turn instead of waking it (wake.py).
+    # inherit_permissions = true: a closed chat woken by a message keeps your own permission settings.
+    # wake_open_sessions = true: also start a turn in an open Claude Code chat, with that chat's own permissions.
+    "messaging": {"wake": True, "wake_open_sessions": False, "inherit_permissions": False},
     # On battery the nightly run and background jobs wait for power ("defer"); "run" lets them run.
     # See power.py.
     "power": {"on_battery": "defer"},
