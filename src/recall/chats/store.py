@@ -667,7 +667,9 @@ def search(
             at = rank if sid in threads else own
             own += sid not in threads
             scores[sid] = scores.get(sid, 0) + weights[name] / (FUSION_K + at + 1)
-    top = _spread(scores, threads, limit)
+    top = _spread(scores, threads, limit * FOLD_POOL)
+    gone = _copies_of(con, top)
+    top = [sid for sid in top if sid not in gone][:limit]
     if explain is not None:
         explain.update(
             scores=scores,
@@ -691,7 +693,88 @@ def search(
         d["match_at"] = found[0]["seq"] if found else None
         d["hits"] = found
         out.append(d)
+    if gone:
+        listed = {r["chat_id"]: r for r in out}
+        more = {
+            r["id"]: r
+            for r in con.execute(f"select * from sessions where id in ({','.join('?' * len(gone))})", list(gone))
+        }
+        for copy, rep in gone.items():
+            if rep in listed and copy in more:
+                c = session_row(more[copy])
+                listed[rep].setdefault("copies", []).append(
+                    {"chat_id": copy, "messages": c["messages"], "updated": c["updated"]}
+                )
     return out
+
+
+# A fork or resume copies a chat's history into a new chat, so a search finds the same conversation
+# twice. Copies are told by the opening fingerprint, then by the messages themselves: the same
+# leading messages, at least FORK_SHARED of them and half of the shorter chat (capped at FORK_PREFIX
+# compared). Headless runs and subagents share prompts without sharing a history, so they never fold.
+FOLD_POOL = 3  # results ranked per place asked for, so folding copies still fills the list
+FORK_SHARED = 4
+FORK_PREFIX = 40
+
+
+def _copies_of(con, ids: list[str]) -> dict[str, str]:
+    """Each chat among ids that copies an earlier one in the list (a better-ranked chat), mapped to it."""
+    if len(ids) < 2:
+        return {}
+    info = {
+        r["id"]: r
+        for r in con.execute(
+            f"select id, agent, fingerprint from sessions where fingerprint is not null"
+            f" and origin is not 'subagent' and origin is not 'headless' and id in ({','.join('?' * len(ids))})",
+            ids,
+        )
+    }
+    by_fp: dict[tuple, list[str]] = {}
+    for cid in ids:
+        if cid in info:
+            by_fp.setdefault((info[cid]["agent"], info[cid]["fingerprint"]), []).append(cid)
+    folded: dict[str, str] = {}
+    for group in by_fp.values():
+        if len(group) < 2:
+            continue
+        heads: dict[str, list] = {}
+        for cid in group:
+            mine = [
+                (m["role"], m["text"])
+                for m in con.execute(
+                    "select role, text from messages where session_id = ? order by seq limit ?", (cid, FORK_PREFIX)
+                )
+            ]
+            for rep, theirs in heads.items():
+                shared = 0
+                while shared < min(len(mine), len(theirs)) and mine[shared] == theirs[shared]:
+                    shared += 1
+                if shared >= FORK_SHARED and shared * 2 >= min(len(mine), len(theirs)):
+                    folded[cid] = rep
+                    break
+            else:
+                heads[cid] = mine
+    return folded
+
+
+def fold_copies(con, rows: list[dict]) -> list[dict]:
+    """Search results with each fork group shown once. The copy that ranked best stands for the group
+    (its hits are the ones that matched; any copy can be read with read_chat), and lists the others
+    as `copies`: chat_id, messages, updated. Results keep their order."""
+    folded = _copies_of(con, [r["chat_id"] for r in rows])
+    if not folded:
+        return rows
+    copies: dict[str, list[dict]] = {}
+    for r in rows:
+        if r["chat_id"] in folded:
+            copies.setdefault(folded[r["chat_id"]], []).append(
+                {"chat_id": r["chat_id"], "messages": r["messages"], "updated": r["updated"]}
+            )
+    return [
+        dict(r, copies=copies[r["chat_id"]]) if r["chat_id"] in copies else r
+        for r in rows
+        if r["chat_id"] not in folded
+    ]
 
 
 def _subagent_threads(con) -> dict[str, str]:
