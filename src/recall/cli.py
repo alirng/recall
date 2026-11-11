@@ -751,6 +751,7 @@ def cmd_install(a) -> None:
                 lines = agents.uninstall(parts, chosen or found, whole=chosen is None)
                 if chosen is None and set(parts) == set(agents.COMPONENTS):
                     autopilot.forget()
+                    lines += _unschedule()
                 elif chosen:
                     autopilot.forget([r.name for r in chosen])
         except TimeoutError as e:
@@ -762,6 +763,16 @@ def cmd_install(a) -> None:
         print("Autopilot is off.")
     elif a.cmd == "uninstall":
         print(f"recall will not connect {', '.join(r.name for r in chosen)} again (`recall install --root` does).")
+
+
+def _unschedule() -> list[str]:
+    """A whole uninstall also ends the nightly memory run: left on, it would go on sending chats to the model."""
+    from .integrations import scheduler
+
+    if not scheduler.scheduled():
+        return []
+    scheduler.disable()
+    return [f"{'Nightly run':12} removed (`recall schedule enable` brings it back)"]
 
 
 def cmd_autopilot(a) -> None:
