@@ -709,12 +709,14 @@ def search(
 
 
 # A fork or resume copies a chat's history into a new chat, so a search finds the same conversation
-# twice. Copies are told by the opening fingerprint, then by the messages themselves: the same
-# leading messages, at least FORK_SHARED of them and half of the shorter chat (capped at FORK_PREFIX
-# compared). Headless runs and subagents share prompts without sharing a history, so they never fold.
+# twice. Copies are told by the opening fingerprint, then by the whole history: the shorter chat is
+# contained in the other, its messages all the leading ones of the other (a resume, or a fork that has
+# not gone its own way yet), give or take FORK_SLACK of them. A fork that went a different way keeps
+# its own result, as what it found is what makes it worth finding. Headless runs and subagents share
+# prompts without sharing a history, so they never fold.
 FOLD_POOL = 3  # results ranked per place asked for, so folding copies still fills the list
-FORK_SHARED = 4
-FORK_PREFIX = 40
+FORK_SHARED = 4  # leading messages that must be shared at least
+FORK_SLACK = 0.05  # share of the shorter chat (at least 2 messages) that may differ at its end
 
 
 def _copies_of(con, ids: list[str]) -> dict[str, str]:
@@ -741,15 +743,14 @@ def _copies_of(con, ids: list[str]) -> dict[str, str]:
         for cid in group:
             mine = [
                 (m["role"], m["text"])
-                for m in con.execute(
-                    "select role, text from messages where session_id = ? order by seq limit ?", (cid, FORK_PREFIX)
-                )
+                for m in con.execute("select role, text from messages where session_id = ? order by seq", (cid,))
             ]
             for rep, theirs in heads.items():
                 shared = 0
                 while shared < min(len(mine), len(theirs)) and mine[shared] == theirs[shared]:
                     shared += 1
-                if shared >= FORK_SHARED and shared * 2 >= min(len(mine), len(theirs)):
+                short = min(len(mine), len(theirs))
+                if shared >= FORK_SHARED and short - shared <= max(2, FORK_SLACK * short):
                     folded[cid] = rep
                     break
             else:
