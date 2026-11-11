@@ -15,10 +15,18 @@ from collections.abc import Iterator
 from . import Item, chatgpt, claudeai
 
 _FILE = re.compile(r"conversations(-\d+)?\.json")
+# Far beyond a real account's export (big ones run to hundreds of MB), and short of what json.load
+# can hold in memory in the CLI or the long-lived `recall api`.
+MAX_BYTES = 2_000_000_000
 
 
 class BadExport(ValueError):
     """The path is not an export recall can read; the message says why, and nothing was indexed."""
+
+
+def _fits(path: str, size: int) -> None:
+    if size > MAX_BYTES:
+        raise BadExport(f"{path} holds {size // 1_000_000:,} MB of conversations, more than recall reads at once")
 
 
 def _from_zip(path: str) -> list:
@@ -26,6 +34,7 @@ def _from_zip(path: str) -> list:
         names = sorted(n for n in z.namelist() if _FILE.fullmatch(os.path.basename(n)))
         if not names:
             raise BadExport(f"{path} has no conversations.json")
+        _fits(path, sum(z.getinfo(n).file_size for n in names))
         out = []
         for name in names:
             with z.open(name) as f:
@@ -37,6 +46,7 @@ def _from_folder(path: str) -> list:
     names = sorted(n for n in os.listdir(path) if _FILE.fullmatch(n))
     if not names:
         raise BadExport(f"{path} has no conversations.json")
+    _fits(path, sum(os.path.getsize(os.path.join(path, n)) for n in names))
     out = []
     for name in names:
         with open(os.path.join(path, name), "rb") as f:
@@ -51,13 +61,14 @@ def _parts(path: str) -> list:
             return _from_folder(path)
         if zipfile.is_zipfile(path):
             return _from_zip(path)
+        _fits(path, os.path.getsize(path))
         with open(path, "rb") as f:
             return [json.load(f)]
     except BadExport:
         raise
     except OSError as e:
         raise BadExport(f"could not read {path}: {e.strerror or type(e).__name__}") from None
-    except (ValueError, zipfile.BadZipFile):
+    except (ValueError, zipfile.BadZipFile, RecursionError, MemoryError):
         raise BadExport(f"{path} is not a claude.ai or ChatGPT export") from None
 
 
