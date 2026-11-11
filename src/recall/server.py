@@ -245,7 +245,8 @@ def search_chats(
         depth = n if len(queries) == 1 else max(n, 20)  # deeper lists fuse into a better top n
         with _db() as con:
             note = _incomplete(con)
-            return _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])[:n]
+            merged = _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])
+            return store.fold_copies(con, merged)[:n]
 
     rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
     # Claude Code and Codex show the model structuredContent when a result has it; Cursor reads
@@ -306,6 +307,8 @@ def _result_block(row: dict) -> str:
     lines = [f"[{h['seq']}] {' '.join(h['snippet'].split())}" for h in row.get("hits") or []]
     if not lines and row.get("snippet"):
         lines = [f"opening message: {' '.join(row['snippet'].split())}"]
+    if row.get("copies"):
+        head += " · same conversation also in " + ", ".join(c["chat_id"] for c in row["copies"])
     return head + "".join(f"\n  {line}" for line in lines) + "\n"
 
 

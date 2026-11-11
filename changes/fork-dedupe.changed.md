@@ -1,0 +1,1 @@
+**Forked chats show once in search.** A Claude Code, Codex or Cursor chat that copies another chat's history (a fork or resume) no longer takes a second result slot: the best-ranked copy stands for the group and lists the others as `copies`, which `read_chat` still opens.
