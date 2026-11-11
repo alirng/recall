@@ -34,9 +34,23 @@ from datetime import datetime
 
 from .. import contexts
 from ..chats.redact import redact
-from ..llm import Client
+from ..llm import BudgetExceeded, Client
 from . import prompts, remember, said
-from .notes import CONFIDENCE, REMOVED_BY_HAND, Note, NoteStore, Rule, clean_title, new_id, placed, rule_id, sync, today
+from .notes import (
+    CONFIDENCE,
+    REMOVED_BY_HAND,
+    Note,
+    NotesBusy,
+    NoteStore,
+    Rule,
+    clean_title,
+    new_id,
+    placed,
+    rule_id,
+    sync,
+    today,
+    turn,
+)
 
 SYSTEM, _ = prompts.load("consolidate")
 BATCH = 20
@@ -117,10 +131,18 @@ _GROUP_KEY = "case when scope='project' then coalesce(project_key, '') else '' e
 def run(con, client: Client, store: NoteStore, notes: dict[str, Note], log=print) -> Counter:
     """Fold every new candidate into notes, one group (scope) at a time."""
     fold = Consolidation(con, store, notes, log)
+    drain(fold, client)
+    return fold.finish()
+
+
+def drain(fold: "Consolidation", client: Client, deadline: float | None = None) -> None:
+    """Ask the model for each group's batches in turn. Stops at `deadline` with BudgetExceeded,
+    as a call budget does; what was applied before it stands."""
     for group in fold.groups:
         while (request := fold.prepare(group)) is not None:
+            if deadline and time.time() > deadline:
+                raise BudgetExceeded("time budget reached")
             fold.apply(group, client.json(request.purpose, request.system, request.prompt, request.schema))
-    return fold.finish()
 
 
 @dataclass
@@ -143,56 +165,66 @@ class Group:
     start: int = 0  # the first candidate of the current batch
     prompt: str | None = None  # the current batch's prompt, once prepared
     retry: bool = False  # the answer waved the batch away: ask once more
+    deleted_titles: frozenset = frozenset()  # notes the developer deleted in this scope, however many
+    removed_rules: frozenset = frozenset()  # rules the developer removed by hand in this scope
 
 
 class Consolidation:
     """Consolidation as steps, so a caller can send one request per group at a time and
     apply the answers in turn: prepare(group) gives the group's next request (None when the
     group is done), apply(group, answer) checks and applies it, and finish() closes the run.
-    A group's batches depend on each other; groups do not, as each holds its own notes."""
+    A group's batches depend on each other; groups do not, as each holds its own notes.
+
+    The notes lock is taken only to write, here and in apply() and finish(). While a model answers,
+    a `recall remember` or an edit from the app can land: a note changed that way is seen as
+    changed on disk when its turn comes, and the caller reads the notes again before it compiles."""
 
     def __init__(self, con, store: NoteStore, notes: dict[str, Note], log=print):
         self.con, self.store, self.notes, self.log = con, store, notes, log
         self.stats = Counter()
         pending: set[str] = set()  # notes whose hand edit is left for the next run
-        for note in list(notes.values()):
-            if note.edited_by_hand:  # keep the rules read back from a hand edit
-                emptied = not note.body.strip() and bool(note.rules)
-                if store.changed(note):  # saved again since the notes were read: this copy is stale
-                    pending.add(note.id)
-                    fresh = store.reread(note)
-                    if fresh:
-                        notes[note.id] = fresh
-                    else:
+        with turn():
+            for note in list(notes.values()):
+                if note.edited_by_hand:  # keep the rules read back from a hand edit
+                    emptied = not note.body.strip() and bool(note.rules)
+                    if store.changed(note):  # saved again since the notes were read: this copy is stale
+                        pending.add(note.id)
+                        fresh = store.reread(note)
+                        if fresh:
+                            notes[note.id] = fresh
+                        else:
+                            del notes[note.id]
+                        self.stats["deferred, note changed on disk"] += 1
+                        log(
+                            f"  {note.title!r}: changed on disk since it was read, "
+                            "so its hand edit is read on the next run"
+                        )
+                        continue
+                    if emptied and _quiet_for(note) < SETTLE_SECONDS:  # an editor may be mid-rewrite
+                        pending.add(note.id)
+                        self.stats["deferred, emptied note still settling"] += 1
+                        log(
+                            f"  {note.title!r}: its body was emptied by hand less than {SETTLE_SECONDS // 60} minutes "
+                            f"ago, so the note is left for the next run"
+                        )
+                        continue
+                    store.write(note)
+                    self.stats["edited by hand"] += 1
+                    if emptied:  # nothing is lost: the rules stay in the file, retired
+                        log(
+                            f"  {note.title!r}: its body was emptied by hand, so its rules were retired as "
+                            f"removed by hand and the note archived (git revert undoes it)"
+                        )
+                    if note.status != "active":
                         del notes[note.id]
-                    self.stats["deferred, note changed on disk"] += 1
-                    log(
-                        f"  {note.title!r}: changed on disk since it was read, so its hand edit is read on the next run"
-                    )
-                    continue
-                if emptied and _quiet_for(note) < SETTLE_SECONDS:  # an editor may be mid-rewrite
-                    pending.add(note.id)
-                    self.stats["deferred, emptied note still settling"] += 1
-                    log(
-                        f"  {note.title!r}: its body was emptied by hand less than {SETTLE_SECONDS // 60} minutes "
-                        f"ago, so the note is left for the next run"
-                    )
-                    continue
-                store.write(note)
-                self.stats["edited by hand"] += 1
-                if emptied:  # nothing is lost: the rules stay in the file, retired
-                    log(
-                        f"  {note.title!r}: its body was emptied by hand, so its rules were retired as "
-                        f"removed by hand and the note archived (git revert undoes it)"
-                    )
-                if note.status != "active":
-                    del notes[note.id]
         # What the developer deleted: whole notes (the ledger) and single rules removed from a note.
-        # Each kind has its own cap, so a long run of rule edits cannot push a deleted note out.
+        # Each kind has its own cap in the prompt, so a long run of rule edits cannot push a deleted
+        # note out; the check in _apply takes all of them.
+        everything = store.load(include_archived=True)
         removed = sorted(
             (
                 (r.retired, {"title": n.title, "body": r.text, "scope": n.scope, "project": n.project})
-                for n in store.load(include_archived=True).values()
+                for n in everything.values()
                 if n.id not in pending  # a hand edit left for the next run is not settled: not yet a deletion
                 for r in n.rules
                 if r.reason == REMOVED_BY_HAND
@@ -200,6 +232,9 @@ class Consolidation:
             key=lambda pair: pair[0],
         )
         deleted = store.rejected()
+        # An id no new note may take: an archived file keeps its own, and a deleted note's would
+        # read as that note restored and end its deletion (NoteStore.reconcile).
+        self.taken = frozenset(everything) | frozenset(store._read_ledger().get("rejected", {}))
         self.groups = []
         for g in con.execute(
             f"""select scope, {_GROUP_KEY} key, max(project_name) name, count(*) n
@@ -212,7 +247,15 @@ class Consolidation:
             ).fetchall()
             here = [r for r in deleted if r.get("scope") == scope.kind and r.get("project") == scope.key]
             here_rules = [r for _, r in removed if r.get("scope") == scope.kind and r.get("project") == scope.key]
-            self.groups.append(Group(scope, candidates, here[-REJECTED_SHOWN:] + here_rules[-REJECTED_SHOWN:]))
+            self.groups.append(
+                Group(
+                    scope,
+                    candidates,
+                    here[-REJECTED_SHOWN:] + here_rules[-REJECTED_SHOWN:],
+                    deleted_titles=frozenset(_key(r.get("title") or "") for r in here) - {""},
+                    removed_rules=frozenset(_key(r["body"]) for r in here_rules),
+                )
+            )
 
     def prepare(self, group: Group) -> Request | None:
         if group.start >= len(group.candidates):
@@ -233,8 +276,9 @@ class Consolidation:
         if not group.retry and _bulk_discard(ops, len(batch)):
             group.retry = True  # the next prepare() asks again
             return
-        _apply(self.con, self.store, self.notes, group.scope, batch, ops, self.stats, self.log)
-        self.con.commit()
+        with turn():
+            _apply(self.con, self.store, self.notes, group.scope, batch, ops, self.stats, self.log, group, self.taken)
+            self.con.commit()
         self.stats["batches"] += 1
         group.start, group.prompt, group.retry = group.start + BATCH, None, False
 
@@ -247,7 +291,11 @@ class Consolidation:
         if unfinished:
             self.log(f"expiry skipped: {unfinished} groups still have candidates to read")
         else:
-            self.stats["expired"] = expire(self.store, self.notes)
+            try:
+                with turn():
+                    self.stats["expired"] = expire(self.store, self.notes)
+            except NotesBusy as e:  # nothing is lost: a later run expires them, and the caller can still close
+                self.log(f"expiry skipped: {e}")
         return self.stats
 
 
@@ -263,7 +311,9 @@ def expire(store: NoteStore, notes: dict[str, Note]) -> int:
     """Open threads go stale quickly; weak single-source notes fade if never seen again."""
     now, n = time.time(), 0
     for note in list(notes.values()):
-        if note.edited_by_hand:  # a hand edit left for the next run: nothing is written from this copy
+        if note.edited_by_hand or store.changed(
+            note
+        ):  # a hand edit left for the next run, or one made since it was read
             continue
         try:
             age = (now - datetime.fromisoformat(note.last_seen).timestamp()) / 86400
@@ -295,6 +345,7 @@ class _Batch:
     merged: dict[int, str] = field(default_factory=dict)  # candidate id -> note id
     discarded: dict[int, str] = field(default_factory=dict)  # candidate id -> reason
     asked: dict[int, bool] = field(default_factory=dict, repr=False)  # candidate id -> typed()
+    taken: frozenset = frozenset()  # ids a new note may not take (Consolidation.taken)
 
     def typed(self, candidate) -> bool:
         """Did the developer type the candidate's evidence (said.py)? Asked once per candidate."""
@@ -334,9 +385,20 @@ class _Batch:
         return note, next(r for r in note.rules if r.id == rid)
 
 
-def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, ops, stats: Counter, log) -> None:
+def _apply(
+    con,
+    store: NoteStore,
+    notes: dict[str, Note],
+    scope: Scope,
+    batch,
+    ops,
+    stats: Counter,
+    log,
+    group: Group | None = None,
+    taken: frozenset = frozenset(),
+) -> None:
     by_number = dict(enumerate(batch, 1))
-    b = _Batch(notes, scope, con)
+    b = _Batch(notes, scope, con, taken=taken)
     for op in ops:
         candidates = [by_number[i] for i in dict.fromkeys(op["candidates"]) if i in by_number]
         if not candidates:
@@ -351,7 +413,22 @@ def _apply(con, store: NoteStore, notes: dict[str, Note], scope: Scope, batch, o
             for c in candidates:
                 b.discarded.setdefault(c["id"], redact(op["reason"])[:300] or "discarded")
             continue
-        when = _date(max(c["chat_ts"] or 0 for c in candidates))
+        if group and kind != "confirm":  # a confirm brings no words of its own
+            removed = group.removed_rules
+            proposed = texts or (fallback if kind in ("add", "create") else [])
+            title = clean_title(op["title"]) or clean_title(candidates[0]["title"])
+            makes_note = kind == "create" or (kind == "add" and not b.note(op["note_id"]))
+            if (proposed and all(_key(t) in removed for t in proposed)) or (
+                makes_note and _key(title) in group.deleted_titles
+            ):
+                stats["refused, deleted by the developer"] += 1
+                log(f"  refused {kind}: the developer deleted this")
+                for c in candidates:
+                    b.discarded.setdefault(c["id"], "the developer deleted this")
+                continue
+            texts = [t for t in texts if _key(t) not in removed]
+            fallback = [t for t in fallback if _key(t) not in removed]
+        when = _date(max(_said(c) for c in candidates))
         found = b.rule(op["note_id"], op["rule_id"]) if kind in ("confirm", "refine", "retire") else None
         if kind in ("confirm", "refine", "retire") and not found:
             if kind == "refine" and texts and b.note(op["note_id"]):
@@ -542,6 +619,9 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
             stats["deferred, note changed on disk"] += 1
             log(f"  not written: {note.title!r} {why}; its candidates stay for the next run")
             continue
+        if note.id in b.work and note.reach == "everywhere" and _new_words(b.notes[note.id], note):
+            note.reach = None  # the verdict was on other words: judged again, and held to its contexts until then
+            stats["reach reopened"] += 1
         note.updated = today()
         store.write(note)  # also renders the body, and archives a note with no rule left
         if note.status == "active":
@@ -562,6 +642,12 @@ def _commit(con, store: NoteStore, notes: dict[str, Note], b: _Batch, by_number:
         "update candidates set status='discarded', reason='never assigned' where status='new' and attempts>=?",
         (MAX_ATTEMPTS,),
     )
+
+
+def _new_words(before: Note, after: Note) -> bool:
+    """Does the note now state something it did not: a new rule, or one reworded?"""
+    had = {_key(r.text) for r in before.active_rules}
+    return any(_key(r.text) not in had for r in after.active_rules)
 
 
 def _state(note: Note) -> tuple:
@@ -585,7 +671,7 @@ def _create(b: _Batch, op: dict, texts: list[str], candidates) -> Note:
         created=first,
         updated=today(),
     )
-    while note.id in b.notes or note.id in b.created:
+    while note.id in b.notes or note.id in b.created or note.id in b.taken:
         note.id = new_id(title, salt=f"{b.scope.key}{first}{time.time()}")
     note.rules = _new_rules(b, note, texts, candidates)
     sync(note)
@@ -648,8 +734,17 @@ def _texts(values: list[str]) -> list[str]:
     return [t for t in (said.clean_rule(" ".join(v.split())) for v in values) if t]
 
 
+def _said(c) -> float:
+    """The latest a candidate can have been said (extract.store); a row from before said_at has only chat_ts."""
+    return c["said_at"] if c["said_at"] is not None else c["chat_ts"] or 0
+
+
+def _key(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
 def _same(a: str, b: str) -> bool:
-    return " ".join(a.split()).lower() == " ".join(b.split()).lower()
+    return _key(a) == _key(b)
 
 
 # --- the prompt ---------------------------------------------------------------------------

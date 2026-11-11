@@ -64,6 +64,8 @@ def status() -> str:
         state = "loaded" if loaded.returncode == 0 else "NOT loaded"
         return f"nightly at {at['Hour']:02d}:{at['Minute']:02d} ({state}); log: {LOG}"
     if sys.platform.startswith("linux"):
+        if not os.path.exists(os.path.join(SYSTEMD, "recall-dream.timer")):
+            return "not scheduled"
         return "see `systemctl --user list-timers recall-dream.timer`"
     return "not scheduled"
 

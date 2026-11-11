@@ -1,0 +1,1 @@
+**`recall remember` and edits from the app no longer wait for a memory run.** The run holds the notes only while it writes, not while a model answers, and it no longer writes without the lock. Notes written in a run are judged for where they apply in that run, before the indexes are written. The time budget now also stops a run that does not use a batch API.

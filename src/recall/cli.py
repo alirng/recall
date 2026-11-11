@@ -795,6 +795,7 @@ def cmd_doctor(a) -> None:
     from . import autopilot, power
     from .chats import indexer
     from .chats.sources import codex
+    from .memory import runs
 
     rows = autopilot.report()
     if a.json:
@@ -851,7 +852,7 @@ def cmd_doctor(a) -> None:
         print("  `recall install --repoint` points the hooks at this recall; autopilot never moves them")
     for line in autopilot.recent():
         print(f"  {line}")
-    for line in power.summary():
+    for line in [*power.summary(), *runs.health()]:
         print(f"\n{line}")
     if parked := indexer.parked():
         print(

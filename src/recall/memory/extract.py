@@ -5,7 +5,9 @@ merge into existing notes, and which are dropped. Several chats share one model 
 (a batch) because most providers charge a fixed overhead per call.
 """
 
+import contextlib
 import re
+import sqlite3
 import time
 from dataclasses import dataclass
 
@@ -66,11 +68,14 @@ def ensure_tables(con) -> None:
           id integer primary key, session_id text, project_key text, project_name text,
           scope text, type text, title text, body text, why text, evidence text, speaker text,
           confidence text, chat_ts real, status text default 'new', note_id text, reason text,
-          attempts int default 0, created real
+          attempts int default 0, created real, said_at real
         );
         create index if not exists candidates_status on candidates(status, project_key);
         """
     )
+    if "said_at" not in {r[1] for r in con.execute("pragma table_info(candidates)")}:
+        with contextlib.suppress(sqlite3.OperationalError):  # another process added it just now
+            con.execute("alter table candidates add column said_at real")
 
 
 @dataclass
@@ -166,14 +171,49 @@ class Collector:
         return entry["session"] if entry else None
 
 
+def stated_at(evidence: str, speaker: str, messages) -> float | None:
+    """When a candidate's quote was said: the latest message that holds it, by the speaker named if
+    any of those are; None when no message does (the quote is a model's and may span turns). A quote
+    too short for grounded() counts only when one message by the speaker holds it whole: "yes" or
+    "do it" recurs, and its last use says nothing of when this one was said.
+    messages: (seq, role, text, ts) rows."""
+    hits = [m for m in messages if m[3] and grounded(evidence, m[2])]
+    quote = f" {_norm(evidence)} "
+    if not hits and quote.strip():
+        whole = [m for m in messages if m[3] and m[1] == speaker and quote in f" {_norm(m[2])} "]
+        hits = whole if len(whole) == 1 else []
+    said = [m for m in hits if m[1] == speaker] or hits
+    return max((m[3] for m in said), default=None)
+
+
 def store(
-    con, session, status: str, candidates: list[dict], digest_hash: str | None, backend: str, error: str | None = None
+    con,
+    session,
+    status: str,
+    candidates: list[dict],
+    digest_hash: str | None,
+    backend: str,
+    error: str | None = None,
+    messages=None,
 ) -> None:
+    """`messages`: the chat's (seq, role, text, ts) rows, to date each candidate by the message it
+    came from, since a chat stays open for days and its last activity says nothing of when an early
+    turn was written. A candidate has two dates. chat_ts says how recent the memory is (how long a note
+    lasts). said_at is the latest it can have been said, for the guards that stop an older chat undoing
+    a newer rule. They differ when no message holds the quote: chat_ts is then the chat's last activity,
+    and said_at its start. Without `messages`: the chat's last activity, and no said_at."""
     con.execute("delete from candidates where session_id=? and status='new'", (session["id"],))
     now = time.time()
+
+    def when(c: dict) -> tuple[float | None, float | None]:
+        if messages is None:
+            return session["updated_at"], None
+        said = stated_at(c["evidence"], c["speaker"], messages)
+        return (said, said) if said else (session["updated_at"], session["started_at"] or session["updated_at"])
+
     con.executemany(
         """insert into candidates(session_id, project_key, project_name, scope, type, title, body, why,
-           evidence, speaker, confidence, chat_ts, created) values (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           evidence, speaker, confidence, chat_ts, said_at, created) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 session["id"],
@@ -187,7 +227,7 @@ def store(
                 redact(c["evidence"]),
                 c["speaker"],
                 c["confidence"],
-                session["updated_at"],
+                *when(c),
                 now,
             )
             for c in candidates
