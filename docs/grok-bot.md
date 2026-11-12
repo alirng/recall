@@ -39,6 +39,6 @@ recall recent --context personal
 - Chats outside the context are not returned, and `show` says "no chat" for one.
 - A note is returned only when every chat it was distilled from ran in the context.
 - Add a line like this to a bot's profile to tell it:
-  "To recall what Ali told other agents, run `recall search --context personal "<topic>"` on his Mac and ask before running it."
+  "To recall what I told other agents, run `recall search --context personal "<topic>"` on my Mac and ask before running it."
 
 Sending messages from a bot to your coding agents is not built.
