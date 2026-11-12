@@ -12,7 +12,6 @@
 //                        and /v1/models, for failures the sandbox can't make (a spend limit, five chats failing)
 //   --fake-update V, --fake-latest V, --fake-updated "a,b"   what the Versions panel shows without Sparkle or PyPI
 //   --tool-dirs a:b      where uv and recall are looked for, instead of the usual three folders
-//   --fake-monitor       the real launch, with its windows on ~/.agents/tools/fake-monitor's display and the app kept back
 
 import AppKit
 import SwiftUI

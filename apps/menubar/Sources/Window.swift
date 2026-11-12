@@ -19,7 +19,7 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     func show() {
         if let window {
-            if Probe.background || Probe.onFakeMonitor { window.orderBack(nil); return }
+            if Probe.background { window.orderBack(nil); return }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return
@@ -58,11 +58,11 @@ final class WindowController: NSObject, NSWindowDelegate {
         }))
         w.setFrame(frame, display: false)
         window = w
-        if Probe.background, !Probe.onFakeMonitor {
+        if Probe.background {
             // A test run: drawn off screen and never brought forward, so it doesn't take your screen.
             w.setFrameOrigin(NSPoint(x: -20000, y: -20000))
             w.orderBack(nil)
-        } else if !Probe.showOnFakeMonitor(w) {
+        } else {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             w.makeKeyAndOrderFront(nil)
