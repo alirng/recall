@@ -12,7 +12,6 @@ import os
 import re
 import sqlite3
 import sys
-import threading
 import time
 from typing import Annotated
 
@@ -70,29 +69,12 @@ mcp = _Server(
 # the index as it stands (_incomplete says so). One run at a time per server; the index lock keeps
 # servers apart.
 REFRESH_WAIT = 1.0
-_refresh_lock = threading.Lock()
-_refreshing: threading.Thread | None = None
-_refresh_started = 0.0
+_refresher = indexer.Refresh(lambda e: _complain("index refresh", e))
 
 
 def _refresh(wait: float = REFRESH_WAIT) -> None:
     """Start an index run unless one is under way, and wait for it until it is `wait` seconds old."""
-    global _refreshing, _refresh_started
-    with _refresh_lock:
-        if _refreshing is None or not _refreshing.is_alive():
-            _refreshing = threading.Thread(target=_index_run, daemon=True)
-            _refresh_started = time.monotonic()
-            _refreshing.start()
-        run, started = _refreshing, _refresh_started
-    run.join(max(0.0, wait - (time.monotonic() - started)))
-
-
-def _index_run() -> None:
-    try:
-        with contextlib.closing(store.connect()) as con:
-            indexer.index(con, max_age=60)  # cheap incremental refresh; skipped if another agent is indexing
-    except Exception as e:  # an outlived server, say: the tool call's own connection reports it to the agent
-        _complain("index refresh", e)
+    _refresher(wait)
 
 
 def _complain(what: str, e: Exception) -> None:

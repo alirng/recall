@@ -24,7 +24,6 @@ import socket
 import stat
 import subprocess
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -86,37 +85,29 @@ def _con():
 
 
 # --- new chats before a search ------------------------------------------------------
-# The MCP server indexes new chats before each tool call (server.py's _refresh), and a search here does
-# the same, so the app finds what an agent would. A run is cheap: the indexer reads a source again only
-# once its last read is a minute old, and its lock lets one process run at a time. It goes on its own
-# thread and connection, and a search waits for it for at most a second, as an agent's tool call does.
+# The MCP server brings the index up to date before each tool call, and a search here does the same with
+# the same indexer.Refresh, so the app finds what an agent would.
 
 FRESH_WAIT = 1.0
-_fresh_lock = threading.Lock()
-_fresh_run: list = []  # the latest run: [thread, monotonic start]
+_refresher: list = []  # made on first use: the indexer is imported only when a search needs it
 
 
 def _fresh(wait: float = FRESH_WAIT) -> None:
-    """Start an incremental index run unless one is under way, then wait for it until it is `wait`
-    seconds old. Never on an index another release built."""
-    with _fresh_lock:
-        if not (_fresh_run and _fresh_run[0].is_alive()):
-            if not _schema_ok():
-                return
-            _fresh_run[:] = [threading.Thread(target=_index_run, daemon=True, name="recall-index"), time.monotonic()]
-            _fresh_run[0].start()
-        run, started = _fresh_run
-    run.join(max(0.0, wait - (time.monotonic() - started)))
+    """New chats into the index before a search, as an agent's tool call gets them. Never on an index
+    another release built."""
+    if not _schema_ok():
+        return
+    if not _refresher:
+        from .chats import indexer
+
+        _refresher.append(
+            indexer.Refresh(lambda e: print(f"recall api: index refresh failed: {_safe(repr(e))}", file=sys.stderr))
+        )
+    _refresher[0](wait)
 
 
-def _index_run() -> None:
-    from .chats import indexer, store
-
-    try:
-        with contextlib.closing(store.connect()) as con:
-            indexer.index(con, max_age=60)  # as the MCP server's refresh: a source read in the last minute is skipped
-    except Exception as e:  # the search goes ahead on the index as it is
-        print(f"recall api: index refresh failed: {_safe(repr(e))}", file=sys.stderr)
+def _indexing() -> bool:
+    return bool(_refresher) and _refresher[0].busy()
 
 
 async def on_db(fn, *args):
@@ -1227,7 +1218,14 @@ class Idle:
 
     def arm(self) -> None:
         if self.idle and self.active == 0 and self.stop is not None:
-            self.handle = asyncio.get_running_loop().call_later(self.idle, self.stop.set)
+            self.handle = asyncio.get_running_loop().call_later(self.idle, self._expire)
+
+    def _expire(self) -> None:
+        """The idle time is up. An index run a search started is left to finish rather than cut short."""
+        if _indexing():
+            self.handle = asyncio.get_running_loop().call_later(5, self._expire)
+        elif self.stop is not None:
+            self.stop.set()
 
     def enter(self) -> None:
         self.active += 1

@@ -348,3 +348,37 @@ def _database_files(wanted) -> str:
         except OSError:
             state.append([path, None, None])
     return json.dumps(state)
+
+
+class Refresh:
+    """The quick index run before a search, as the MCP server and `recall api` make it: one run at a time
+    per process, on its own thread and connection, and a caller waits for it until it is `wait` seconds old.
+    A source read in the last minute is skipped, and the index lock keeps processes apart. A longer run
+    (the rebuild after an update) carries on in the background while searches answer from the index as it
+    stands."""
+
+    def __init__(self, on_error):
+        self._lock = threading.Lock()
+        self._run: threading.Thread | None = None
+        self._started = 0.0
+        self._on_error = on_error
+
+    def __call__(self, wait: float) -> None:
+        with self._lock:
+            if not self.busy():
+                self._run = threading.Thread(target=self._index, daemon=True, name="recall-index")
+                self._started = time.monotonic()
+                self._run.start()
+            run, started = self._run, self._started
+        run.join(max(0.0, wait - (time.monotonic() - started)))
+
+    def busy(self) -> bool:
+        run = self._run
+        return run is not None and run.is_alive()
+
+    def _index(self) -> None:
+        try:
+            with contextlib.closing(store.connect()) as con:
+                index(con, max_age=60)
+        except Exception as e:  # the search goes ahead on the index as it is
+            self._on_error(e)
