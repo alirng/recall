@@ -46,6 +46,10 @@ All notable changes to recall are listed here. The format follows
   single-vote scores; `--judge-votes 1` is the old judge. `longmemeval --qa` takes the same flag
   (default 1), and `eval agent --v2 --rejudge RUN_DIR --out FILE` grades the stored replies of an
   earlier run again without running any agent.
+- **The Mac app's search finds what your agents find.** `recall api`'s search indexes new chats
+  first, as an agent's search does, and matches a project the same way: a project in projects.yaml
+  covers every folder it spans, and part of a folder or title also matches. Before, the app matched
+  only an exact project name and searched the index as it last stood.
 
 ### Fixed
 
