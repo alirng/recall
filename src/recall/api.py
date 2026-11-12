@@ -24,6 +24,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -51,27 +52,71 @@ _db = ThreadPoolExecutor(1, thread_name_prefix="recall-db")
 _con_cache: list = []
 
 
-def _con():
-    """The index connection. Never rebuilds the chat tables: if the stored schema is not this
-    code's, the API says so and leaves the index to `recall index`."""
-    if _con_cache:
-        return _con_cache[0]
+def _schema_ok() -> bool:
+    """The index is there and its chat tables are this code's. One built by another release is left to
+    `recall index`: the API never rebuilds them."""
     import sqlite3
 
     from .chats import store
 
     if not os.path.exists(paths.DB):
-        raise ApiError(503, "no_index", "there is no index yet: run `recall index`")
+        return False
     try:
         ro = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True)
         row = ro.execute("select v from meta where k='chat_schema'").fetchone()
         ro.close()
     except sqlite3.Error:
         row = None
-    if not row or row[0] != store.chat_schema_version():
+    return bool(row) and row[0] == store.chat_schema_version()
+
+
+def _con():
+    """The index connection. Never rebuilds the chat tables: if the stored schema is not this
+    code's, the API says so and leaves the index to `recall index`."""
+    if _con_cache:
+        return _con_cache[0]
+    from .chats import store
+
+    if not os.path.exists(paths.DB):
+        raise ApiError(503, "no_index", "there is no index yet: run `recall index`")
+    if not _schema_ok():
         raise ApiError(503, "index_needs_rebuild", "the index was built by another release: run `recall index`")
     _con_cache.append(store.connect())
     return _con_cache[0]
+
+
+# --- new chats before a search ------------------------------------------------------
+# The MCP server indexes new chats before each tool call (server.py's _refresh), and a search here does
+# the same, so the app finds what an agent would. A run is cheap: the indexer reads a source again only
+# once its last read is a minute old, and its lock lets one process run at a time. It goes on its own
+# thread and connection, and a search waits for it for at most a second, as an agent's tool call does.
+
+FRESH_WAIT = 1.0
+_fresh_lock = threading.Lock()
+_fresh_run: list = []  # the latest run: [thread, monotonic start]
+
+
+def _fresh(wait: float = FRESH_WAIT) -> None:
+    """Start an incremental index run unless one is under way, then wait for it until it is `wait`
+    seconds old. Never on an index another release built."""
+    with _fresh_lock:
+        if not (_fresh_run and _fresh_run[0].is_alive()):
+            if not _schema_ok():
+                return
+            _fresh_run[:] = [threading.Thread(target=_index_run, daemon=True, name="recall-index"), time.monotonic()]
+            _fresh_run[0].start()
+        run, started = _fresh_run
+    run.join(max(0.0, wait - (time.monotonic() - started)))
+
+
+def _index_run() -> None:
+    from .chats import indexer, store
+
+    try:
+        with contextlib.closing(store.connect()) as con:
+            indexer.index(con, max_age=60)  # as the MCP server's refresh: a source read in the last minute is skipped
+    except Exception as e:  # the search goes ahead on the index as it is
+        print(f"recall api: index refresh failed: {_safe(repr(e))}", file=sys.stderr)
 
 
 async def on_db(fn, *args):
@@ -888,11 +933,9 @@ def search_view(q, kind, agent, project, since, until, limit, client) -> dict:
     out: dict = {"query": q, "filters": tags}
     try:
         if kind in ("all", "chats"):
-            where = (
-                (" and s.project_name = ?" if project else "") + _live(con),
-                [project] if project else [],
-            )
-            out["chats"] = store.search(con, q, agent, None, since, limit, until, where=where)
+            # The search an agent's search_chats runs, with its project filter: every folder a project
+            # spans, or part of the folder or title. Forks come back folded, the others in `copies`.
+            out["chats"] = store.search(con, q, agent, project, since, limit, until, where=(_live(con), []))
             names = {}
             if out["chats"]:
                 marks = ",".join("?" * len(out["chats"]))
@@ -906,16 +949,16 @@ def search_view(q, kind, agent, project, since, until, limit, client) -> dict:
                 for hit in r.get("hits") or ():
                     if isinstance(hit, dict) and "time" in hit:
                         hit["time"] = _day(hit["time"])
+                for copy in r.get("copies") or ():
+                    copy["updated"] = _day(copy["updated"])
             usage.record("api", "search", {"query": q, "agent": agent, "project": project}, out["chats"], client=client)
         if kind in ("all", "notes"):
             context.refresh_notes(con)
-            found = context.search(con, q, None, min(limit * 5, 60) if project else limit)
-            if project:
-                found = [r for r in found if r["project"] == project]
+            found = context.search(con, q, project, limit)  # as memory_search: the project matched in the query
             out["notes"] = [
-                {**r, "gist": _gist(r["body"]), "body": None, "last_seen": _day(r["last_seen"])} for r in found[:limit]
+                {**r, "gist": _gist(r["body"]), "body": None, "last_seen": _day(r["last_seen"])} for r in found
             ]
-            usage.record("api", "memory search", {"query": q, "project": project}, found[:limit], client=client)
+            usage.record("api", "memory search", {"query": q, "project": project}, found, client=client)
     except ValueError as e:
         raise ApiError(400, "bad_window", str(e)) from e
     out["took_ms"] = usage.ms_since(started)
@@ -1305,6 +1348,8 @@ def build_app():
         if kind not in ("all", "chats", "notes"):
             raise ApiError(400, "bad_parameter", "kind is all, chats or notes")
         client = usage_client(request)
+        if kind != "notes":
+            await off_db(_fresh)  # new chats first, as an agent's search gets them
         args = (
             q,
             kind,
