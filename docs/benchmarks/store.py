@@ -1051,7 +1051,7 @@ def main() -> None:
     r.add_argument("--role", choices=["control", "candidate"])
     r.add_argument("--git", help="the commit, when the prod hash matches no tag (checked against the runs' prod)")
     rp = sub.add_parser(
-        "record-pair", help="a same-day control and candidate (pair.sh's two folders) under one pair id"
+        "record-pair", help="a same-day control and candidate (the two arms' run folders) under one pair id"
     )
     rp.add_argument("pair", help="the pair id, such as 2026-10-17-v042-vs-v050-qa")
     rp.add_argument("control")
@@ -1062,7 +1062,7 @@ def main() -> None:
             "--harness", help="the agent harness, for runs whose meta.json does not say (before toolsearch-v1)"
         )
         o.add_argument("--metrics", help="only these metrics, comma separated")
-        o.add_argument("--home", help="a private-corpus run on a copy (pair.sh's home-pair-*): the home it copied")
+        o.add_argument("--home", help="a private-corpus run on a throwaway copy: the eval home it copied")
         o.add_argument("--set", action="append", help="a condition the run does not record, key=value")
         o.add_argument("--note")
         o.add_argument(
