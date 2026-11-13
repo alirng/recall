@@ -5,7 +5,7 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-11-12
+## [0.6.1] - 2026-11-13
 
 ### Added
 
@@ -80,6 +80,8 @@ All notable changes to recall are listed here. The format follows
 - **`recall uninstall` also removes the nightly memory run.** It used to leave the job scheduled, so
   chats kept going to the model every night until `recall schedule disable`. `--only` and `--root`
   still leave it alone, and `recall schedule enable` brings it back.
+- **`recall eval`'s explore runs keep their scratch copies beside the runs folder**, so
+  `RECALL_EVAL_RUNS` moves them too. Before, they always went to a fixed folder in your home.
 
 ## [0.6.0] - 2026-11-08
 
