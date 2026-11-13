@@ -3,9 +3,9 @@
 Recall is the Mac app. It has its own version and runs on recall, the engine, which keeps
 [its own changelog](https://github.com/alirng/recall/blob/main/CHANGELOG.md).
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-13
 
-Powered by recall 0.6.0.
+Powered by recall 0.6.1.
 
 ### Added
 
@@ -111,6 +111,17 @@ Powered by recall 0.6.0.
 - **Moving from a private model to one that sends excerpts away asks first.** recall 0.6.0 refuses
   that switch without consent. This Mac now shows "Send chat excerpts to Anthropic?" with Cancel and
   Test and switch, and Test and switch sends the destination back as accepted.
+
+### In recall 0.6.1, for this app
+
+- **`POST /v1/import`** indexes a claude.ai or ChatGPT account export, as `recall import` does, and
+  `/v1/info` lists `imports` under `writes`. The Import chats panel needs it: against recall 0.6.0
+  its button says to update recall.
+- **`/v1/runs` gives each run a `status`**: `running`, `done`, `failed`, or `crashed` for one that
+  stopped without saying so, with `error` saying why. This Mac's memory run panel reads both.
+- **`/v1/search` finds what your agents find.** It indexes new chats first, as an agent's search
+  does, and a project filter covers every folder a projects.yaml project spans and matches part of a
+  folder or title. Before, the window's search matched only an exact project name.
 
 ### In recall 0.6.0, for this app
 
