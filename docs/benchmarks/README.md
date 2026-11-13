@@ -117,8 +117,8 @@ the ledger beside the runs folder marks `INVALID`, and an eval no benchmark clai
   their mean, each folder's value in `by_repeat`. The folders must agree on everything, the
   conditions in their eval names included, and a breakdown value counts only where every folder
   reports it.
-- A planned same-day comparison: `~/.agents/recall-eval/bin/pair.sh` runs two refs side by side
-  and prints both folders; `record-pair 2026-10-17-what CONTROL_DIR CANDIDATE_DIR --allow-diff code
+- A planned same-day comparison: run the two refs side by side, each on its own throwaway copy of
+  the eval home, then `record-pair 2026-10-17-what CONTROL_DIR CANDIDATE_DIR --allow-diff code
   --public` records them under one pair id. It compares every metric of the two arms and exits
   non-zero on any difference `--allow-diff` does not name (two tags on their own eval-home copies
   differ in `code` and `corpus`), and on arms of different benchmarks. `--pair P --role R
@@ -127,7 +127,7 @@ the ledger beside the runs folder marks `INVALID`, and an eval no benchmark clai
   the pair's.
 - `--set key=value` adds a condition the run does not record (`--set notes="0.4.1 by
   claude-haiku-5-5"` for a hook arm); `--home home-rel-v050` names the eval home a private-corpus
-  run's throwaway copy was made from (`pair.sh` gives each arm a `home-pair-*` copy); `--harness
+  run's throwaway copy was made from (each arm of a pair runs on its own copy); `--harness
   upfront-v0` names the harness of runs from before `agent_harness` was recorded; `--git SHA` names
   the commit when the code matches no tag, and must have the runs' `prod=` and be on `main` or a
   tag; `--metrics` keeps a subset.

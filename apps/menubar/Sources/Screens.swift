@@ -241,7 +241,7 @@ final class MiniWindow: NSObject, NSWindowDelegate {
 
     func show<V: View>(_ view: V, size: NSSize, title: String) {
         if let window {
-            if Probe.background || Probe.onFakeMonitor { window.orderBack(nil); return }
+            if Probe.background { window.orderBack(nil); return }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return
@@ -261,7 +261,7 @@ final class MiniWindow: NSObject, NSWindowDelegate {
         if Probe.background {
             w.setFrameOrigin(NSPoint(x: -20000, y: -20000))
             w.orderBack(nil)
-        } else if !Probe.showOnFakeMonitor(w) {
+        } else {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             w.makeKeyAndOrderFront(nil)

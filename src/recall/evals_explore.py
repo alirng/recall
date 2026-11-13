@@ -44,7 +44,7 @@ GAP = 600  # seconds an earlier exploration must have started before the new one
 USEFUL = 0.3  # a served report is useful if it cites this share of the new report's files
 TARGET = 0.65  # the gate: the lowest threshold where this share of served reports is useful (train)
 SWEEP = [round(0.25 + 0.05 * i, 2) for i in range(8)]
-SCRATCH = os.path.expanduser("~/.agents/recall-eval/scratch/explore-agent")
+SCRATCH = os.path.join(os.path.dirname(h.RUNS), "scratch", "explore-agent")  # beside the runs folder (RECALL_EVAL_RUNS)
 
 
 # --- offline replay -----------------------------------------------------------------------
