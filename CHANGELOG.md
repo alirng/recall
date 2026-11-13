@@ -5,6 +5,84 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-13
+
+### Added
+
+- **Agents can hand work to any chat.** `message_chat` reaches any chat on this Mac, in any project.
+  An agent finds the chat with `search_chats` or `recent_chats` and sends up to 4,000 characters,
+  with a `who` line saying who it is. The message arrives quoted and marked as from another agent,
+  and the chat that gets it treats it as a request from a colleague. A closed Claude Code chat or an
+  idle Codex thread is woken to read it, resumed headlessly with anything that needs approval
+  refused (`[messaging] inherit_permissions = true` keeps your own settings). An open Claude Code
+  chat is woken only with `[messaging] wake_open_sessions = true`, because that turn runs with the
+  chat's own permissions, and Cursor reads messages on its next turn. Nothing stays running, a
+  message counts as delivered only once it is in the chat's transcript, and `wake = false` turns
+  waking off. See docs/coordination.md.
+- **`recall import` reads a ChatGPT account export too.** Point it at the ZIP from Settings > Data
+  controls > Export data and your ChatGPT chats become searchable from every agent, labelled
+  `chatgpt`. Only the final version of an edited or regenerated chat is kept. The Mac app has an
+  Import chats panel for both services, and agents can do it when you tell them where the file is.
+- **`recall import` reads a claude.ai account export.** Point it at the ZIP from Settings > Privacy
+  > Export data and your claude.ai chats, including those from the desktop app's Chat tab, become
+  searchable from every agent, labelled `claudeai`. A later export updates what changed, and `recall
+  forget` removes a chat for good.
+- **Claude Cowork sessions are indexed.** recall now reads the local Cowork sessions in the Claude
+  desktop app, with each session's title and the folder you picked. They are searchable from every
+  agent, labelled `cowork`, and stay out of the nightly notes unless `[roots.cowork] mine = true`.
+- **A memory run that fails now says so.** Each run is recorded when it starts and closed however it
+  ends, `recall doctor` reports a failed, crashed or overdue run, and the Mac app shows it. One
+  malformed note no longer stops every note from loading; `recall doctor` names it.
+
+### Changed
+
+- **Forked chats show once in search.** A Claude Code, Codex or Cursor chat that copies another
+  chat's history (a fork or resume) no longer takes a second result slot: the best-ranked copy
+  stands for the group and lists the others as `copies`, which `read_chat` still opens.
+- **Agent eval grading takes the majority of three votes.** `recall eval agent --v2` now grades each
+  reply three times and the majority decides, so one judge call can't settle a borderline verdict
+  alone. Re-grading 1,275 stored replies changed 2.7% of verdicts and left the same-day gaps in
+  place. Results record `judge_version` as `qa-judge-v2+maj3`, so they never compare with
+  single-vote scores; `--judge-votes 1` is the old judge. `longmemeval --qa` takes the same flag
+  (default 1), and `eval agent --v2 --rejudge RUN_DIR --out FILE` grades the stored replies of an
+  earlier run again without running any agent.
+- **The Mac app's search finds what your agents find.** `recall api`'s search indexes new chats
+  first, as an agent's search does, and matches a project the same way: a project in projects.yaml
+  covers every folder it spans, and part of a folder or title also matches. Before, the app matched
+  only an exact project name and searched the index as it last stood.
+
+### Fixed
+
+- **A chat left open for days can no longer undo a newer rule with something it said early on.**
+  Candidate memories are dated by the message they came from, and one whose quote no message holds
+  counts from the chat's start when it would change an existing rule.
+- **Deleted notes stay deleted.** A rule or note you deleted is refused in code as well as in the
+  prompt.
+- **Hooks work when recall is installed under a path with a space.** `recall install` wrote the hook
+  command unquoted, so from a folder such as `~/Library/Application Support/pipx` every hook failed
+  in the agent's shell, a second install added the entries again, and `recall uninstall` left them
+  behind. The path is now quoted, and the next `recall install` (or autopilot) repairs the entries
+  an earlier release wrote.
+- **Notes commits fail loudly, and the deletion ledger survives a crash.** A new note cannot take a
+  deleted or archived note's id, the deletion ledger is written in one step and comes back from git
+  if it is ever cut short, a note that stops parsing no longer counts as deleted, and a leftover git
+  lock in the notes folder is cleared or reported instead of silently stopping every commit.
+- **`recall remember` and edits from the app no longer wait for a memory run.** The run holds the
+  notes only while it writes, not while a model answers, and it no longer writes without the lock.
+  Notes written in a run are judged for where they apply in that run, before the indexes are
+  written. The time budget now also stops a run that does not use a batch API.
+- **Contexts no longer leak through unjudged or merged notes.** A global note the nightly run has
+  not judged stays in the contexts it was learned in. A note judged to hold everywhere is judged
+  again when it gains new words, and a note holding rules from several contexts shows each context
+  only the rules said there.
+- **An edit the hook refused no longer counts as an edit.** The chat that really has the changes is
+  no longer stopped because of a chat that never touched the file.
+- **`recall uninstall` also removes the nightly memory run.** It used to leave the job scheduled, so
+  chats kept going to the model every night until `recall schedule disable`. `--only` and `--root`
+  still leave it alone, and `recall schedule enable` brings it back.
+- **`recall eval`'s explore runs keep their scratch copies beside the runs folder**, so
+  `RECALL_EVAL_RUNS` moves them too. Before, they always went to a fixed folder in your home.
+
 ## [0.6.0] - 2026-11-08
 
 Most of this release is the engine work behind recall desktop, the new Mac app: `recall api` and
@@ -820,7 +898,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/alirng/recall/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/alirng/recall/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/alirng/recall/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/alirng/recall/compare/v0.5.0...v0.5.1

@@ -1,1 +1,0 @@
-**A chat left open for days can no longer undo a newer rule with something it said early on.** Candidate memories are dated by the message they came from, and one whose quote no message holds counts from the chat's start when it would change an existing rule.

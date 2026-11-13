@@ -1,1 +1,0 @@
-**`recall import` reads a ChatGPT account export too.** Point it at the ZIP from Settings > Data controls > Export data and your ChatGPT chats become searchable from every agent, labelled `chatgpt`. Only the final version of an edited or regenerated chat is kept. The Mac app has an Import chats panel for both services, and agents can do it when you tell them where the file is.

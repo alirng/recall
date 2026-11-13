@@ -1,1 +1,0 @@
-**Claude Cowork sessions are indexed.** recall now reads the local Cowork sessions in the Claude desktop app, with each session's title and the folder you picked. They are searchable from every agent, labelled `cowork`, and stay out of the nightly notes unless `[roots.cowork] mine = true`.

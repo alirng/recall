@@ -135,7 +135,7 @@
     },
     "my-search": {
       "title": "Search over my chats (search_v2)",
-      "description": "Hand-written questions about the maintainer's own ~2,800 chats, each with the chat(s) that answer it. Deterministic.",
+      "description": "Hand-written questions about the maintainer's own ~2,800 chats, each with the chat(s) that answer it. Deterministic. From 0.6.1 a result that stands for forked copies of a chat also counts each copy it lists as shown; no figure changed when this came in.",
       "corpus": "private",
       "dataset": {"name": "search_v2 cases", "url": null, "cases": "150: 90 train, 60 test"},
       "run": "uv run recall eval search --v2 --split test",
