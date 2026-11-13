@@ -324,7 +324,7 @@ Two surveys frame the terrain: one separates memory by form (token-level, parame
 | --- | --- | --- | --- |
 | LoCoMo [locomo] | Question answering, summarization and dialogue over very long conversations | About 300 turns and 9K tokens on average, up to 35 sessions | Short by current context sizes; independently audited, see 7.3 |
 | LongMemEval [longmemeval], [longmemeval-repo] | Information extraction, multi-session reasoning, temporal reasoning, knowledge updates, abstention | 500 questions; S variant about 115K tokens, M variant about 500 sessions; GPT-4o judge | Commercial assistants and long-context models showed about a 30% accuracy drop on sustained interactions; proposes session decomposition, fact-augmented key expansion and time-aware query expansion |
-| MemoryAgentBench [memoryagentbench] | Accurate retrieval, test-time learning, long-range understanding, selective forgetting | Incremental multi-turn format | RAG agents beat their backbone on accurate retrieval; long-context models were best at test-time learning and long-range understanding; multi-hop selective forgetting stayed near the floor (for example 4.0 in one update-policy ablation) |
+| MemoryAgentBench [memoryagentbench] | Accurate retrieval, test-time learning, long-range understanding, selective forgetting | Incremental multi-turn format | RAG agents beat their backbone on accurate retrieval; long-context models were best at test-time learning and long-range understanding; multi-hop selective forgetting stayed near the floor (for example 4.0 in one update-policy ablation); a later reread found that about a third of the multi-hop gold answers at the longest length (262K) can only be reached through a fact the context overwrote, so a reader that follows the benchmark's own newest-fact rule tops out at about two-thirds there [memoryagentbench-reread]; reported multi-hop scores sit far below that, so most of the floor is still real failure (inference) |
 | STALE [stale] | Noticing that a stored belief is outdated when the contradiction is implicit | 400 scenarios, 1,200 queries, contexts to 150K tokens | Best evaluated model reached 55.2% |
 | HorizonBench [horizonbench] | Tracking preferences that change over six months | 4,245 items, 360 simulated users, about 163K tokens | Best of 25 models 52.8%; most at or below the 20% chance level; over a third of errors chose the originally stated value |
 | PrefEval [prefeval] | Following stated preferences in long conversations | 3,000 preference-query pairs, up to 100K tokens | Zero-shot accuracy under 10% at 10 turns (about 3K tokens); prompting and retrieval did not fully fix it |
@@ -855,6 +855,7 @@ The repo already evaluates retrieval (hit@k, MRR) and, in progress, extraction (
 [longmemeval]: https://arxiv.org/abs/2410.10813
 [longmemeval-repo]: https://github.com/xiaowu0162/LongMemEval
 [memoryagentbench]: https://arxiv.org/abs/2507.05257
+[memoryagentbench-reread]: https://arxiv.org/abs/2610.09193
 [locomo-audit]: https://github.com/dial481/locomo-audit
 [locomo-plus]: https://arxiv.org/abs/2602.10715
 [stale]: https://arxiv.org/abs/2605.06527
