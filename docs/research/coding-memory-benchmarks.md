@@ -206,7 +206,7 @@ conventions change over time, and cheap: no Docker, no judge.
 | HaluMem [halumem] | Extraction recall and precision, update correct / hallucinated / omitted, QA | Synthetic personal life; Medium: 20 users, ~70 sessions each, 14,948 gold memory points, 3,467 questions | The harness takes each session's memories as a list of strings, so recall's notes fit. GPT-4o judge. CC-BY-NC-ND-4.0. MemTensor, which makes MemOS, co-authored it |
 | STALE [stale] | Whether an agent notices a fact went stale without an explicit correction | Personal state; 400 scenarios of 50 sessions | Answer sessions given (M1); no extraction gold; CC-BY-4.0 |
 | Memora (arXiv 2604.20006) [memora] | Remembering what should be kept and not repeating what was deleted or updated | 10 personas incl. a software engineer | Session types allow gold updates; three-model judge |
-| MemoryAgentBench, Selective Forgetting [mab] | Later facts overriding earlier ones | Synthetic counterfactual triples | Substring match, no judge; BM25 48.0 vs Mem0 18.0 single-hop |
+| MemoryAgentBench, Selective Forgetting [mab] | Later facts overriding earlier ones | Synthetic counterfactual triples | Substring match, no judge; BM25 48.0 vs Mem0 18.0 single-hop; about a third of the multi-hop gold answers at 262K can only be reached through a fact the context later overwrote [mab-reread] |
 | Supersede (arXiv 2606.27472) [supersede] | Updating bounded notes | LongMemEval knowledge-update questions | No memory products tested; little beyond what recall runs |
 | TEPA (arXiv 2608.07429) [tepa] | n/a | n/a | A revocable-memory method, no code or data |
 
@@ -284,7 +284,18 @@ Coding benchmarks, task success (all on small samples; see Summary point 3):
 Memory and update benchmarks: HaluMem (section 3); STALE overall accuracy, all on GPT-4o-mini
 and run by the authors: LightMem 17.8, Mem0 8.3, Zep 6.0, A-Mem 5.1 [stale]; MemoryAgentBench
 Selective Forgetting, single-hop / multi-hop: BM25 48.0 / 3.0, MemGPT 28.0 / 3.0, Cognee 28.0 /
-3.0, Mem0 18.0 / 2.0, Zep 7.0 / 3.0 [mab].
+3.0, Mem0 18.0 / 2.0, Zep 7.0 / 3.0 [mab]. These are the 262K rows of the camera-ready's main
+table. A Salesforce AI Research workshop paper [mab-reread] reread that split: about a third of
+the multi-hop questions at 262K have a gold answer reachable only through a fact the context
+later overwrote ("The capital of India is New Delhi", then "... is Grosseto"; gold New Delhi),
+so any answer that follows the benchmark's own newest-fact rule is marked wrong on them, and a
+system following that rule can score at most about two-thirds there. The rule itself, run as a
+fixed parser with no learning, scores 88 / 36 at 262K; the authors call that comparison a
+reading aid, not a leaderboard, since the parser reads the whole list and the systems ingest it
+in chunks. They reran two long-context models and their own BM25 rebuild, not the memory
+products, and advise reading these scores item by item rather than as one total. The systems
+listed above score 2 or 3 on multi-hop, so those items account for at most about a third of
+their misses.
 
 Token figures for M3: SWE-ContextBench reports 0.72-2.3 million tokens and $0.18-0.67 per task (oracle-summary rows at the low end)
 across agents, and 4-5 minutes with a memory product against 6.4 without [swecb-paper]; AML
@@ -361,6 +372,7 @@ Secret leaks have no public benchmark; they stay with recall's own memory evals.
 - [lme-v2]: https://arxiv.org/html/2605.12493v1
 - [locobench-agent]: https://arxiv.org/abs/2511.13998
 - [mab]: https://arxiv.org/html/2507.05257v4
+- [mab-reread]: https://arxiv.org/html/2610.09193v1
 - [memora]: https://github.com/geniesinc/Memora
 - [memorycode]: https://arxiv.org/html/2502.13791v2
 - [memorycode-data]: https://huggingface.co/datasets/CohereLabsCommunity/memorycode
