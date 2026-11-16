@@ -19,7 +19,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 
-from . import __version__, paths, projects, usage
+from . import __version__, config, paths, projects, usage
 from .chats import indexer, store
 from .memory import context
 
@@ -31,7 +31,63 @@ class _Server(MCPServer):
         """Tool definitions ride along in every request an agent makes, so publish input
         schemas without pydantic's "title" keys, which only repeat each property's name.
         Calls are still checked against the full schemas."""
-        return [t.model_copy(update={"input_schema": _untitled(t.input_schema)}) for t in await super().list_tools()]
+        tools = await super().list_tools()
+        return [_lean_definition(t.model_copy(update={"input_schema": _untitled(t.input_schema)})) for t in tools]
+
+
+# Leaner tool results, each behind its own switch and off by default, so that each can be measured on
+# its own. Switch them on in config.toml ([tools] lean = ["read-window", ...]) or with RECALL_LEAN
+# (comma separated, "all" for every one; the variable wins). Read for each call, except
+# search-text, which changes the tool's declared result and so is read when the server starts.
+#   search-adaptive     search_chats lists fewer chats when the first clearly outscores the rest
+#   search-repeats      a chat search_chats listed earlier in the session comes back as its id and new hits
+#   search-text         search_chats answers in text only, not text and JSON (agents show one or the other)
+#   search-description  a shorter search_chats definition
+#   read-window         read_chat with a query or offset shows about 12 messages, not 30
+#   memory-lines        memory_search returns each note as one rule line, id and date
+#   memory-five         memory_search returns 5 notes when the caller sets no limit, not 10
+LEAN = (
+    "search-adaptive",
+    "search-repeats",
+    "search-text",
+    "search-description",
+    "read-window",
+    "memory-lines",
+    "memory-five",
+)
+
+
+def _lean(name: str) -> bool:
+    spec = os.environ.get("RECALL_LEAN")
+    if spec is None:
+        spec = config.load().get("tools", {}).get("lean") or []
+    names = [x.strip() for x in (spec.split(",") if isinstance(spec, str) else spec) if isinstance(x, str)]
+    return name in names or "all" in names
+
+
+def _lean_definition(tool):
+    """A tool's published definition: what the lean switches that change its defaults say about them,
+    and the schema of a default that is now decided in the call as it was published before."""
+    props = (tool.input_schema or {}).get("properties", {})
+    if "limit" in props and tool.name in LIMIT_DEFAULTS:
+        default = LIMIT_DEFAULTS[tool.name]
+        if tool.name == "memory_search" and _lean("memory-five"):
+            default = LEAN_MEMORY_LIMIT
+        decided_in_call = tool.name == "read_chat" and _lean("read-window")
+        props["limit"] = {"type": "integer"} if decided_in_call else {"default": default, "type": "integer"}
+    notes = [text for switch, tool_name, text in LEAN_NOTES if tool.name == tool_name and _lean(switch)]
+    if tool.name == "search_chats" and _lean("search-description"):
+        tool = tool.model_copy(update={"description": SEARCH_DESCRIPTION})
+    if notes:
+        tool = tool.model_copy(update={"description": tool.description.rstrip() + "\n" + "\n".join(notes) + "\n"})
+    return tool
+
+
+LIMIT_DEFAULTS = {"search_chats": 8, "read_chat": 30, "memory_search": 10}
+LEAN_NOTES = [
+    ("read-window", "read_chat", "limit: default 12 around the best match when query or offset is given, else 30."),
+    ("memory-lines", "memory_search", "Rule lines only: read_note has the full note."),
+]
 
 
 def _untitled(schema):
@@ -187,6 +243,32 @@ def _logged(ctx: Context | None, tool: str, args: dict, run, **extra):
     return result
 
 
+SEARCH_DESCRIPTION = """Find past chats from Claude Code, Codex or Cursor by topic.
+
+query: words for what was discussed (e.g. "pen test", "dark mode tab bar"). If it misses, try
+  other words for the same thing.
+alternatives: other phrasings to search together (synonyms, function or file names, error
+  text); the best `limit` chats across all of them come back once each.
+agent: "claude", "codex" or "cursor". project: a project name (see list_projects) or part of a
+  folder or chat title.
+since / until: a date window, e.g. since="2w" or since="2026-09-01" until="2026-09-30".
+exclude: chat_ids already looked at.
+Returns chats by relevance, each with its best matching messages (hits: seq, snippet); pass
+chat_id and a hit's seq as offset to read_chat.
+"""
+
+# search-text leaves out the structured result, so the tool declares none: decided when the server starts.
+_TEXT_ONLY = _lean("search-text")
+SEARCH_RETURNS = CallToolResult if _TEXT_ONLY else Annotated[CallToolResult, list[dict]]
+
+DEFAULT_CHATS = 8
+# search-adaptive: when the second chat scores at most CLEAR_MARGIN of the first's, only the first CLEAR_CHATS
+# are listed. Chosen by replaying the searches of the 0.6.1 agent evals: the gold chat stays listed in all but
+# about 1 task in 100, and so does the chat the agent opened next in all but about 1 call in 100.
+CLEAR_MARGIN = 0.85
+CLEAR_CHATS = 3
+
+
 @mcp.tool(annotations=READ_ONLY)
 def search_chats(
     query: str,
@@ -195,10 +277,10 @@ def search_chats(
     since: str | None = None,
     until: str | None = None,
     exclude: list[str] | None = None,
-    limit: int = 8,
+    limit: int | None = None,
     alternatives: list[str] | None = None,
     ctx: Context = None,
-) -> Annotated[CallToolResult, list[dict]]:
+) -> SEARCH_RETURNS:
     """Find past chats from Claude Code, Codex or Cursor by topic.
 
     query: words for what was discussed (e.g. "pen test", "dark mode tab bar"). If the first
@@ -220,35 +302,94 @@ def search_chats(
         args["alternatives"] = queries[1:]
 
     note = None
+    left_out = 0
 
     def run():
-        nonlocal note
-        n = max(1, min(limit, 25))
-        depth = n if len(queries) == 1 else max(n, 20)  # deeper lists fuse into a better top n
+        nonlocal note, left_out
+        n = max(1, min(DEFAULT_CHATS if limit is None else limit, 25))
         with _db() as con:
             note = _incomplete(con)
-            merged = _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])
-            return store.fold_copies(con, merged)[:n]
+            rows, scores = _found(con, queries, agent, project, since, until, exclude, n)
+        if limit in (None, DEFAULT_CHATS) and _lean("search-adaptive"):  # agents echo the default they are shown
+            keep = _adaptive_count(rows, scores)
+            left_out = len(rows) - keep
+            rows = rows[:keep]
+        return rows
 
     rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
+    if _lean("search-repeats"):
+        rows = _repeats(rows, _RETURNED.setdefault(_session(ctx), {}))
     # Claude Code and Codex show the model structuredContent when a result has it; Cursor reads
     # only content, which would otherwise be one indented JSON block per chat, so content is the
     # same results as text. Keep the two equivalent.
     text = "\n".join(_result_block(r) for r in rows) or "No chats match. Try other words, or fewer filters."
+    if left_out:
+        more = f"{left_out} weaker match{'es' if left_out > 1 else ''} left out: limit={DEFAULT_CHATS + 2} lists them."
+        rows.append({"note": more})
+        text += f"\n{more}"
     if note:
         rows.append({"note": note})
         text += f"\n{note}"
+    if _TEXT_ONLY:
+        return CallToolResult(content=[TextContent(type="text", text=text)])
     return CallToolResult(content=[TextContent(type="text", text=text)], structured_content={"result": rows})
+
+
+def _found(con, queries, agent, project, since, until, exclude, n) -> tuple[list[dict], dict[str, float]]:
+    """The best `n` chats for the phrasings, folded for forks, and each one's fused score."""
+    depth = n if len(queries) == 1 else max(n, 20)  # deeper lists fuse into a better top n
+    if len(queries) == 1:
+        explain: dict = {}
+        merged = store.search(con, queries[0], agent, project, since, depth, until, exclude, explain=explain)
+        scores = explain.get("scores", {})
+    else:
+        scores = {}
+        merged = _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries], scores)
+    rows = store.fold_copies(con, merged)[:n]
+    return rows, scores
+
+
+def _adaptive_count(rows: list[dict], scores: dict[str, float]) -> int:
+    """How many of the chats to list: all of them when the second scores close to the first,
+    CLEAR_CHATS when the first clearly wins."""
+    if len(rows) <= CLEAR_CHATS:
+        return len(rows)
+    top, second = scores.get(rows[0]["chat_id"], 0), scores.get(rows[1]["chat_id"], 0)
+    return CLEAR_CHATS if top > 0 and second <= CLEAR_MARGIN * top else len(rows)
+
+
+# What each server session has been shown by search_chats: chat_id -> the hits' seqs.
+_RETURNED: dict[str, dict[str, set[int]]] = {}
+
+
+def _reset_session() -> None:
+    """Forget what the sessions have been shown (a test or replay starting afresh)."""
+    _RETURNED.clear()
+
+
+def _repeats(rows: list[dict], seen: dict[str, set[int]]) -> list[dict]:
+    """The results with a chat shown earlier in this session cut to its id and the hits not shown before."""
+    out = []
+    for r in rows:
+        cid = r["chat_id"]
+        hits = r.get("hits") or []
+        if cid in seen:
+            out.append({"chat_id": cid, "repeat": True, "hits": [h for h in hits if h["seq"] not in seen[cid]]})
+        else:
+            out.append(r)
+        seen.setdefault(cid, set()).update(h["seq"] for h in hits)
+    return out
 
 
 MAX_PHRASINGS = 6
 
 
-def _merge(lists: list[list[dict]]) -> list[dict]:
+def _merge(lists: list[list[dict]], scores: dict[str, float] | None = None) -> list[dict]:
     """Every chat any phrasing found, listed once: ranked by reciprocal rank fusion of the
     phrasings' rankings (a chat several of them rank well comes first), keeping the best hits
     from all of them. A single phrasing passes through unchanged. The caller keeps the top
-    `limit`: an agent that sends more phrasings gets better-ranked chats, not more of them."""
+    `limit`: an agent that sends more phrasings gets better-ranked chats, not more of them.
+    `scores`, when given, is filled with each chat's fused score."""
     if len(lists) == 1:
         return lists[0]
     score: dict[str, float] = {}
@@ -265,6 +406,8 @@ def _merge(lists: list[list[dict]]) -> list[dict]:
             rows[cid]["matches"] = max(rows[cid].get("matches") or 0, r.get("matches") or 0)
     for r in rows.values():
         r["hits"] = r["hits"][: store.TOP_HITS]
+    if scores is not None:
+        scores.update(score)
     return [rows[c] for c in sorted(score, key=score.get, reverse=True)]
 
 
@@ -283,6 +426,13 @@ def _result_block(row: dict) -> str:
     """One search result as plain text: a line with chat_id · title · project (branch) · last
     active · size, then each hit as "[seq] snippet" on one line. Far fewer tokens than JSON:
     no field names, quotes or escapes."""
+    if row.get("repeat"):
+        return (
+            row["chat_id"]
+            + " · listed above"
+            + "".join(f"\n  [{h['seq']}] {' '.join(h['snippet'].split())}" for h in row["hits"])
+            + "\n"
+        )
     where = (row.get("project") or "") + (f" ({row['branch']})" if row.get("branch") else "")
     size = f"{row['messages']} messages" + (f", {row['matches']} matching" if row.get("matches") else "")
     head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
@@ -294,12 +444,16 @@ def _result_block(row: dict) -> str:
     return head + "".join(f"\n  {line}" for line in lines) + "\n"
 
 
+WINDOW_MESSAGES = 12  # read-window: messages around the best match, when the caller sets no limit
+WINDOW_LEAD = 4  # of which this many come before a query's best match
+
+
 @mcp.tool(annotations=READ_ONLY)
 def read_chat(
     chat_id: str,
     query: str | None = None,
     offset: int | None = None,
-    limit: int = 30,
+    limit: int | None = None,
     ctx: Context = None,
 ) -> dict:
     """Read a past chat (user and agent turns; tool output omitted). Long messages show their
@@ -309,20 +463,46 @@ def read_chat(
     query: jump to the part of the chat that best matches these words.
     offset: message index to start from (a search hit's seq, or next_offset); default is the start.
     """
+    windowed = limit is None and (bool(query) or offset is not None) and _lean("read-window")
+    count = WINDOW_MESSAGES if windowed else 30 if limit is None else limit
 
     def run():
         with _db() as con:
-            result = store.read(con, chat_id, query, offset, max(1, min(limit, 80)), max_chars=store.MAX_MESSAGE_CHARS)
+            result = store.read(
+                con,
+                chat_id,
+                query,
+                offset,
+                max(1, min(count, 80)),
+                max_chars=store.MAX_MESSAGE_CHARS,
+                lead=WINDOW_LEAD if windowed else None,
+            )
             note = None if result else _incomplete(con)
         if not result:
             return {"error": f"no chat with id {chat_id!r}; use search_chats first" + (f". {note}" if note else "")}
-        budget = store.MAX_MESSAGE_CHARS if limit == 1 else CLIP_CHARS
+        budget = store.MAX_MESSAGE_CHARS if count == 1 else CLIP_CHARS
         terms = _terms(query)
         for m in result["transcript"]:
             m["text"] = _clip(m["text"], budget, terms)
+        if windowed and (more := _more(result)):
+            result["more"] = more
         return result
 
     return _logged(ctx, "read_chat", {"chat_id": chat_id, "query": query, "offset": offset}, run)
+
+
+def _more(result: dict) -> str | None:
+    """How much of the chat lies outside a window, and the offsets that read it."""
+    seqs = [m["seq"] for m in result["transcript"]]
+    if not seqs:
+        return None
+    before, after = seqs[0], result["messages"] - 1 - seqs[-1]
+    parts = []
+    if before > 0:
+        parts.append(f"{before} before (offset={max(0, seqs[0] - WINDOW_MESSAGES)})")
+    if after > 0:
+        parts.append(f"{after} after (offset={seqs[-1] + 1})")
+    return f"messages not shown: {', '.join(parts)}; limit reads more at once" if parts else None
 
 
 CLIP_CHARS = 1200  # per message in a multi-message read
@@ -399,18 +579,29 @@ def recent_chats(
     return _logged(ctx, "recent_chats", args, run)
 
 
+LEAN_MEMORY_LIMIT = 5  # memory-five: notes returned when the caller sets no limit
+
+
 @mcp.tool(annotations=READ_ONLY)
-def memory_search(query: str, project: str | None = None, limit: int = 10, ctx: Context = None) -> list[dict]:
+def memory_search(query: str, project: str | None = None, limit: int | None = None, ctx: Context = None) -> list[dict]:
     """Search the developer's memory notes: preferences, project facts, decisions, lessons and
     open threads distilled from all their past agent chats.
 
     Use before choices the developer may have opinions on (tools, conventions, workflow), or
     when project background would help. project: name or part of the repository.
     """
+    lean = _lean("memory-lines")
+    count = limit if limit is not None else LEAN_MEMORY_LIMIT if _lean("memory-five") else 10
 
     def run():
         with _notes_db() as con:
-            return context.search(con, query, project, max(1, min(limit, 30)))
+            rows = context.search(con, query, project, max(1, min(count, 30)))
+        if lean:
+            return [
+                {"note_id": r["note_id"], "rule": context.rule_line(r["title"], r["body"]), "date": r["last_seen"]}
+                for r in rows
+            ]
+        return rows
 
     return _logged(ctx, "memory_search", {"query": query, "project": project}, run)
 

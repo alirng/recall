@@ -297,6 +297,8 @@ def write_mcp_config(path: str, env: dict | None = None) -> str:
     env = {"RECALL_HOME": paths.HOME, "RECALL_MEMORY": paths.MEMORY, **(env or {})}
     if os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = os.environ["PYTHONPATH"]
+    if os.environ.get("RECALL_LEAN"):  # the lean switches under test (server.LEAN) reach the server
+        env["RECALL_LEAN"] = os.environ["RECALL_LEAN"]
     config = {
         "mcpServers": {
             "recall": {"type": "stdio", "command": sys.executable, "args": ["-m", "recall", "serve"], "env": env}

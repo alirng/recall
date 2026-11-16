@@ -853,7 +853,9 @@ def resolve_id(con, chat_id: str) -> str | None:
     return rows[0]["id"] if len(rows) == 1 else None  # ambiguous prefixes resolve to nothing
 
 
-def read(con, chat_id: str, query=None, offset=None, limit=30, max_chars=2000) -> dict | None:
+def read(con, chat_id: str, query=None, offset=None, limit=30, max_chars=2000, lead=None) -> dict | None:
+    """A window of a chat's messages. With a query and no offset it starts `lead` messages before the best
+    match (default a third of the window)."""
     sid = resolve_id(con, chat_id)
     if not sid:
         return None
@@ -865,7 +867,7 @@ def read(con, chat_id: str, query=None, offset=None, limit=30, max_chars=2000) -
                order by bm25(messages_fts) limit 1""",
             (q, sid),
         ).fetchone()
-        offset = max(0, row["seq"] - limit // 3) if row else 0
+        offset = max(0, row["seq"] - (limit // 3 if lead is None else lead)) if row else 0
     offset = offset or 0
     rows = con.execute(
         "select seq, role, ts, text from messages where session_id=? and seq>=? order by seq limit ?",
