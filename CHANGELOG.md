@@ -5,6 +5,30 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-16
+
+### Changed
+
+- **The benchmark store holds 0.6.1's release runs.** The 11 November gate, 0.6.0 beside the commit
+  the release was tested on, is in [results.jsonl](docs/benchmarks/results.jsonl) as same-day pairs.
+  My own searches, SWE-CB retrieval, LongMemEval and LoCoMo are identical. Agents answer my
+  questions at 84.0% on both, 0.6.0's replies graded again with the three-vote judge so the two
+  compare. Finding the past fix is 85.8% against 85.0% over six pairs, and MemoryCode with the hook
+  is 84.6% against 84.3%, both within run noise. No published figure or chart changes.
+- **The research notes caveat MemoryAgentBench's multi-hop forgetting scores.** A later reread found
+  that about a third of the multi-hop answers at 262K can only be reached through a fact the context
+  had overwritten, so a system that keeps the newest fact is marked wrong on them. The benchmarks
+  and prior-art notes now say so, and still read the near-zero scores as mostly real failure.
+
+### Fixed
+
+- **The Mac app's first search after a pause answers at once again.** Since 0.6.1, `recall api`'s
+  search waited up to a second for the scan for new chats, so on a library of thousands of chats the
+  first search after a quiet minute took about 1.5 s. It now starts the same scan and answers from
+  the index as it stands, and the chats the scan adds arrive as a `chats` change on `/v1/events`.
+  Agents' `search_chats` still waits for the scan as before. `recall api --socket` also takes a bare
+  file name now instead of failing.
+
 ## [0.6.1] - 2026-11-13
 
 ### Added
@@ -898,7 +922,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/alirng/recall/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/alirng/recall/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/alirng/recall/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/alirng/recall/compare/v0.5.1...v0.5.2

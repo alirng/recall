@@ -12,8 +12,8 @@
 # without it still runs, with app updates off. The private key never comes near this script.
 
 # Bump these two for a release (release.sh reads them). Sparkle compares build_number, an integer; people read version.
-version="0.1.0"
-build_number="1"
+version="0.1.1"
+build_number="2"
 
 # Sparkle, pinned: the newest stable release that was at least two weeks old when it was chosen
 # (2.10.1, 25 Oct 2026), downloaded into build/vendor (git-ignored) and checked against this hash.
