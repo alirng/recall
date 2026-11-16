@@ -21,8 +21,6 @@ DEFAULTS = {
     "autopilot": {},
     # Per harness root (see roots.py): [roots.claude-work] connect / index / mine = true or false.
     "roots": {},
-    # lean: shorter tool results, each switched on by name (server.LEAN lists them); RECALL_LEAN overrides.
-    "tools": {"lean": []},
     "usage_log": True,  # recall logs its own use to usage.jsonl; see usage.py
     # When an agent edits a file another chat has open changes to: ask, worktree, tell or off
     # per situation. These are the recommended rules; see status.py and `recall setup`.
