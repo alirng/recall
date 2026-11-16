@@ -3,6 +3,26 @@
 Recall is the Mac app. It has its own version and runs on recall, the engine, which keeps
 [its own changelog](https://github.com/alirng/recall/blob/main/CHANGELOG.md).
 
+## [0.1.1] - 2026-11-16
+
+Powered by recall 0.6.3.
+
+### Changed
+
+- **Search shows chats recall reads while you search.** recall 0.6.2 answers a search from the index
+  as it stands and reads new chats behind it, so the first search after a pause no longer waits for
+  that read (about a second on a library of thousands of chats). When the read brings new chats, the
+  Search view and an open ⌘K palette search again. What was highlighted stays highlighted, and a
+  search again that fails leaves the results as they were.
+
+### In recall 0.6.3, for this app
+
+- **New chats reach the window when `recall api` starts cold.** Its `/v1/events` stream watched only
+  the files that existed when the window subscribed, and the index's write-ahead file exists only
+  while something has the index open. When no agent had it open as the window connected, the window
+  could miss new chats: its lists stayed as they were and a search didn't search again. With recall
+  0.6.0 to 0.6.2 that can still happen.
+
 ## [0.1.0] - 2026-11-13
 
 Powered by recall 0.6.1.

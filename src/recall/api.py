@@ -84,17 +84,19 @@ def _con():
     return _con_cache[0]
 
 
-# --- new chats before a search ------------------------------------------------------
-# The MCP server brings the index up to date before each tool call, and a search here does the same with
-# the same indexer.Refresh, so the app finds what an agent would.
+# --- new chats with a search --------------------------------------------------------
+# The MCP server brings the index up to date before each tool call and waits up to a second for it. A
+# search here starts the same indexer.Refresh but answers straight away from the index as it stands: in
+# the app a search is a keystroke, and on a library of thousands of chats the scan takes longer than a
+# second. Chats the scan adds reach the app as a "chats" change on /v1/events, and it searches again.
 
-FRESH_WAIT = 1.0
+FRESH_WAIT = 0.0
 _refresher: list = []  # made on first use: the indexer is imported only when a search needs it
 
 
 def _fresh(wait: float = FRESH_WAIT) -> None:
-    """New chats into the index before a search, as an agent's tool call gets them. Never on an index
-    another release built."""
+    """Start bringing new chats into the index, as an agent's tool call does, waiting at most `wait`
+    seconds. Never on an index another release built."""
     if not _schema_ok():
         return
     if not _refresher:
@@ -1134,7 +1136,9 @@ class Watcher:
                 os.close(ev.ident)
                 self.fds.pop(ev.ident, None)
                 reopen = True
-        if reopen:
+        # A file that wasn't there when watching began shows up as a change to its folder: recall.db-wal,
+        # for one, exists only while something has the index open, and this process opens it after the watch.
+        if reopen or len(self.fds) < len(self.wanted):
             for p in self.wanted:
                 self._open(p)
         if self.timer is None:
@@ -1347,7 +1351,7 @@ def build_app():
             raise ApiError(400, "bad_parameter", "kind is all, chats or notes")
         client = usage_client(request)
         if kind != "notes":
-            await off_db(_fresh)  # new chats first, as an agent's search gets them
+            await off_db(_fresh)  # starts the scan for new chats; this search doesn't wait for it
         args = (
             q,
             kind,
@@ -1585,7 +1589,7 @@ def _bind(path: str) -> tuple[socket.socket, object]:
             f"recall api: macOS allows a socket path of at most {SUN_PATH_MAX} bytes and this one is "
             f"{len(path.encode())}: {path}\nUse a shorter RECALL_HOME or pass --socket with a short path."
         )
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)  # a bare name is a socket in this folder
     lock = open(os.path.splitext(path)[0] + ".lock", "a")  # noqa: SIM115 held for the life of the server
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

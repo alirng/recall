@@ -32,6 +32,7 @@ final class PaletteModel: ObservableObject {
     @Published var narrow: PaletteItem.Group?
     var pending: DispatchWorkItem?
     var generation = 0
+    var isOpen = false
 
     func open() {
         guard let library, let w = library.popups.parent else { return }
@@ -41,7 +42,8 @@ final class PaletteModel: ObservableObject {
         at = 0
         narrow = nil
         library.popups.show(PaletteView(model: self).environment(\.colorScheme, w.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light),
-                            frame: w.frame, keys: { [weak self] e in self?.key(e) ?? false })
+                            frame: w.frame, keys: { [weak self] e in self?.key(e) ?? false }, onClose: { [weak self] in self?.isOpen = false })
+        isOpen = true
     }
 
     func close() { library?.popups.close() }
@@ -49,6 +51,18 @@ final class PaletteModel: ObservableObject {
     /// A search a moment after typing stops, so each keystroke doesn't send one.
     func changed() {
         at = 0
+        search(after: 0.18)
+    }
+
+    /// The same search again once recall has indexed new chats (see SearchModel.again). The highlighted
+    /// row stays on the same item, wherever it moves, so Enter still opens what was highlighted.
+    func again() {
+        guard isOpen, result != nil else { return }
+        let shown = items
+        search(after: 0, keep: shown.indices.contains(at) ? shown[at].id : nil)
+    }
+
+    private func search(after delay: Double, keep: String? = nil) {
         pending?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty, let library else { result = nil; understood = []; return }
@@ -63,10 +77,11 @@ final class PaletteModel: ObservableObject {
             API.get(path, SearchResult.self) { r in
                 guard g == self.generation, case .success(let s) = r else { return }
                 self.result = s
+                if let keep { self.at = self.items.firstIndex { $0.id == keep } ?? 0 }
             }
         }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     var items: [PaletteItem] {
