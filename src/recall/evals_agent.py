@@ -31,7 +31,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import evals_harness as h
-from . import paths
+from . import evals_tokens, paths
 from .llm import LLMError
 from .llm.agent_cli import plan_env
 
@@ -61,15 +61,19 @@ def run(
     skill: bool = False,
     against: str | None = None,
     votes: int = VOTES,
+    recall: bool = True,
 ) -> dict:
+    """recall=False is the no-recall arm: the same agent, prompt and judge with recall's MCP server
+    left out (these evals have no hooks), the baseline that gains and breaks are counted against."""
     model = model.removeprefix("claude:")
     if h.same_model(model, judge):
         sys.exit(f"the judge ({judge}) must differ from the model under test ({model}): pass --judge")
     if not shutil.which("claude"):
         sys.exit("Claude Code is not installed: `claude` is not on PATH")
-    mcp = write_mcp_config(os.path.join(run.dir, "mcp.json"))
+    mcp = write_mcp_config(os.path.join(run.dir, "mcp.json")) if recall else write_empty_config(run.dir)
     run.meta.update(
-        server=_server_code(),
+        **({} if recall else {"arm": "none"}),
+        server=_server_code() if recall else None,
         agent_harness=HARNESS,
         model=model,
         judge=judge,
@@ -83,7 +87,7 @@ def run(
 
     def one(job):
         case, repeat = job
-        attempt = ask(case, model, mcp, timeout, skill)
+        attempt = ask(case, model, mcp, timeout, skill, recall)
         row, transcript = attempt["row"], attempt["transcript"]
         verdict = None
         if repeats > 1:
@@ -108,6 +112,7 @@ def run(
         results = list(pool.map(one, jobs))
     leaks = sorted(set(_leaks()) - set(leaks_before))
 
+    calibration = evals_tokens.annotate_live(run)
     scored = [r for r in run.rows if r["status"] == h.OK]
     per_case = _per_case(scored)
     accuracy = h.ci(list(per_case.values()))
@@ -143,6 +148,7 @@ def run(
         "plumbing": h.plumbing(run.rows),
         "tool_truncations": sum(r.get("tool_truncations", 0) for r in run.rows),
         "transcript_leaks": leaks,
+        **evals_tokens.summarize(run.rows, calibration),
     }
     if repeats > 1:
         summary["variance"] = _variance(scored, repeats)
@@ -176,9 +182,9 @@ def run(
 # --- the agent under test -------------------------------------------------------------
 
 
-def ask(case: dict, model: str, mcp_config: str, timeout: int, skill: bool = False) -> dict:
+def ask(case: dict, model: str, mcp_config: str, timeout: int, skill: bool = False, recall: bool = True) -> dict:
     """Run the agent under test on one qa_v2 case."""
-    return run_agent(case["question"], model, session_prompt(case, skill), mcp_config, timeout)
+    return run_agent(case["question"], model, session_prompt(case, skill), mcp_config, timeout, recall=recall)
 
 
 def run_agent(
@@ -188,6 +194,7 @@ def run_agent(
     mcp_config: str | None = None,
     timeout: int = TIMEOUT,
     settings: str | None = None,
+    recall: bool = True,
 ) -> dict:
     """Run Claude Code headless on one prompt with recall's MCP tools and nothing else.
 
@@ -202,7 +209,8 @@ def run_agent(
     Returns {"answer": the final reply, "row": status ("ok", "timeout", "api_error",
     "truncated" or "mcp_error"), detail and numbers (tokens, tool calls, seconds, cost),
     "transcript": readable steps, every tool call with its input and output size, usage, and
-    the raw stream-json events}.
+    the raw stream-json events}. recall=False says the config holds no recall server (an arm
+    without it), so a run that shows none connected is not an error.
     """
     own_config = mcp_config is None
     if own_config:
@@ -260,7 +268,7 @@ def run_agent(
         shutil.rmtree(cwd, ignore_errors=True)
         if own_config:
             shutil.rmtree(os.path.dirname(mcp_config), ignore_errors=True)
-    return _parse(out, err, proc.returncode, timed_out, time.time() - started)
+    return _parse(out, err, proc.returncode, timed_out, time.time() - started, recall)
 
 
 def session_prompt(case: dict, skill: bool = False) -> str:
@@ -307,6 +315,14 @@ def write_mcp_config(path: str, env: dict | None = None) -> str:
     return path
 
 
+def write_empty_config(folder: str) -> str:
+    """An MCP config with no servers: the agent of an arm that has no recall."""
+    path = os.path.join(folder, "no-mcp.json")
+    with open(path, "w") as f:
+        json.dump({"mcpServers": {}}, f)
+    return path
+
+
 def _server_code() -> str:
     """Where the MCP server will import recall from, for the run's meta.json."""
     env = {**os.environ, "RECALL_HOME": paths.HOME, "RECALL_MEMORY": paths.MEMORY}
@@ -320,7 +336,7 @@ def _server_code() -> str:
     return probe.stdout.strip() or probe.stderr.strip()[-300:]
 
 
-def _parse(out: str, err: str, code: int | None, timed_out: bool, seconds: float) -> dict:
+def _parse(out: str, err: str, code: int | None, timed_out: bool, seconds: float, recall: bool = True) -> dict:
     """Turn Claude Code's stream-json output into a result row and a readable transcript."""
     events, steps, calls, messages = [], [], {}, set()
     init = result = None
@@ -368,7 +384,7 @@ def _parse(out: str, err: str, code: int | None, timed_out: bool, seconds: float
         status, detail = "truncated", result.get("subtype") or result.get("stop_reason")
     elif result.get("is_error") or result.get("subtype") != "success":
         status, detail = "api_error", f"{result.get('subtype')}: {str(result.get('result'))[:300]}"
-    elif init and not connected:
+    elif init and recall and not connected:
         status, detail = "mcp_error", json.dumps(init.get("mcp_servers"))
     elif any(c["error"] and "MCP error" in str(c) for c in calls.values()):
         status, detail = "mcp_error", "the recall server failed during the run"

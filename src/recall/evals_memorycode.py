@@ -101,7 +101,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from . import config
+from . import config, evals_tokens
 from . import evals_harness as h
 from .chats import store
 from .chats.transcript import Message, Session
@@ -1023,6 +1023,9 @@ def run_agent(
         )
         answer, transcript = attempt["answer"], attempt["transcript"]
         row.update(attempt["row"])
+        row["injected_chars"] = len(
+            info.get("memory") or ""
+        )  # recall's block in the system prompt, for the token split
         row["used_recall"] = int(row["tool_calls"] > 0)  # tool_calls counts recall's tools only
         if not arm.tools and row["status"] == "mcp_error" and row.get("detail") == "[]":
             row.update(status=h.OK, detail=None)  # no MCP server is the point of these arms
@@ -1053,6 +1056,7 @@ def run_agent(
         list(pool.map(one, jobs))
     leaks = sorted(set(evals_agent._leaks()) - set(leaks_before))
 
+    calibration = evals_tokens.annotate_live(run)
     scored = [r for r in run.rows if r["status"] == h.OK]
     per_history = _per_history(scored)
     lengths = {x.id: x.length for x in histories}
@@ -1089,6 +1093,7 @@ def run_agent(
         "requests": len(jobs),
         "plumbing": h.plumbing(run.rows),
         "transcript_leaks": leaks,
+        **evals_tokens.summarize(run.rows, calibration),
     }
     if repeats > 1:
         by_repeat: dict[int, list[dict]] = {}
