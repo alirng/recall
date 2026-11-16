@@ -1136,7 +1136,9 @@ class Watcher:
                 os.close(ev.ident)
                 self.fds.pop(ev.ident, None)
                 reopen = True
-        if reopen:
+        # A file that wasn't there when watching began shows up as a change to its folder: recall.db-wal,
+        # for one, exists only while something has the index open, and this process opens it after the watch.
+        if reopen or len(self.fds) < len(self.wanted):
             for p in self.wanted:
                 self._open(p)
         if self.timer is None:
