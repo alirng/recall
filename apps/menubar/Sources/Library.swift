@@ -400,6 +400,9 @@ final class Library: ObservableObject {
             for m in [chats] + Array(agentChats.values) {
                 if m === shownChats { m.refresh() } else { m.stale = true }
             }
+            // A search answers before recall has read the newest chats; when it has, show them in the search too.
+            if section == .search { search.again() }
+            palette.again()
         }
         if topics.contains("notes") {
             notes.refresh()
@@ -976,10 +979,17 @@ final class SearchModel: ObservableObject {
         return (words.joined(separator: " "), filters)
     }
 
-    func run() {
+    /// The same search again, where it is, keeping what's shown until the answer comes: recall api answers
+    /// from the index as it stands and indexes new chats behind it, so a "chats" change can bring more.
+    func again() {
+        guard result != nil else { return }
+        run(go: false)
+    }
+
+    func run(go: Bool = true) {
         let raw = text.trimmingCharacters(in: .whitespaces)
         guard !raw.isEmpty, let library else { return }
-        library.section = .search
+        if go { library.section = .search }
         let (q, filters) = parse(raw, projects: library.facts.projects?.projects.map(\.name) ?? [])
         understood = filters.map { (key: $0.0, value: $0.1) }
         var path = "/v1/search?q=\(API.q(q.isEmpty ? raw : q))&limit=20"
@@ -992,7 +1002,7 @@ final class SearchModel: ObservableObject {
             self.running = false
             switch r {
             case .success(let s): self.result = s; self.error = nil
-            case .failure(let f): self.error = f.message
+            case .failure(let f): if go { self.error = f.message }  // searching again keeps what it showed
             }
         }
     }

@@ -14,7 +14,7 @@ recall api --idle 0   # serve until stopped
 ## What it reads and what it changes
 
 Reading changes nothing of yours. It may refresh recall's own search cache (the notes search index,
-and new chats before a search, as the MCP server does) and log its use to `usage.jsonl`. Searches made through it are logged with
+and new chats when a search starts, as the MCP server does) and log its use to `usage.jsonl`. Searches made through it are logged with
 the client name from the `X-Recall-Client` header (`app` if absent), so you can see whether an app
 earns its place.
 
@@ -103,7 +103,7 @@ in development an app points at the repo copy (`uv run recall api` from a checko
 | `/v1/notes/{id}` | one note in full: rules (all, with status and evidence), source chats (title, agent, date, or `found: false` if gone), related notes, `history`, and `stamp`: the file as read, which an edit or a forget sends back |
 | `/v1/chats` | chats with `agent`, `project`, `since`, `until`, `subagents=1`, `limit`, `offset` |
 | `/v1/chats/{id}/messages` | one chat's messages, paged with `offset`, `limit`, `max_chars` |
-| `/v1/search` | chats and notes for `q`, with `kind` (all, chats, notes), `agent`, `project`, `since`, `until`, `limit`; echoes the filters used and `took_ms`. It finds what an agent's `search_chats` and `memory_search` would: new chats are indexed first (waiting at most a second), `project` matches every folder a project spans or part of a folder or title, and a chat's forks come back as one result listing the others in `copies` (`chat_id`, `messages`, `updated`) |
+| `/v1/search` | chats and notes for `q`, with `kind` (all, chats, notes), `agent`, `project`, `since`, `until`, `limit`; echoes the filters used and `took_ms`. It finds what an agent's `search_chats` and `memory_search` would: it starts indexing new chats and answers from the index as it stands, without waiting, and the chats the scan adds arrive as a `chats` change on `/v1/events` (search again then); `project` matches every folder a project spans or part of a folder or title, and a chat's forks come back as one result listing the others in `copies` (`chat_id`, `messages`, `updated`) |
 | `/v1/events` | server-sent events |
 
 ## Writes
