@@ -197,8 +197,9 @@ on top of an agent's tokens, not of these.
 ### Cost, not just tokens
 
 `tokens_in` adds up the whole context at every model call, with cache reads at full weight, so it mostly
-tracks how many calls the agent made. A July study found that cutting tool-output tokens by 38% raised
-the bill by 6.8%, because the agents made more calls. So every agent eval also reports, per task:
+tracks how many calls the agent made. In "[Token Reduction Is Not Cost Reduction](https://arxiv.org/abs/2607.12161)"
+(Weinberger and Hozez, July 2026), the largest compression setup cut the tool-output tokens delivered to
+Claude Code by 38.4% and raised its billed cost by 6.8%. So every agent eval also reports, per task:
 
 - the cost of the agent's own reported usage (input, cache write, cache read, output) weighted by the
   model's price ratios, and that cost per solved task (a task counts as solved when qa_v2's answer is
