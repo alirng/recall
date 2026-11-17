@@ -13,7 +13,6 @@ import re
 import sqlite3
 import sys
 import time
-from typing import Annotated
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -198,21 +197,19 @@ def search_chats(
     limit: int = 8,
     alternatives: list[str] | None = None,
     ctx: Context = None,
-) -> Annotated[CallToolResult, list[dict]]:
+) -> CallToolResult:
     """Find past chats from Claude Code, Codex or Cursor by topic.
 
-    query: words for what was discussed (e.g. "pen test", "dark mode tab bar"). If the first
-      search misses, try other words for the same thing before giving up.
-    alternatives: other phrasings to search at the same time (synonyms, function or file
-      names, error text). Returns the `limit` chats that rank best across all phrasings, each
-      once, so this costs less than separate searches.
-    agent: "claude", "codex" or "cursor" when the user names the tool the chat happened in.
-    project: a project's name (see list_projects), or part of the folder or chat title.
-    since / until: a date window, e.g. since="2w", or since="2026-09-01" until="2026-09-30"
-      for "early September". Work the dates out from what the user said.
-    exclude: chat_ids you have already looked at, to see what else matches.
-    Returns chats ranked by relevance, each with its best matching messages (hits: seq and
-    snippet); pass chat_id and a hit's seq as offset to read_chat.
+    query: words for what was discussed (e.g. "pen test", "dark mode tab bar"). If it misses, try
+      other words for the same thing.
+    alternatives: other phrasings to search together (synonyms, function or file names, error
+      text); the best `limit` chats across all of them come back once each.
+    agent: "claude", "codex" or "cursor". project: a project name (see list_projects) or part of a
+      folder or chat title.
+    since / until: a date window, e.g. since="2w" or since="2026-09-01" until="2026-09-30".
+    exclude: chat_ids already looked at.
+    Returns chats by relevance, each with its best matching messages (hits: seq, snippet); pass
+    chat_id and a hit's seq as offset to read_chat.
     """
     queries = [q for q in dict.fromkeys([query, *(alternatives or [])][:MAX_PHRASINGS]) if q.strip()] or [query]
     args = {"query": query, "agent": agent, "project": project, "since": since, "until": until}
@@ -231,14 +228,12 @@ def search_chats(
             return store.fold_copies(con, merged)[:n]
 
     rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
-    # Claude Code and Codex show the model structuredContent when a result has it; Cursor reads
-    # only content, which would otherwise be one indented JSON block per chat, so content is the
-    # same results as text. Keep the two equivalent.
+    # The result is text only. With structured content as well, Claude Code showed the model that (a
+    # JSON block per chat, a fifth larger) and Cursor the text; this way every agent reads the same lines.
     text = "\n".join(_result_block(r) for r in rows) or "No chats match. Try other words, or fewer filters."
     if note:
-        rows.append({"note": note})
         text += f"\n{note}"
-    return CallToolResult(content=[TextContent(type="text", text=text)], structured_content={"result": rows})
+    return CallToolResult(content=[TextContent(type="text", text=text)])
 
 
 MAX_PHRASINGS = 6
@@ -406,11 +401,22 @@ def memory_search(query: str, project: str | None = None, limit: int = 10, ctx: 
 
     Use before choices the developer may have opinions on (tools, conventions, workflow), or
     when project background would help. project: name or part of the repository.
+    Rule lines only: read_note has the full note. A result with a project holds for that project
+    only; one without is not tied to a project.
     """
 
     def run():
         with _notes_db() as con:
-            return context.search(con, query, project, max(1, min(limit, 30)))
+            rows = context.search(con, query, project, max(1, min(limit, 30)))
+        return [
+            {
+                "note_id": r["note_id"],
+                **({"project": r["project"]} if r["project"] and r["scope"] != "global" else {}),
+                "rule": context.rule_line(r["title"], r["body"]),
+                "date": r["last_seen"],
+            }
+            for r in rows
+        ]
 
     return _logged(ctx, "memory_search", {"query": query, "project": project}, run)
 

@@ -332,6 +332,18 @@ def search(con, query: str, project: str | None = None, limit: int = 10) -> list
     ]
 
 
+RULE_LINE_CHARS = 1500  # one result's rule line, title included: only a note of many long rules is cut
+
+
+def rule_line(title: str, body: str, cap: int = RULE_LINE_CHARS) -> str:
+    """A note as one line: its title, then each rule in its body (a body with several rules is a
+    bullet list) without the reason that follows "Why:", cut at `cap`. read_note has the rest."""
+    parts = re.split(r"\n- |^- ", body.strip())
+    rules = [" ".join(p.split()).split(" Why:")[0].rstrip(".") for p in parts if p.strip()]
+    line = f"{title}: " + "; ".join(rules) + "."
+    return line if len(line) <= cap else line[: cap - 1].rstrip() + "…"
+
+
 def _with_meaning(con, query: str, rows: list, project: str | None, limit: int) -> list:
     """Fuse keyword matches with notes close in meaning when embeddings are on (RRF, k=60). The
     notes' words come from the index, which holds the active notes in the order they were read,
