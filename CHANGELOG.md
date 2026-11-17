@@ -5,6 +5,28 @@ All notable changes to recall are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-17
+
+### Added
+
+- **Agent evals report recall's own tokens, cost per solved task and gains and breaks.** Every agent
+  eval run (qa_v2, the SWE-ContextBench agent, MemoryCode) now adds, per task, the weighted cost of
+  the agent's reported usage (one table of price ratios in `evals_tokens.py`), recall's own tokens
+  counted once (tool definitions, server instructions, a hook block, each tool's results) and
+  `solved`; the summary adds cost per solved task. `recall eval tokens RUN...` re-scores stored runs
+  into a copy, `recall eval compare` compares the new columns with paired intervals and counts the
+  cases memory helped, broke or left alone against how many flip when an arm is simply rerun, and
+  `--no-recall` runs qa_v2 and the SWE-ContextBench agent without recall's MCP server as the
+  baseline. `tokens_in` is unchanged.
+
+### Fixed
+
+- **`recall api` no longer misses new chats when it starts cold.** Its change watcher watched only
+  the files that existed when a client subscribed, and `recall.db-wal` exists only while something
+  has the index open, so when no agent had the index open the Mac app could miss new chats: its
+  lists didn't update and a search didn't show the chats its scan added. It now starts watching a
+  file when it appears.
+
 ## [0.6.2] - 2026-11-16
 
 ### Changed
@@ -922,7 +944,8 @@ First public release.
 - `recall setup`, a guided first run, and `recall model` to change the model later.
 - `recall eval search` and `recall eval memory` to measure search and extraction quality.
 
-[Unreleased]: https://github.com/alirng/recall/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/alirng/recall/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/alirng/recall/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/alirng/recall/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/alirng/recall/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/alirng/recall/compare/v0.5.2...v0.6.0

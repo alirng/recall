@@ -3,7 +3,7 @@
 Recall is the Mac app. It has its own version and runs on recall, the engine, which keeps
 [its own changelog](https://github.com/alirng/recall/blob/main/CHANGELOG.md).
 
-## [0.1.1] - 2026-11-16
+## [0.1.1] - 2026-11-17
 
 Powered by recall 0.6.3.
 
