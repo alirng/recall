@@ -227,34 +227,13 @@ def search_chats(
             merged = _merge([store.search(con, q, agent, project, since, depth, until, exclude) for q in queries])
             return store.fold_copies(con, merged)[:n]
 
-    rows = _repeats(
-        [_brief(r) for r in _logged(ctx, "search_chats", args, run)], _RETURNED.setdefault(_session(ctx), {})
-    )
+    rows = [_brief(r) for r in _logged(ctx, "search_chats", args, run)]
     # The result is text only. With structured content as well, Claude Code showed the model that (a
     # JSON block per chat, a fifth larger) and Cursor the text; this way every agent reads the same lines.
     text = "\n".join(_result_block(r) for r in rows) or "No chats match. Try other words, or fewer filters."
     if note:
         text += f"\n{note}"
     return CallToolResult(content=[TextContent(type="text", text=text)])
-
-
-# What each server session has been shown by search_chats: chat_id -> the seqs of the hits listed.
-_RETURNED: dict[str, dict[str, set[int]]] = {}
-
-
-def _repeats(rows: list[dict], seen: dict[str, set[int]]) -> list[dict]:
-    """The results with a chat listed earlier in this session cut to its id and the hits not listed before:
-    the agent has the rest in its context already."""
-    out = []
-    for r in rows:
-        cid = r["chat_id"]
-        hits = r.get("hits") or []
-        if cid in seen:
-            out.append({"chat_id": cid, "repeat": True, "hits": [h for h in hits if h["seq"] not in seen[cid]]})
-        else:
-            out.append(r)
-        seen.setdefault(cid, set()).update(h["seq"] for h in hits)
-    return out
 
 
 MAX_PHRASINGS = 6
@@ -299,9 +278,6 @@ def _result_block(row: dict) -> str:
     """One search result as plain text: a line with chat_id · title · project (branch) · last
     active · size, then each hit as "[seq] snippet" on one line. Far fewer tokens than JSON:
     no field names, quotes or escapes."""
-    if row.get("repeat"):
-        hits = "".join(f"\n  [{h['seq']}] {' '.join(h['snippet'].split())}" for h in row["hits"])
-        return f"{row['chat_id']} · listed above{hits}\n"
     where = (row.get("project") or "") + (f" ({row['branch']})" if row.get("branch") else "")
     size = f"{row['messages']} messages" + (f", {row['matches']} matching" if row.get("matches") else "")
     head = " · ".join(str(x) for x in (row["chat_id"], row.get("title"), where, row.get("updated"), size) if x)
@@ -425,14 +401,20 @@ def memory_search(query: str, project: str | None = None, limit: int = 10, ctx: 
 
     Use before choices the developer may have opinions on (tools, conventions, workflow), or
     when project background would help. project: name or part of the repository.
-    Rule lines only: read_note has the full note.
+    Rule lines only: read_note has the full note. A result with a project holds for that project
+    only; one without holds everywhere.
     """
 
     def run():
         with _notes_db() as con:
             rows = context.search(con, query, project, max(1, min(limit, 30)))
         return [
-            {"note_id": r["note_id"], "rule": context.rule_line(r["title"], r["body"]), "date": r["last_seen"]}
+            {
+                "note_id": r["note_id"],
+                **({"project": r["project"]} if r["project"] and r["scope"] != "global" else {}),
+                "rule": context.rule_line(r["title"], r["body"]),
+                "date": r["last_seen"],
+            }
             for r in rows
         ]
 
