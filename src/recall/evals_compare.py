@@ -69,6 +69,23 @@ T95 = dict(
 )
 # fmt: on
 
+# The columns every agent eval's rows carry since evals_tokens: what the agent's usage costs in
+# uncached-input tokens (the four counts weighted by the model's price ratios), what that is per
+# solved task (a task that is not solved still costs, so cases with no solve stay in), recall's own
+# tokens counted once, and what those cost (written once, read on every later call). Judge a change
+# to recall's text by cost, cost per solved and result_chars: recall_tokens and recall_cost carry
+# each arm's own fit (identical text read 4% apart between the two gate arms).
+TOKEN_METRICS = {
+    "cost": ("cost_weighted", None, "mean", -1, None),
+    "cost_per_solved": ("cost_weighted", "solved", "ratio", -1, None),
+    "recall_tokens": ("recall_tokens", None, "mean", -1, None),
+    "recall_cost": ("recall_cost_weighted", None, "mean", -1, None),
+    # the characters of recall's tool results: counted, not sized, so it reads a change of text
+    # exactly where recall_tokens (each arm's own fit, good to about 5%) cannot
+    "result_chars": ("tool_chars", None, "mean", -1, None),
+}
+KEEP_EMPTY = {"cost_per_solved"}  # ratio metrics whose cases with a zero denominator still count
+
 # Per eval: how a row maps to its case (the unit the bootstrap resamples), and each metric as
 # (numerator key, denominator key or None, how cases combine, direction, only rows where key).
 # "ratio": sum over cases of the numerator over the sum of the denominator (a pooled rate, as the
@@ -95,12 +112,18 @@ SPECS = [
             "checks_updated": ("updated_ok", "updated_n", "ratio", 1, None),
             "tokens_in": ("tokens_in", None, "mean", -1, None),
             "tool_calls": ("tool_calls", None, "mean", 0, None),
+            "solved": ("solved", None, "mean", 1, None),
+            **TOKEN_METRICS,
         },
     ),
     (
         "qa_v2",
         "id",
-        {"accuracy": ("correct", None, "mean", 1, None), "tokens_in": ("tokens_in", None, "mean", -1, None)},
+        {
+            "accuracy": ("correct", None, "mean", 1, None),
+            "tokens_in": ("tokens_in", None, "mean", -1, None),
+            **TOKEN_METRICS,
+        },
     ),
     (
         "memory_v2",
@@ -117,12 +140,20 @@ SPECS = [
     (
         "swecb-lite-agent",
         "id",
-        {"hit": ("hit", None, "mean", 1, None), "tokens_in": ("tokens_in", None, "mean", -1, None)},
+        {
+            "hit": ("hit", None, "mean", 1, None),
+            "tokens_in": ("tokens_in", None, "mean", -1, None),
+            **TOKEN_METRICS,
+        },
     ),
     (
         "swecb-full-agent",
         "id",
-        {"hit": ("hit", None, "mean", 1, None), "tokens_in": ("tokens_in", None, "mean", -1, None)},
+        {
+            "hit": ("hit", None, "mean", 1, None),
+            "tokens_in": ("tokens_in", None, "mean", -1, None),
+            **TOKEN_METRICS,
+        },
     ),
     (
         "search_v2",
@@ -430,7 +461,8 @@ def repeats_needed(dec: dict, target: float, cap: int = 50) -> dict:
 def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, split, tag, target) -> dict:
     datas = [collect(runs, unit_key, metric, split, tag) for runs in arms]
     common = set.intersection(*(set(d) for d in datas))
-    units = sorted((u for u in common if all(pooled(d[u])[1] for d in datas)), key=_natural)
+    keep = name in KEEP_EMPTY
+    units = sorted((u for u in common if keep or all(pooled(d[u])[1] for d in datas)), key=_natural)
     res: dict = {
         "metric": name,
         "direction": metric[3],
@@ -478,11 +510,11 @@ def compare_metric(name: str, metric: tuple, arms: list[list[dict]], unit_key, s
         res["ci"] = [boot[int(0.025 * len(boot))], boot[int(0.975 * len(boot)) - 1]]
         res["se"] = statistics.stdev(boot)
         res["detectable"] = Z80 * res["se"]
-    va = [p[0] / p[1] for p in pa]
-    vb = [p[0] / p[1] for p in pb]
+    # a case with nothing to rate in either arm (cost per solved where neither solved it) is a tie
+    both = [(p[0] / p[1], q[0] / q[1]) for p, q in zip(pa, pb, strict=True) if p[1] and q[1]]
     sign = -1 if metric[3] < 0 else 1  # a win is a case where cand is better
-    res["wins"] = sum(sign * (y - x) > EPS for x, y in zip(va, vb, strict=True))
-    res["losses"] = sum(sign * (y - x) < -EPS for x, y in zip(va, vb, strict=True))
+    res["wins"] = sum(sign * (y - x) > EPS for x, y in both)
+    res["losses"] = sum(sign * (y - x) < -EPS for x, y in both)
     res["ties"] = len(units) - res["wins"] - res["losses"]
     res["cand_replicates"] = replicates(b, units)
     sds = []
@@ -546,12 +578,62 @@ def flips(datas: list[dict], units: list[str]) -> dict:
                 multi[i] += 1
                 if max(vals) - min(vals) > EPS:
                     unstable[i].append(u)
-            means.append(sum(vals) / len(vals))
+            means.append(sum(vals) / len(vals) if vals else 0.0)  # a ratio with no denominator here (an unsolved case)
         if len(datas) > 1 and u not in unstable[0] and u not in unstable[1] and abs(means[1] - means[0]) > EPS:
             differ.append(u)
     out = {"unstable_base": unstable[0], "base_cases_with_repeats": multi[0]}
     if len(datas) > 1:
         out.update(unstable_cand=unstable[1], cand_cases_with_repeats=multi[1], differ=differ)
+    return out
+
+
+def gains_breaks(arms: list[list[dict]], unit_key: str, split: str, tag: str | None) -> dict | None:
+    """Per case: did memory help (not solved in the base arm, solved in the candidate), break it
+    (the reverse), or neither? Counted run by run, the base arm's k-th replicate against the
+    candidate's, and averaged over the pairs. The noise band is the same count between two
+    replicates of one arm: how many cases flip when an arm is simply run twice, so a gain
+    smaller than that is not a gain. A case's value is its mean `solved` over the rows of its
+    unit (MemoryCode: a history's requests), so a count is of cases, not of requests."""
+    metric = ("solved", None, "mean", 1, None)
+    datas = [collect(runs, unit_key, metric, split, tag) for runs in arms]
+    if not any(datas):
+        return None
+    reps = [sorted({rep for u in d.values() for rep in u}) for d in datas]
+
+    def value(d, u, rep):
+        v = d.get(u, {}).get(rep)
+        return None if v is None else v[0] / v[1]
+
+    def count(da, ra, db, rb, units):
+        up = down = same = 0
+        for u in units:
+            x, y = value(da, u, ra), value(db, u, rb)
+            if x is None or y is None:
+                continue
+            up += y > x + EPS
+            down += y < x - EPS
+            same += abs(y - x) <= EPS
+        return up, down, same
+
+    out: dict = {"metric": "solved", "arms": []}
+    for d, r in zip(datas, reps, strict=False):
+        units = sorted(d, key=_natural)
+        flips_ = [sum(count(d, a, d, b, units)[:2]) for a, b in itertools.combinations(r, 2)]
+        out["arms"].append(
+            {"replicates": len(r), "flips": statistics.fmean(flips_) if flips_ else None, "pairs": len(flips_)}
+        )
+    if len(arms) > 1:
+        units = sorted(set(datas[0]) & set(datas[1]), key=_natural)
+        k = min(len(reps[0]), len(reps[1]))
+        pairs = [count(datas[0], reps[0][i], datas[1], reps[1][i], units) for i in range(k)]
+        if pairs:
+            out.update(
+                cases=len(units),
+                helped=statistics.fmean(p[0] for p in pairs),
+                broke=statistics.fmean(p[1] for p in pairs),
+                neither=statistics.fmean(p[2] for p in pairs),
+                run_pairs=len(pairs),
+            )
     return out
 
 
@@ -600,8 +682,8 @@ def run(argv: list[str] | None = None) -> dict:
     rows = [row for arm in arms for r in arm for row in r["rows"]]
     if a.metric:
         chosen = {m: metrics.get(m) or custom_metric(m, rows) for m in a.metric}
-    elif metrics:
-        chosen = metrics
+    elif metrics:  # the columns a run has: runs from before the token columns have none of them
+        chosen = {m: spec for m, spec in metrics.items() if any(spec[0] in r for r in rows)}
     else:
         chosen = {k: (k, None, "mean", 1, None) for k in FALLBACK if any(k in r for r in rows)}
         if not chosen:
@@ -626,6 +708,9 @@ def run(argv: list[str] | None = None) -> dict:
         "has_test": any(row.get("split") == "test" for row in rows),
         "metrics": results,
     }
+    gb = gains_breaks(arms, unit_key, a.split, a.tag)
+    if gb:
+        report["gains_breaks"] = gb
     if a.json:
         print(json.dumps(report, indent=2, default=str))
     else:
@@ -636,7 +721,7 @@ def run(argv: list[str] | None = None) -> dict:
 def _f(x, signed=False) -> str:
     if x is None:
         return "n/a"
-    digits = 0 if abs(x) >= 100 else 3  # token counts read better whole
+    digits = 0 if abs(x) >= 10 else 3  # token counts read better whole
     return f"{x:+.{digits}f}" if signed else f"{x:.{digits}f}"
 
 
@@ -655,14 +740,14 @@ def show(report: dict, names: list[str], list_flips: bool, unit_key: str) -> Non
         print(f"warning: {w}")
     b, c = names
     if paired:
-        print(f"\n{'metric':16} {b:>8} {c:>8} {'Δ':>8}  {'95% CI':18} {'W/L/T':10} {'detectable':>10}  verdict")
+        print(f"\n{'metric':20} {b:>8} {c:>8} {'Δ':>8}  {'95% CI':18} {'W/L/T':10} {'detectable':>10}  verdict")
     else:
         print(f"\n{'metric':16} {b:>8}  {'95% CI':18} {'cases':>6}")
     for m in report["metrics"]:
         label = m["metric"] + {1: "", -1: " (↓)", 0: ""}[m["direction"]]
         if not m["cases"]:
             sizes = ", ".join(f"{n} {k}" for n, k in zip(names, m["per_arm"], strict=False))
-            print(f"{label:16} no case scored in every arm ({sizes} cases; different splits?)")
+            print(f"{label:20} no case scored in every arm ({sizes} cases; different splits?)")
             continue
         ci = m.get("ci")
         ci_text = f"[{_f(ci[0], paired)}, {_f(ci[1], paired)}]" if ci else ""
@@ -670,11 +755,11 @@ def show(report: dict, names: list[str], list_flips: bool, unit_key: str) -> Non
             wlt = f"{m['wins']}/{m['losses']}/{m['ties']}"
             det = f"±{_f(m['detectable'])}" if m.get("detectable") is not None else ""
             print(
-                f"{label:16} {_f(m['base']):>8} {_f(m['cand']):>8} {_f(m['delta'], True):>8}  {ci_text:18} "
+                f"{label:20} {_f(m['base']):>8} {_f(m['cand']):>8} {_f(m['delta'], True):>8}  {ci_text:18} "
                 f"{wlt:10} {det:>10}  {m['verdict']}"
             )
         else:
-            print(f"{label:16} {_f(m['base']):>8}  {ci_text:18} {m['cases']:>6}")
+            print(f"{label:20} {_f(m['base']):>8}  {ci_text:18} {m['cases']:>6}")
     print(f"\ncases{' paired' if paired else ''}: {report['metrics'][0]['cases']} (unit: {unit_key})")
     print("\nrun-to-run: each replicate's score on those cases, its spread, and same-arm differences")
     for m in report["metrics"]:
@@ -694,7 +779,7 @@ def show(report: dict, names: list[str], list_flips: bool, unit_key: str) -> Non
                     text += f", max same-arm |Δ| {_f(max(abs(x) for x in same))}"
                 text += ")"
             parts.append(text)
-        print(f"  {m['metric']:14} " + "   ".join(parts))
+        print(f"  {m['metric']:18} " + "   ".join(parts))
     if any(not r["full"] for m in report["metrics"] for k in ("base", "cand") for r in m.get(f"{k}_replicates") or []):
         print("  (* a replicate covering only some cases, e.g. extra repeats of flips: left out of the spread)")
     print("\nnoise:")
@@ -729,7 +814,23 @@ def show(report: dict, names: list[str], list_flips: bool, unit_key: str) -> Non
                 "this arm vs an identical one detects " + ", ".join(f"±{_f(v)} at {n}v{n}" for n, v in k.items())
             )
         if bits:
-            print(f"  {m['metric']:14} " + "; ".join(bits))
+            print(f"  {m['metric']:18} " + "; ".join(bits))
+    gb = report.get("gains_breaks")
+    if gb:
+        print("\ngains and breaks (solved; a case is helped, broken or neither, run against run):")
+        if "helped" in gb:
+            print(
+                f"  {c} against {b}: {gb['helped']:.1f} helped, {gb['broke']:.1f} broke, {gb['neither']:.1f} neither "
+                f"of {gb['cases']} cases (mean of {gb['run_pairs']} run pair{'s' if gb['run_pairs'] > 1 else ''})"
+            )
+        for n, arm in zip(names, gb["arms"], strict=False):
+            if arm["flips"] is None:
+                print(f"  noise band, {n}: unmeasured (needs 2 or more replicates; it has {arm['replicates']})")
+            else:
+                print(
+                    f"  noise band, {n}: {arm['flips']:.1f} cases flip between two runs of the arm "
+                    f"({arm['pairs']} pair{'s' if arm['pairs'] > 1 else ''}): a gain or break count near that is noise"
+                )
     fl = report["metrics"][0].get("flips") or {}
     if fl:
         print(f"\nflips ({report['metrics'][0]['metric']}):")

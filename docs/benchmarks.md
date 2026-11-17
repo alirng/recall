@@ -194,6 +194,29 @@ reading matched windows of the top 5, which is 4 to 10 times Zep's. Those are wh
 alone is 31.8k and 11.8k, 7 and 2.7 times Zep's median); the tool definitions in the table above come
 on top of an agent's tokens, not of these.
 
+### Cost, not just tokens
+
+`tokens_in` adds up the whole context at every model call, with cache reads at full weight, so it mostly
+tracks how many calls the agent made. In "[Token Reduction Is Not Cost Reduction](https://arxiv.org/abs/2607.12161)"
+(Weinberger and Hozez, July 2026), the largest compression setup cut the tool-output tokens delivered to
+Claude Code by 38.4% and raised its billed cost by 6.8%. So every agent eval also reports, per task:
+
+- the cost of the agent's own reported usage (input, cache write, cache read, output) weighted by the
+  model's price ratios, and that cost per solved task (a task counts as solved when qa_v2's answer is
+  correct, SWE-ContextBench names a gold chat, or a MemoryCode request passes every check);
+- recall's own tokens counted once (tool definitions, server instructions, a hook block, each tool's
+  results) and what they cost: written once, then read at every later call. On the 0.6.1 gate runs
+  they were 52 to 60% of the weighted cost on qa_v2 and SWE-ContextBench, and 35% on MemoryCode;
+- how many cases memory helped, broke or left alone against a run without recall, next to how many
+  cases flip when one arm is simply run twice. `--no-recall` runs qa_v2 and the SWE-ContextBench agent
+  without recall's server, and MemoryCode has `--arm none`. SWE-ContextBench's agent cannot name a chat
+  it never saw, so there that arm is a cost baseline only.
+
+recall's own tokens are sized from each run's own context growth, good to about 5%; judge a change to
+recall's text by cost, cost per solved task and the characters its results returned, which are counted.
+`recall eval tokens RUN` re-scores a stored run, and `recall eval compare` compares the columns with
+paired intervals ([details](benchmarks/README.md#cost-recalls-own-tokens-gains-and-breaks)).
+
 ## Notes that keep up
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="benchmarks/notes-dark.svg"><img src="benchmarks/notes-light.svg" alt="Grouped bar chart of MemoryCode note quality on 40 held-out histories, 0.5.1 and 0.5.2 run side by side on 4 November, 3 runs each with gpt-6-luna and 6 with Claude Haiku 5.5. Conventions in notes in their latest form: recall 0.5.1 with gpt-6-luna 65.3%, recall 0.5.2 with gpt-6-luna 63.6%, recall 0.5.1 with Claude Haiku 5.5 90.4%, recall 0.5.2 with Claude Haiku 5.5 89.5%. Changed conventions recorded: 63.6%, 59.4%, 91.0%, 91.4%" width="760"></picture></p>
@@ -367,6 +390,8 @@ uv run --with pyarrow recall eval swe-contextbench --data DIR --scope all --hybr
 uv run --with pyarrow recall eval swe-contextbench --data DIR --hybrid --agent --split test      # an agent finding them
 uv run --with pyarrow recall eval memorycode --data DIR --split test --limit 40 --repeats 3 --fresh
 uv run --with pyarrow recall eval memorycode --data DIR --agent --arm hook --notes RUN_DIR --hybrid --split test
+uv run recall eval agent --split test --repeats 3 --no-recall                                      # the same agent without recall: the baseline for gains and breaks
+uv run recall eval tokens RUN_DIR --out DIR                                                       # recall's own tokens and cost per solved task of a stored run
 uv run recall eval amb --data DIR                                                                 # agent-memory-bench retrieval
 uv run recall eval longmemeval --cases longmemeval_s_cleaned.json --hybrid [--qa claude:claude-haiku-5-5]
 uv run recall eval locomo --cases locomo10.json --hybrid
