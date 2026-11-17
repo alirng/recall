@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import evals_harness as h
-from . import evals_profiles
+from . import evals_profiles, evals_tokens
 from .chats import store
 from .chats.transcript import Message, Session
 
@@ -106,9 +106,11 @@ def from_args(a) -> dict:
         from . import evals_agent
 
         model = (a.agent or evals_agent.DEFAULT_MODEL).removeprefix("claude:")
-        settings.update(model=model, workers=a.workers, timeout=a.timeout)
+        settings.update(model=model, workers=a.workers, timeout=a.timeout, recall=not a.no_recall)
         run = h.Run(f"{name}-agent-{model}-{search}", a.split, settings, a.who, a.runs_dir)
-        return run_agent(bench, tasks, run, model, a.query, embedder, cache, a.workers, a.timeout, a.against)
+        return run_agent(
+            bench, tasks, run, model, a.query, embedder, cache, a.workers, a.timeout, a.against, not a.no_recall
+        )
     settings["scope"] = a.scope
     if a.profiles:
         settings["profiles"] = True
@@ -357,13 +359,15 @@ def run_agent(
     workers: int = 4,
     timeout: int = 300,
     against: str | None = None,
+    recall: bool = True,
 ) -> dict:
     """Claude Code with recall's MCP tools and nothing else, over a recall home made for this
     run that holds only the experience chats, each in a project folder named after its repo.
     The agent is told the task's project folder, gets the issue, and names the chats it would
     rely on. Scores: a gold chat among them (hit), the share of named chats that are gold
     (precision), whether a gold chat ever came back from a tool (seen), and the input tokens,
-    tool calls and time it took."""
+    tool calls and time it took. recall=False leaves recall's server out: the agent cannot name a
+    chat it never saw, so its hit is 0 by construction and the arm is a cost baseline only."""
     import shutil
 
     from . import evals_agent
@@ -372,11 +376,18 @@ def run_agent(
         sys.exit("Claude Code is not installed: `claude` is not on PATH")
     home, memory = os.path.join(run.dir, "home"), os.path.join(run.dir, "memory")
     _agent_home(bench, home, memory, embedder, cache)
-    mcp = evals_agent.write_mcp_config(
-        os.path.join(run.dir, "mcp.json"), {"RECALL_HOME": home, "RECALL_MEMORY": memory}
-    )
+    if recall:
+        mcp = evals_agent.write_mcp_config(
+            os.path.join(run.dir, "mcp.json"), {"RECALL_HOME": home, "RECALL_MEMORY": memory}
+        )
+    else:
+        mcp = evals_agent.write_empty_config(run.dir)
     run.meta.update(
-        recall_home=home, recall_memory=memory, server=evals_agent._server_code(), agent_harness=evals_agent.HARNESS
+        recall_home=home,
+        recall_memory=memory,
+        server=evals_agent._server_code() if recall else None,
+        agent_harness=evals_agent.HARNESS,
+        **({} if recall else {"arm": "none"}),
     )
     known = set(bench.sessions)
     done, lock = [0], threading.Lock()
@@ -388,7 +399,9 @@ def run_agent(
             run.record(case, {"status": "no_gold", "repo": t["repo"]}, {})
             return
         system = evals_agent.session_prompt({"cwd": _folder(t["repo"])})
-        attempt = evals_agent.run_agent(PROMPT.format(issue=_query(t, query)), model, system, mcp, timeout)
+        attempt = evals_agent.run_agent(
+            PROMPT.format(issue=_query(t, query)), model, system, mcp, timeout, recall=recall
+        )
         answer, row, transcript = attempt["answer"], attempt["row"], attempt["transcript"]
         cited, formatted = _cited(answer, known)
         seen = {x for s in transcript.get("steps", []) if s["kind"] == "tool_result" for x in _ids(s["text"], known)}
@@ -422,6 +435,7 @@ def run_agent(
         list(pool.map(one, tasks))
     leaks = sorted(set(evals_agent._leaks()) - set(leaks_before))
 
+    calibration = evals_tokens.annotate_live(run)
     scored = [r for r in run.rows if r["status"] == h.OK]
     metrics = {
         "hit": h.ci([float(r["hit"]) for r in scored]),
@@ -450,6 +464,7 @@ def run_agent(
         "plumbing": h.plumbing(run.rows),
         "transcript_leaks": leaks,
         "warnings": h.headroom({"hit": metrics["hit"]}),
+        **evals_tokens.summarize(run.rows, calibration),
     }
     if leaks:
         summary["warnings"].append(f"{len(leaks)} folders appeared in {evals_agent.PROJECTS}: a run saved a transcript")

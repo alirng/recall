@@ -11,6 +11,11 @@ from . import __version__, config, paths
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:2] == ["eval", "tokens"]:  # re-score stored agent runs: recall's tokens, cost per solved task
+        from . import evals_tokens
+
+        evals_tokens.main(argv[2:])
+        return
     if argv[:2] == ["eval", "compare"]:  # its own arguments: run folders and "vs"
         from . import evals_compare
 
@@ -1049,7 +1054,7 @@ def _eval_v2(a) -> None:
         from . import evals_agent
 
         model = a.model or evals_agent.DEFAULT_MODEL
-        settings.update(repeats=a.repeats, workers=a.workers, timeout=a.timeout, skill=a.skill)
+        settings.update(repeats=a.repeats, workers=a.workers, timeout=a.timeout, skill=a.skill, recall=not a.no_recall)
         run = harness.Run(kinds[a.kind], a.split, settings, a.who, a.runs_dir)
         evals_agent.run(
             cases,
@@ -1063,6 +1068,7 @@ def _eval_v2(a) -> None:
             a.skill,
             a.against,
             a.judge_votes or evals_agent.VOTES,
+            not a.no_recall,
         )
     elif a.kind == "memory":
         from . import evals_memory
@@ -1379,6 +1385,12 @@ def _parser() -> argparse.ArgumentParser:
     v2.add_argument("--timeout", type=int, default=300, help="agent: seconds before a case counts as timed out")
     v2.add_argument("--consistency", type=int, default=8, help="agent, memory: re-judge N cases to check the grader")
     v2.add_argument("--skill", action="store_true", help="agent: also give the agent recall's skill text")
+    v2.add_argument(
+        "--no-recall",
+        action="store_true",
+        help="agent, swe-contextbench --agent: the no-recall arm, with recall's MCP server left out "
+        "(the baseline for gains and breaks; memorycode has --arm none)",
+    )
     v2.add_argument("--who", help="name in the run folder and ledger (default $RECALL_EVAL_WHO or harness)")
     v2.add_argument("--note", help="a note for the ledger line")
     v2.add_argument("--runs-dir", help="where run folders go; the ledger is LEDGER.md beside it")

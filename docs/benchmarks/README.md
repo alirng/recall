@@ -154,6 +154,34 @@ EOF
 For a derived figure, copy the identity of the rows it was computed from (`code`, `runs`,
 `model`, `harness`, `pair`, `role`, `varies`) and say how in `note`.
 
+## Cost, recall's own tokens, gains and breaks
+
+`tokens_in` sums the whole context over every model call and counts cache reads in full, so it
+mostly measures the agent's own base and how many calls it made. Agent evals (my-qa, the
+SWE-ContextBench agent, MemoryCode) also record, per task and in the run's summary:
+
+- `cost_weighted`: the four usage counts the agent reports (input, cache write, cache read,
+  output) weighted by the model's price ratios, in uncached-input tokens. The ratios live in
+  `PRICE_RATIOS` in `evals_tokens.py`; `recall eval tokens RUN --check-cost` weighs a stored run
+  against the cost Claude Code reported for it. `cost_per_solved` is the total over the number of
+  solved tasks (qa_v2 correct, SWE-ContextBench hit, MemoryCode a request whose every check passes).
+- `recall_tokens`: recall's own tokens a task, counted once: tool definitions, server
+  instructions and tool names, a hook block, and each tool's results. The API's per-call context
+  sizes give each step's growth; per tool, growth against result characters gives tokens per
+  character, so results, definitions and the rest are sized from that. They are estimates with
+  their fit in the summary (`recall_fit`: n, r2), and the hook block of a run made before rows
+  recorded `injected_chars` is rebuilt from its notes with today's code. `recall_cost_share` is
+  what those tokens cost (written once, read on every later call) over the whole weighted cost.
+- Gains and breaks: `recall eval compare NONE_RUN vs RECALL_RUN` counts the cases memory helped,
+  broke or left alone, run against run, beside the noise band: how many cases flip between two
+  runs of one arm. The no-memory arms are MemoryCode `--arm none` and `--no-recall` on `eval agent`
+  and `eval swe-contextbench --agent` (recorded as the condition `arm: none`). SWE-ContextBench's
+  agent cannot name a chat it never saw, so there every hit is a gain and the arm is a cost
+  baseline only.
+
+`recall eval tokens RUN... --out DIR` re-scores stored runs into copies under DIR (run folders
+are only read), which `compare` and `store.py record --dry-run` read as they are.
+
 ## Add a benchmark
 
 One entry in `registry.json`, nothing else: `title`, `description`, `corpus` (`public`, or
