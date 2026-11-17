@@ -402,7 +402,7 @@ def memory_search(query: str, project: str | None = None, limit: int = 10, ctx: 
     Use before choices the developer may have opinions on (tools, conventions, workflow), or
     when project background would help. project: name or part of the repository.
     Rule lines only: read_note has the full note. A result with a project holds for that project
-    only; one without holds everywhere.
+    only; one without is not tied to a project.
     """
 
     def run():
